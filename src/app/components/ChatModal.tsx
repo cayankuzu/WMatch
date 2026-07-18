@@ -1,0 +1,1655 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import * as Application from 'expo-application';
+import { Image } from 'expo-image';
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import AccessibleModal from './ui/AccessibleModal';
+
+import { supabase } from '../../../utils/supabase/client';
+import { useLocalization } from '../../context/LocalizationContext';
+import {
+  ApiRequestError,
+  blockUser,
+  deleteChat,
+  endChat,
+  getChatThread,
+  markChatThreadRead,
+  sendMessage,
+  submitUserReport,
+  unblockUser,
+  updateChatSettings,
+  type ApiChat,
+  type ApiMessage,
+} from '../../services/api';
+import {
+  enqueuePendingChatMessage,
+  listPendingChatMessages,
+  removePendingChatMessage,
+} from '../../services/chatOutbox';
+import {
+  deleteChatThreadCache,
+  hasChatThreadCache,
+  preloadChatThread,
+  readChatThreadCache,
+  writeChatThreadCache,
+} from '../../services/chatCache';
+import { normalizeChat, patchChat, type ChatPatch } from '../../services/chatState';
+import { CHAT_THREAD_INITIAL_PAGE_SIZE, MAX_MESSAGE_LENGTH } from '../../shared/constants';
+import type { ChatSettings } from '../../shared/types';
+import { theme } from '../../shared/theme';
+import { validateMessageText } from '../../shared/utils/validation';
+import AppButton from './ui/AppButton';
+import ChatSettingsModal from './ChatSettingsModal';
+import ChatMessageBubble, { type LocalChatMessage } from './chat/ChatMessageBubble';
+import TypingDots from './chat/TypingDots';
+import useChatPresence from '../hooks/useChatPresence';
+import DataState from './ui/DataState';
+import { MessageThreadSkeleton } from './ui/Skeleton';
+
+interface ChatModalProps {
+  chat: ApiChat;
+  onClose: () => void;
+  currentUserId: string;
+  onProfileClick?: () => void;
+  onChatUpdated?: () => void;
+  onChatPatched?: (userId: string, patch: ChatPatch) => void;
+  onChatRestored?: (chat: ApiChat) => void;
+  onThreadRead?: (userId: string) => void;
+  onChatDeleted?: (userId: string) => void;
+}
+
+const REPORT_REASON_OPTIONS = [
+  'fake_profile',
+  'harassment',
+  'spam',
+  'nudity',
+  'underage',
+  'hate_speech',
+  'other',
+] as const;
+
+type ReportReasonCode = (typeof REPORT_REASON_OPTIONS)[number];
+
+const MIN_REPORT_DETAILS_LENGTH = 20;
+const MAX_REPORT_DETAILS_LENGTH = 1500;
+const TYPING_IDLE_TIMEOUT_MS = 1800;
+const CHAT_BOTTOM_PROXIMITY_PX = 120;
+const CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION = { minIndexForVisible: 0 } as const;
+
+function toLocalMessage(message: ApiMessage): LocalChatMessage {
+  return {
+    ...message,
+    clientStatus: undefined,
+  };
+}
+
+function sortMessages<T extends { created_at: string; id?: string }>(messages: T[]) {
+  return [...messages].sort((left, right) => {
+    return (
+      new Date(right.created_at).getTime() - new Date(left.created_at).getTime() ||
+      (right.id ?? '').localeCompare(left.id ?? '')
+    );
+  });
+}
+
+function replaceOrAppendMessage(
+  currentMessages: LocalChatMessage[],
+  nextMessage: ApiMessage,
+  optimisticId?: string,
+) {
+  const normalizedMessage = toLocalMessage(nextMessage);
+  const existingIndex = currentMessages.findIndex((message) => message.id === normalizedMessage.id);
+
+  if (existingIndex >= 0) {
+    const nextMessages = [...currentMessages];
+    nextMessages[existingIndex] = normalizedMessage;
+    return sortMessages(nextMessages);
+  }
+
+  const optimisticIndex = currentMessages.findIndex((message) => {
+    if (optimisticId && message.id === optimisticId) {
+      return true;
+    }
+
+    return (
+      message.clientStatus === 'sending' &&
+      message.sender_id === normalizedMessage.sender_id &&
+      message.receiver_id === normalizedMessage.receiver_id &&
+      message.text === normalizedMessage.text
+    );
+  });
+
+  if (optimisticIndex >= 0) {
+    const nextMessages = [...currentMessages];
+    nextMessages[optimisticIndex] = normalizedMessage;
+    return sortMessages(nextMessages);
+  }
+
+  return sortMessages([...currentMessages, normalizedMessage]);
+}
+
+function mergeServerMessages(
+  serverMessages: ApiMessage[],
+  currentMessages: LocalChatMessage[],
+) {
+  const merged = sortMessages(serverMessages.map(toLocalMessage));
+  const leftoverMessages = currentMessages.filter((message) => {
+    if (message.clientStatus !== 'sending' && message.clientStatus !== 'failed') {
+      return false;
+    }
+
+    return !merged.some(
+      (serverMessage) =>
+        serverMessage.sender_id === message.sender_id &&
+        serverMessage.receiver_id === message.receiver_id &&
+        serverMessage.text === message.text &&
+        Math.abs(new Date(serverMessage.created_at).getTime() - new Date(message.created_at).getTime()) < 15000,
+    );
+  });
+
+  return sortMessages([...merged, ...leftoverMessages]);
+}
+
+function mergeMessagesById(
+  incomingMessages: ApiMessage[],
+  currentMessages: LocalChatMessage[],
+) {
+  const messagesById = new Map<string, LocalChatMessage>();
+
+  currentMessages.forEach((message) => {
+    messagesById.set(message.id, message);
+  });
+
+  incomingMessages.forEach((message) => {
+    messagesById.set(message.id, toLocalMessage(message));
+  });
+
+  return sortMessages([...messagesById.values()]);
+}
+
+function createOptimisticMessage({
+  id,
+  senderId,
+  receiverId,
+  text,
+  createdAt,
+  clientStatus = 'sending',
+}: {
+  id: string;
+  senderId: string;
+  receiverId: string;
+  text: string;
+  createdAt?: string;
+  clientStatus?: LocalChatMessage['clientStatus'];
+}): LocalChatMessage {
+  return {
+    id,
+    sender_id: senderId,
+    receiver_id: receiverId,
+    text,
+    read: false,
+    created_at: createdAt ?? new Date().toISOString(),
+    clientStatus,
+  };
+}
+
+export default function ChatModal({
+  chat,
+  onClose,
+  currentUserId,
+  onProfileClick,
+  onChatUpdated,
+  onChatPatched,
+  onChatRestored,
+  onThreadRead,
+  onChatDeleted,
+}: ChatModalProps) {
+  const { t } = useLocalization();
+  const insets = useSafeAreaInsets();
+  const initialCachedThread = useMemo(() => {
+    return readChatThreadCache(currentUserId, chat.userId);
+  }, [chat.userId, currentUserId]);
+  const [messages, setMessages] = useState<LocalChatMessage[]>(() =>
+    sortMessages(initialCachedThread?.messages.map(toLocalMessage) ?? []),
+  );
+  const [threadChat, setThreadChat] = useState<ApiChat>(() =>
+    normalizeChat(initialCachedThread?.chat ?? chat),
+  );
+  const [inputText, setInputText] = useState('');
+  const [loading, setLoading] = useState(!initialCachedThread);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
+  const [threadLoadError, setThreadLoadError] = useState<ApiRequestError | Error | null>(null);
+  const [hasOlderMessages, setHasOlderMessages] = useState(() =>
+    Boolean(initialCachedThread?.pageInfo?.hasMore && initialCachedThread.pageInfo.nextCursor),
+  );
+  const [actionBusy, setActionBusy] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showReportForm, setShowReportForm] = useState(false);
+  const [reportReason, setReportReason] = useState<ReportReasonCode>('fake_profile');
+  const [reportDetails, setReportDetails] = useState('');
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [isComposerFocused, setIsComposerFocused] = useState(false);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [isTypingForPresence, setIsTypingForPresence] = useState(false);
+  const listRef = useRef<FlatList<LocalChatMessage>>(null);
+  const userScrolledMessagesRef = useRef(false);
+  const scrollOffsetRef = useRef(0);
+  const mountedRef = useRef(true);
+  const syncInFlightRef = useRef(false);
+  const olderMessagesInFlightRef = useRef(false);
+  const olderMessagesCursorRef = useRef<string | null>(initialCachedThread?.pageInfo?.nextCursor ?? null);
+  const typingIdleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const acknowledgedReadIdsRef = useRef<Set<string>>(new Set());
+  const shouldBroadcastTyping = threadChat.canSend && isTypingForPresence;
+
+  const peerPresence = useChatPresence({
+    currentUserId,
+    otherUserId: threadChat.userId,
+    peerSettings: threadChat.peerSettings,
+    isTyping: shouldBroadcastTyping,
+  });
+
+  const applyThreadPatch = (patch: ChatPatch) => {
+    setThreadChat((current) => patchChat(current, patch));
+    onChatPatched?.(threadChat.userId, patch);
+  };
+
+  const restoreThreadChat = (previousChat: ApiChat) => {
+    setThreadChat(previousChat);
+    onChatRestored?.(previousChat);
+  };
+
+  const closeReportForm = (force = false) => {
+    if (reportSubmitting && !force) {
+      return;
+    }
+
+    setShowReportForm(false);
+    setReportReason('fake_profile');
+    setReportDetails('');
+  };
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+      if (typingIdleTimeoutRef.current) {
+        clearTimeout(typingIdleTimeoutRef.current);
+        typingIdleTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setThreadChat(normalizeChat(chat));
+  }, [chat]);
+
+  useEffect(() => {
+    userScrolledMessagesRef.current = false;
+    scrollOffsetRef.current = 0;
+  }, [chat.userId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void listPendingChatMessages(currentUserId, chat.userId)
+      .then((pendingMessages) => {
+        if (cancelled || !mountedRef.current || pendingMessages.length === 0) {
+          return;
+        }
+
+        const pendingLocalMessages = pendingMessages.map((pending) => createOptimisticMessage({
+          id: pending.clientMessageId,
+          senderId: currentUserId,
+          receiverId: pending.peerUserId,
+          text: pending.text,
+          createdAt: pending.createdAt,
+          clientStatus: 'failed',
+        }));
+        const pendingIds = new Set(pendingLocalMessages.map((message) => message.id));
+        setMessages((current) => sortMessages([
+          ...current.filter((message) => !pendingIds.has(message.id)),
+          ...pendingLocalMessages,
+        ]));
+      })
+      .catch((error) => {
+        console.warn('Pending chat messages could not be restored:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chat.userId, currentUserId]);
+
+  useEffect(() => {
+    if (!threadChat.canSend) {
+      setIsComposerFocused(false);
+      setIsKeyboardVisible(false);
+      setIsTypingForPresence(false);
+      return;
+    }
+
+    const handleKeyboardShown = () => {
+      if (mountedRef.current) {
+        setIsKeyboardVisible(true);
+      }
+    };
+
+    const handleKeyboardHidden = () => {
+      if (mountedRef.current) {
+        setIsKeyboardVisible(false);
+      }
+    };
+
+    const keyboardShowSubscription = Keyboard.addListener('keyboardDidShow', handleKeyboardShown);
+    const keyboardHideSubscription = Keyboard.addListener('keyboardDidHide', handleKeyboardHidden);
+
+    return () => {
+      keyboardShowSubscription.remove();
+      keyboardHideSubscription.remove();
+    };
+  }, [threadChat.canSend]);
+
+  const scrollToLatestMessage = (animated = true) => {
+    const scroll = () => listRef.current?.scrollToOffset({ offset: 0, animated });
+
+    requestAnimationFrame(scroll);
+  };
+
+  const isNearLatestMessage = () => scrollOffsetRef.current <= CHAT_BOTTOM_PROXIMITY_PX;
+
+  const acknowledgeThreadRead = (unreadMessages: Pick<ApiMessage, 'id'>[] = []) => {
+    const unreadIds = unreadMessages
+      .map((message) => message.id)
+      .filter((id) => !acknowledgedReadIdsRef.current.has(id));
+
+    if (unreadIds.length > 0) {
+      setMessages((current) =>
+        current.map((message) =>
+          unreadIds.includes(message.id) ? { ...message, read: true } : message,
+        ),
+      );
+
+      unreadIds.forEach((id) => {
+        acknowledgedReadIdsRef.current.add(id);
+      });
+
+      void markChatThreadRead(threadChat.userId).finally(() => {
+        unreadIds.forEach((id) => {
+          acknowledgedReadIdsRef.current.delete(id);
+        });
+      });
+    }
+
+    setThreadChat((current) => ({ ...current, unread: false }));
+    onThreadRead?.(threadChat.userId);
+  };
+
+  const syncThread = async (
+    silently = false,
+    replaceRecentPage = false,
+    useWarmCache = false,
+  ) => {
+    if (!mountedRef.current || syncInFlightRef.current) {
+      return;
+    }
+
+    syncInFlightRef.current = true;
+
+    if (!silently) {
+      setLoading(true);
+    }
+
+    try {
+      const response = useWarmCache
+        ? await preloadChatThread(currentUserId, chat.userId)
+        : await preloadChatThread(currentUserId, chat.userId, true);
+
+      if (!mountedRef.current || !response) {
+        return;
+      }
+
+      setMessages((current) => {
+        const mergedMessages = silently && !replaceRecentPage
+          ? mergeMessagesById(response.messages, current)
+          : mergeServerMessages(response.messages, current);
+
+        return mergedMessages;
+      });
+      olderMessagesCursorRef.current = response.pageInfo?.nextCursor ?? null;
+      setHasOlderMessages(Boolean(response.pageInfo?.hasMore && response.pageInfo.nextCursor));
+      setThreadChat(normalizeChat(response.chat));
+      writeChatThreadCache(currentUserId, chat.userId, response);
+
+      const unreadIncoming = response.messages.filter(
+        (message) => message.receiver_id === currentUserId && !message.read,
+      );
+
+      if (unreadIncoming.length > 0) {
+        acknowledgeThreadRead(unreadIncoming);
+        onChatUpdated?.();
+      }
+      setThreadLoadError(null);
+    } catch (error) {
+      const nextError = error instanceof Error ? error : new Error('Chat thread could not be loaded');
+      setThreadLoadError(nextError);
+      console.warn('Chat thread sync failed', {
+        userId: chat.userId,
+        code: error instanceof ApiRequestError ? error.code : 'UNKNOWN',
+        status: error instanceof ApiRequestError ? error.status : undefined,
+        requestId: error instanceof ApiRequestError ? error.requestId : undefined,
+      });
+    } finally {
+      syncInFlightRef.current = false;
+
+      if (mountedRef.current && !silently) {
+        setLoading(false);
+      }
+    }
+  };
+
+  const loadOlderMessages = async () => {
+    if (!mountedRef.current || olderMessagesInFlightRef.current || !hasOlderMessages || messages.length === 0) {
+      return;
+    }
+
+    const nextCursor = olderMessagesCursorRef.current;
+
+    if (!nextCursor) {
+      return;
+    }
+
+    olderMessagesInFlightRef.current = true;
+    setLoadingOlderMessages(true);
+
+    try {
+      const response = await getChatThread(chat.userId, {
+        cursor: nextCursor,
+        limit: CHAT_THREAD_INITIAL_PAGE_SIZE,
+      });
+
+      if (!mountedRef.current || !response) {
+        return;
+      }
+
+      setMessages((current) => {
+        const mergedMessages = mergeMessagesById(response.messages, current);
+        return mergedMessages;
+      });
+      olderMessagesCursorRef.current = response.pageInfo?.nextCursor ?? null;
+      setHasOlderMessages(Boolean(response.pageInfo?.hasMore && response.pageInfo.nextCursor));
+      setThreadLoadError(null);
+    } catch (error) {
+      Alert.alert(
+        t('data.error.title'),
+        error instanceof ApiRequestError ? t(error.userMessageKey as never) : t('data.error.generic'),
+      );
+    } finally {
+      olderMessagesInFlightRef.current = false;
+
+      if (mountedRef.current) {
+        setLoadingOlderMessages(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    userScrolledMessagesRef.current = false;
+    void syncThread(Boolean(initialCachedThread), true, true);
+
+    const channel = supabase.channel(`user-events:${currentUserId}`, {
+      config: { private: true },
+    });
+
+    const handleMessageInsert = (nextMessage: ApiMessage) => {
+      const isCurrentThread =
+        (nextMessage.sender_id === currentUserId && nextMessage.receiver_id === chat.userId) ||
+        (nextMessage.sender_id === chat.userId && nextMessage.receiver_id === currentUserId);
+
+      if (!isCurrentThread) {
+        return;
+      }
+
+      const shouldAutoScroll = isNearLatestMessage();
+      setMessages((current) => replaceOrAppendMessage(current, nextMessage));
+      setThreadChat((current) => ({
+        ...current,
+        lastMessage: nextMessage.text,
+        lastMessageTime: nextMessage.created_at,
+        unread: nextMessage.receiver_id === currentUserId ? false : current.unread,
+      }));
+
+      if (nextMessage.receiver_id === currentUserId && !nextMessage.read) {
+        acknowledgeThreadRead([nextMessage]);
+      }
+
+      if (shouldAutoScroll) {
+        scrollToLatestMessage();
+      }
+      onChatUpdated?.();
+    };
+
+    channel.on('broadcast', { event: 'chat_changed' }, ({ payload }) => {
+      const nextMessage = (payload as { message?: ApiMessage } | null)?.message;
+
+      if (nextMessage) {
+        handleMessageInsert(nextMessage);
+        return;
+      }
+
+      void syncThread(true);
+    });
+
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED' && !cancelled) {
+        void syncThread(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      void supabase.removeChannel(channel);
+    };
+  }, [chat.userId, currentUserId]);
+
+  useEffect(() => {
+    if (
+      messages.length > CHAT_THREAD_INITIAL_PAGE_SIZE ||
+      !hasChatThreadCache(currentUserId, chat.userId)
+    ) {
+      return;
+    }
+
+    writeChatThreadCache(currentUserId, chat.userId, {
+      chat: threadChat,
+      messages,
+      pageInfo: {
+        hasMore: hasOlderMessages,
+        nextCursor: olderMessagesCursorRef.current,
+      },
+    });
+  }, [chat.userId, currentUserId, hasOlderMessages, messages, threadChat]);
+
+  const handleInputChange = (nextValue: string) => {
+    setInputText(nextValue);
+
+    if (typingIdleTimeoutRef.current) {
+      clearTimeout(typingIdleTimeoutRef.current);
+      typingIdleTimeoutRef.current = null;
+    }
+
+    if (!nextValue.trim()) {
+      setIsTypingForPresence(false);
+      return;
+    }
+
+    setIsTypingForPresence(true);
+    typingIdleTimeoutRef.current = setTimeout(() => {
+      setIsTypingForPresence(false);
+      typingIdleTimeoutRef.current = null;
+    }, TYPING_IDLE_TIMEOUT_MS);
+  };
+
+  const dismissComposer = () => {
+    if (!isComposerFocused && !isKeyboardVisible) {
+      return;
+    }
+
+    Keyboard.dismiss();
+    setIsComposerFocused(false);
+  };
+
+  const submitMessage = async (text: string, optimisticId?: string) => {
+    const previousChat = threadChat;
+    const localId = optimisticId ?? `temp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const optimisticMessage = createOptimisticMessage({
+      id: localId,
+      senderId: currentUserId,
+      receiverId: threadChat.userId,
+      text,
+    });
+
+    setMessages((current) => {
+      if (optimisticId) {
+        return sortMessages(
+          current.map((message) => (message.id === optimisticId ? optimisticMessage : message)),
+        );
+      }
+
+      return sortMessages([...current, optimisticMessage]);
+    });
+    setThreadChat((current) => ({
+      ...current,
+      lastMessage: text,
+      lastMessageTime: optimisticMessage.created_at,
+      hasConversationActivity: true,
+    }));
+    onChatPatched?.(threadChat.userId, {
+      lastMessage: text,
+      lastMessageTime: optimisticMessage.created_at,
+      hasConversationActivity: true,
+    });
+    scrollToLatestMessage();
+
+    try {
+      await enqueuePendingChatMessage(currentUserId, {
+        clientMessageId: localId,
+        peerUserId: threadChat.userId,
+        text,
+        createdAt: optimisticMessage.created_at,
+      });
+      const createdMessage = await sendMessage(threadChat.userId, text, localId);
+      await removePendingChatMessage(currentUserId, localId);
+
+      if (!mountedRef.current) {
+        return;
+      }
+
+      setMessages((current) => replaceOrAppendMessage(current, createdMessage, localId));
+      setThreadChat((current) => ({
+        ...current,
+        lastMessage: createdMessage.text,
+        lastMessageTime: createdMessage.created_at,
+        hasConversationActivity: true,
+      }));
+      onChatPatched?.(threadChat.userId, {
+        lastMessage: createdMessage.text,
+        lastMessageTime: createdMessage.created_at,
+        hasConversationActivity: true,
+      });
+      onChatUpdated?.();
+    } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === localId ? { ...message, clientStatus: 'failed' } : message,
+        ),
+      );
+      restoreThreadChat(previousChat);
+
+      Alert.alert(
+        t('chat.modal.alert.sendFailed.title'),
+        error instanceof Error ? error.message : t('chat.modal.alert.sendFailed.fallback'),
+      );
+    }
+  };
+
+  const handleSend = async () => {
+    const text = inputText.trim();
+
+    if (!threadChat.canSend) {
+      Alert.alert(t('chat.modal.alert.cannotSend.title'), threadChat.lockedReason ?? t('chat.modal.locked.default'));
+      return;
+    }
+
+    const validationMessage = validateMessageText(text);
+    if (validationMessage) {
+      Alert.alert(t('chat.modal.alert.sendFailed.title'), validationMessage);
+      return;
+    }
+
+    setInputText('');
+    if (typingIdleTimeoutRef.current) {
+      clearTimeout(typingIdleTimeoutRef.current);
+      typingIdleTimeoutRef.current = null;
+    }
+    setIsTypingForPresence(false);
+    await submitMessage(text);
+  };
+
+  const handleRetryMessage = (message: LocalChatMessage) => {
+    if (message.clientStatus !== 'failed') {
+      return;
+    }
+
+    void submitMessage(message.text, message.id);
+  };
+
+  const handleSettingsChange = async (nextSettings: ChatSettings) => {
+    const previousSettings = threadChat.settings;
+
+    setThreadChat((current) => ({
+      ...current,
+      settings: nextSettings,
+    }));
+    onChatPatched?.(threadChat.userId, { settings: nextSettings });
+    setSavingSettings(true);
+
+    try {
+      const savedSettings = await updateChatSettings(threadChat.userId, nextSettings);
+
+      if (!mountedRef.current) {
+        return;
+      }
+
+      setThreadChat((current) => ({
+        ...current,
+        settings: savedSettings,
+      }));
+      onChatPatched?.(threadChat.userId, { settings: savedSettings });
+      onChatUpdated?.();
+    } catch (error) {
+      if (!mountedRef.current) {
+        return;
+      }
+
+      setThreadChat((current) => ({
+        ...current,
+        settings: previousSettings,
+      }));
+      onChatPatched?.(threadChat.userId, { settings: previousSettings });
+
+      Alert.alert(
+        t('chat.modal.alert.settingsFailed'),
+        error instanceof Error ? error.message : t('chat.modal.alert.sendFailed.fallback'),
+      );
+    } finally {
+      if (mountedRef.current) {
+        setSavingSettings(false);
+      }
+    }
+  };
+
+  const refreshAfterMutation = () => {
+    void syncThread(true);
+    onChatUpdated?.();
+  };
+
+  const handleEndConversation = () => {
+    if (threadChat.ended || actionBusy) {
+      return;
+    }
+
+    Alert.alert(
+      t('chat.modal.alert.end.title'),
+      t('chat.modal.alert.end.description'),
+      [
+        { text: t('chat.modal.alert.cancel'), style: 'cancel' },
+        {
+          text: t('chat.modal.alert.end.confirm'),
+          style: 'destructive',
+          onPress: async () => {
+            const previousChat = threadChat;
+            const endedPatch: ChatPatch = {
+              status: 'ended',
+              ended: true,
+              canSend: false,
+              lockedReason: t('chat.modal.locked.default'),
+            };
+
+            setActionBusy(true);
+            setShowMenu(false);
+            applyThreadPatch(endedPatch);
+
+            try {
+              await endChat(currentUserId, threadChat.userId);
+              refreshAfterMutation();
+            } catch (error) {
+              restoreThreadChat(previousChat);
+              Alert.alert(
+                t('chat.modal.alert.end.failed'),
+                error instanceof Error ? error.message : t('chat.modal.alert.sendFailed.fallback'),
+              );
+            } finally {
+              if (mountedRef.current) {
+                setActionBusy(false);
+              }
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const executeDeleteFlow = async (mode: 'end' | 'block') => {
+    const previousChat = threadChat;
+    const targetUserId = threadChat.userId;
+
+    setActionBusy(true);
+    setShowMenu(false);
+    deleteChatThreadCache(currentUserId, chat.userId);
+    onChatDeleted?.(targetUserId);
+    onClose();
+
+    try {
+      await deleteChat(targetUserId, mode);
+      onChatUpdated?.();
+    } catch (error) {
+      onChatRestored?.(previousChat);
+      Alert.alert(
+        t('chat.modal.alert.action.failed'),
+        error instanceof Error ? error.message : t('chat.modal.alert.sendFailed.fallback'),
+      );
+    } finally {
+      if (mountedRef.current) {
+        setActionBusy(false);
+      }
+    }
+  };
+
+  const handleHideConversation = () => {
+    if (actionBusy) {
+      return;
+    }
+
+    Alert.alert(t('chat.modal.alert.delete.title'), t('chat.modal.alert.delete.description'), [
+      { text: t('chat.modal.alert.cancel'), style: 'cancel' },
+      {
+        text: t('chat.modal.alert.delete.endAndRemove'),
+        style: 'destructive',
+        onPress: () => {
+          void executeDeleteFlow('end');
+        },
+      },
+      {
+        text: t('chat.modal.alert.delete.blockAndRemove'),
+        style: 'destructive',
+        onPress: () => {
+          void executeDeleteFlow('block');
+        },
+      },
+    ]);
+  };
+
+  const handleToggleBlock = () => {
+    if (actionBusy) {
+      return;
+    }
+
+    const isBlockedByMe = threadChat.blockedByMe;
+    const title = isBlockedByMe ? t('chat.modal.alert.block.removeTitle') : t('chat.modal.alert.block.addTitle');
+    const message = isBlockedByMe
+      ? t('chat.modal.alert.block.removeDescription')
+      : t('chat.modal.alert.block.addDescription', { name: threadChat.user.name });
+
+    Alert.alert(title, message, [
+      { text: t('chat.modal.alert.cancel'), style: 'cancel' },
+      {
+        text: isBlockedByMe ? t('chat.modal.alert.block.removeConfirm') : t('chat.modal.alert.block.addConfirm'),
+        style: isBlockedByMe ? 'default' : 'destructive',
+        onPress: async () => {
+          const previousChat = threadChat;
+          const nextPatch: ChatPatch = isBlockedByMe
+            ? {
+                blockedByMe: false,
+                isBlocked: threadChat.blockedByOther,
+                canSend: !threadChat.ended && !threadChat.blockedByOther,
+                status: !threadChat.ended && !threadChat.blockedByOther ? 'active' : threadChat.status,
+                lockedReason:
+                  threadChat.ended || threadChat.blockedByOther
+                    ? threadChat.lockedReason
+                    : null,
+              }
+            : {
+                blockedByMe: true,
+                isBlocked: true,
+                canSend: false,
+                lockedReason: t('chat.modal.locked.default'),
+              };
+
+          setActionBusy(true);
+          setShowMenu(false);
+          applyThreadPatch(nextPatch);
+
+          try {
+            if (isBlockedByMe) {
+              await unblockUser(threadChat.userId);
+            } else {
+              await blockUser(threadChat.userId);
+            }
+
+            refreshAfterMutation();
+          } catch (error) {
+            restoreThreadChat(previousChat);
+            Alert.alert(
+              isBlockedByMe ? t('chat.modal.alert.block.removeFailed') : t('chat.modal.alert.block.addFailed'),
+              error instanceof Error ? error.message : t('chat.modal.alert.sendFailed.fallback'),
+            );
+          } finally {
+            if (mountedRef.current) {
+              setActionBusy(false);
+            }
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleReportSubmit = async () => {
+    const normalizedDetails = reportDetails.trim();
+
+    if (normalizedDetails.length < MIN_REPORT_DETAILS_LENGTH) {
+      Alert.alert(t('profile.report.validation.title'), t('profile.report.validation.detailsMin'));
+      return;
+    }
+
+    setReportSubmitting(true);
+
+    try {
+      await submitUserReport({
+        targetUserId: threadChat.userId,
+        reasonCode: reportReason,
+        details: normalizedDetails,
+        matchContext: threadChat.matchContext ?? null,
+        clientContext: {
+          platform: Platform.OS,
+          appVersion: Application.nativeApplicationVersion ?? null,
+          buildVersion: Application.nativeBuildVersion ?? null,
+          blockedByReporter: threadChat.blockedByMe,
+          reportedFrom: 'chat_modal',
+          reportedAt: new Date().toISOString(),
+        },
+      });
+
+      closeReportForm(true);
+      Alert.alert(t('profile.report.successTitle'), t('profile.report.successDescription'));
+    } catch (error) {
+      Alert.alert(
+        t('profile.report.errorTitle'),
+        error instanceof Error && error.message.trim().length > 0
+          ? error.message
+          : t('profile.report.errorDescription'),
+      );
+    } finally {
+      if (mountedRef.current) {
+        setReportSubmitting(false);
+      }
+    }
+  };
+
+  const photo = threadChat.user.photos.find((item) => item.trim().length > 0) ?? null;
+  const showLoadingSkeleton = loading && messages.length === 0;
+  const showThreadError = !loading && messages.length === 0 && threadLoadError != null;
+  const showPlaceholder = !loading && messages.length === 0 && !showThreadError;
+  const composerBottomPadding =
+    Platform.OS === 'ios'
+      ? Math.max(insets.bottom, 10)
+      : isKeyboardVisible
+        ? 8
+        : Math.max(insets.bottom, 10);
+  const statusContent = useMemo(() => {
+    if (threadChat.ended) {
+      return null;
+    }
+
+    if (peerPresence.isTyping) {
+      return <TypingDots label={t('chat.modal.header.typing')} />;
+    }
+
+    if (!threadChat.peerSettings.onlineStatus) {
+      return null;
+    }
+
+    return (
+      <Text
+        numberOfLines={2}
+        style={[styles.statusText, peerPresence.isOnline ? styles.statusTextOnline : styles.statusTextOffline]}
+      >
+        {peerPresence.isOnline ? t('chat.modal.header.online') : t('chat.modal.header.offline')}
+      </Text>
+    );
+  }, [peerPresence.isOnline, peerPresence.isTyping, t, threadChat.ended, threadChat.peerSettings.onlineStatus, threadChat.peerSettings.typingIndicator]);
+
+  return (
+    <AccessibleModal visible animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        accessibilityViewIsModal
+        importantForAccessibility="yes"
+        style={styles.container}
+        behavior="padding"
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 6 : 0}
+      >
+        <SafeAreaView edges={['top']} style={styles.safeArea}>
+          <View accessibilityViewIsModal style={styles.header}>
+            <View style={styles.headerLeft}>
+              <Pressable accessibilityRole="button" accessibilityLabel={t('common.back')} onPress={onClose} style={styles.iconButton}>
+                <MaterialCommunityIcons name="chevron-left" size={22} color={theme.colors.text} />
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('a11y.openProfile', { name: threadChat.user.name })}
+                accessibilityState={{ disabled: threadChat.isBlocked }}
+                disabled={threadChat.isBlocked}
+                onPress={() => {
+                  if (threadChat.isBlocked) {
+                    Alert.alert(
+                      t('chat.modal.profile.hidden.title'),
+                      t('chat.modal.profile.hidden.description'),
+                    );
+                    return;
+                  }
+
+                  onProfileClick?.();
+                }}
+                style={styles.profileButton}
+              >
+                {photo ? (
+                  <Image
+                    accessible={false}
+                    cachePolicy="memory-disk"
+                    contentFit="cover"
+                    recyclingKey={photo}
+                    source={{ uri: photo }}
+                    style={styles.avatar}
+                    transition={120}
+                  />
+                ) : (
+                  <View accessible={false} style={[styles.avatar, styles.avatarPlaceholder]}>
+                    <MaterialCommunityIcons accessible={false} name="account-outline" size={20} color={theme.colors.primarySoft} />
+                  </View>
+                )}
+
+                <View style={styles.profileText}>
+                  <Text numberOfLines={2} style={styles.name}>
+                    {threadChat.user.name}
+                  </Text>
+                  <Text numberOfLines={2} style={styles.username}>
+                    {threadChat.user.username}
+                  </Text>
+                  {statusContent}
+                </View>
+              </Pressable>
+            </View>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t('a11y.chatMenu')}
+              accessibilityState={{ expanded: showMenu }}
+              onPress={() => setShowMenu((value) => !value)}
+              style={styles.iconButton}
+            >
+              <MaterialCommunityIcons name="dots-vertical" size={20} color={theme.colors.text} />
+            </Pressable>
+          </View>
+
+          {showMenu ? (
+            <View accessibilityRole="menu" style={styles.menu}>
+              <Pressable
+                accessibilityRole="menuitem"
+                onPress={() => {
+                  setShowMenu(false);
+                  setShowSettings(true);
+                }}
+                style={styles.menuItem}
+              >
+                <MaterialCommunityIcons name="tune-variant" size={16} color={theme.colors.info} />
+                <Text style={styles.menuText}>{t('chat.modal.menu.settings')}</Text>
+              </Pressable>
+
+              {!threadChat.ended && !threadChat.isBlocked ? (
+                <Pressable accessibilityRole="menuitem" onPress={handleEndConversation} style={styles.menuItem}>
+                  <MaterialCommunityIcons name="message-lock-outline" size={16} color={theme.colors.warning} />
+                  <Text style={styles.menuText}>{t('chat.modal.menu.endMatch')}</Text>
+                </Pressable>
+              ) : null}
+
+              <Pressable accessibilityRole="menuitem" onPress={handleHideConversation} style={styles.menuItem}>
+                <MaterialCommunityIcons name="trash-can-outline" size={16} color={theme.colors.warning} />
+                <Text style={styles.menuText}>{t('chat.modal.menu.delete')}</Text>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="menuitem"
+                onPress={() => {
+                  setShowMenu(false);
+                  setShowReportForm(true);
+                }}
+                style={styles.menuItem}
+              >
+                <MaterialCommunityIcons name="alert-circle-outline" size={16} color={theme.colors.warning} />
+                <Text style={styles.menuText}>{t('profile.menu.report.label')}</Text>
+              </Pressable>
+
+              {threadChat.blockedByMe ? (
+                <Pressable accessibilityRole="menuitem" onPress={handleToggleBlock} style={styles.menuItem}>
+                  <MaterialCommunityIcons name="lock-open-variant-outline" size={16} color={theme.colors.info} />
+                  <Text style={styles.menuText}>{t('chat.modal.menu.unblock')}</Text>
+                </Pressable>
+              ) : !threadChat.blockedByOther ? (
+                <Pressable accessibilityRole="menuitem" onPress={handleToggleBlock} style={styles.menuItem}>
+                  <MaterialCommunityIcons name="block-helper" size={16} color={theme.colors.warning} />
+                  <Text style={styles.menuText}>{t('chat.modal.menu.block')}</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
+
+          <FlatList
+            ref={listRef}
+            data={messages}
+            inverted
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={[
+              styles.messages,
+              (showPlaceholder || showThreadError) && styles.messagesEmpty,
+              showLoadingSkeleton && styles.messagesLoading,
+            ]}
+            keyboardShouldPersistTaps="never"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            initialNumToRender={CHAT_THREAD_INITIAL_PAGE_SIZE}
+            maxToRenderPerBatch={12}
+            windowSize={7}
+            maintainVisibleContentPosition={CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION}
+            onTouchStart={dismissComposer}
+            onScrollBeginDrag={() => {
+              userScrolledMessagesRef.current = true;
+              dismissComposer();
+            }}
+            onScroll={(event) => {
+              scrollOffsetRef.current = Math.max(0, event.nativeEvent.contentOffset.y);
+            }}
+            onEndReached={() => {
+              if (userScrolledMessagesRef.current && !loading && !loadingOlderMessages) {
+                void loadOlderMessages();
+              }
+            }}
+            onEndReachedThreshold={0.2}
+            scrollEventThrottle={32}
+            ListFooterComponent={
+              loadingOlderMessages ? (
+                <View style={styles.loadingOlder}>
+                  <ActivityIndicator color={theme.colors.primarySoft} />
+                </View>
+              ) : null
+            }
+            renderItem={({ item }) => {
+              const isOwn = item.sender_id === currentUserId;
+
+              return (
+                <View style={[styles.messageRow, isOwn ? styles.messageRowOwn : styles.messageRowOther]}>
+                  <ChatMessageBubble
+                    message={item}
+                    isOwn={isOwn}
+                    canShowReadReceipt={threadChat.peerSettings.readReceipts}
+                    failedLabel={t('chat.modal.retry.failed')}
+                    onRetry={isOwn ? () => handleRetryMessage(item) : undefined}
+                  />
+                </View>
+              );
+            }}
+            ListEmptyComponent={
+              showLoadingSkeleton ? (
+                <MessageThreadSkeleton />
+              ) : showThreadError ? (
+                <DataState
+                  state="fatal-error"
+                  title={t('data.error.title')}
+                  description={
+                    threadLoadError instanceof ApiRequestError
+                      ? t(threadLoadError.userMessageKey as never)
+                      : t('data.error.generic')
+                  }
+                  actionLabel={t('data.action.retry')}
+                  onAction={() => void syncThread(false)}
+                />
+              ) : showPlaceholder ? (
+                <View style={styles.emptyState}>
+                  <View style={styles.emptyIcon}>
+                    <MaterialCommunityIcons name="heart" size={28} color={theme.colors.primarySoft} />
+                  </View>
+                  <Text style={styles.emptyTitle}>{t('chat.modal.empty.title')}</Text>
+                  <Text style={styles.emptyDescription}>
+                    {threadChat.canSend ? t('chat.modal.empty.description.start') : t('chat.modal.empty.description.locked')}
+                  </Text>
+                </View>
+              ) : null
+            }
+          />
+
+          {threadChat.canSend ? (
+            <View style={[styles.inputSafeArea, { paddingBottom: composerBottomPadding }]}>
+              <View style={styles.inputRow}>
+                <TextInput
+                  value={inputText}
+                  onChangeText={handleInputChange}
+                  onFocus={() => {
+                    setIsComposerFocused(true);
+                  }}
+                  onBlur={() => {
+                    setIsComposerFocused(false);
+                  }}
+                  placeholder={t('chat.modal.input.placeholder')}
+                  accessibilityLabel={t('chat.modal.input.placeholder')}
+                  placeholderTextColor={theme.colors.textSoft}
+                  maxLength={MAX_MESSAGE_LENGTH}
+                  style={styles.input}
+                  returnKeyType="send"
+                  onSubmitEditing={() => void handleSend()}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('a11y.sendMessage')}
+                  accessibilityState={{ disabled: !inputText.trim() }}
+                  onPress={() => void handleSend()}
+                  disabled={!inputText.trim()}
+                  style={[styles.sendButton, !inputText.trim() && styles.sendButtonDisabled]}
+                >
+                  <MaterialCommunityIcons name="send" size={18} color={theme.colors.white} />
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <View style={[styles.inputSafeArea, { paddingBottom: composerBottomPadding }]}>
+              <View style={[styles.lockedNotice, threadChat.isBlocked ? styles.lockedNoticeDanger : styles.lockedNoticeMuted]}>
+                <MaterialCommunityIcons
+                  name={threadChat.isBlocked ? 'block-helper' : 'message-lock-outline'}
+                  size={18}
+                  color={threadChat.isBlocked ? theme.colors.dangerText : theme.colors.textMuted}
+                />
+                <Text style={styles.lockedText}>
+                  {threadChat.lockedReason ?? t('chat.modal.locked.default')}
+                </Text>
+              </View>
+            </View>
+          )}
+        </SafeAreaView>
+      </KeyboardAvoidingView>
+
+        {showSettings ? (
+          <ChatSettingsModal
+            value={threadChat.settings}
+          saving={savingSettings}
+          onClose={() => setShowSettings(false)}
+          onChange={(nextSettings) => {
+            void handleSettingsChange(nextSettings);
+          }}
+          />
+        ) : null}
+
+      {showReportForm ? (
+        <View style={styles.reportOverlay}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.reportCard}
+          >
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={styles.reportContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.reportHeader}>
+                <Text style={styles.reportTitle}>{t('profile.report.sheet.title')}</Text>
+                <Text style={styles.reportSubtitle}>{t('profile.report.sheet.description')}</Text>
+              </View>
+
+              <View style={styles.reasonGrid}>
+                {REPORT_REASON_OPTIONS.map((reason) => {
+                  const selected = reportReason === reason;
+
+                  return (
+                    <Pressable
+                      key={reason}
+                      accessibilityRole="radio"
+                      accessibilityLabel={t(`profile.report.reason.${reason}`)}
+                      accessibilityState={{ checked: selected }}
+                      onPress={() => setReportReason(reason)}
+                      style={[styles.reasonChip, selected && styles.reasonChipActive]}
+                    >
+                      <Text style={[styles.reasonChipText, selected && styles.reasonChipTextActive]}>
+                        {t(`profile.report.reason.${reason}`)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <View style={styles.detailsSection}>
+                <Text style={styles.detailsLabel}>{t('profile.report.detailsLabel')}</Text>
+                <TextInput
+                  multiline
+                  maxLength={MAX_REPORT_DETAILS_LENGTH}
+                  editable={!reportSubmitting}
+                  accessibilityLabel={t('profile.report.detailsLabel')}
+                  accessibilityHint={t('profile.report.detailsPlaceholder')}
+                  placeholder={t('profile.report.detailsPlaceholder')}
+                  placeholderTextColor={theme.colors.textSoft}
+                  style={styles.detailsInput}
+                  textAlignVertical="top"
+                  value={reportDetails}
+                  onChangeText={setReportDetails}
+                />
+                <Text style={styles.detailsCounter}>
+                  {reportDetails.trim().length}/{MAX_REPORT_DETAILS_LENGTH}
+                </Text>
+              </View>
+
+              <View style={styles.reportActions}>
+                <AppButton title={t('profile.report.submit')} onPress={() => void handleReportSubmit()} loading={reportSubmitting} />
+                <AppButton title={t('common.cancel')} onPress={closeReportForm} variant="secondary" />
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </View>
+      ) : null}
+    </AccessibleModal>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  safeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  loadingOlder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  header: {
+    minHeight: 66,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+    backgroundColor: theme.colors.backgroundElevated,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+  },
+  headerLeft: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  iconButton: {
+    minWidth: theme.layout.controlMinUnified,
+    minHeight: theme.layout.controlMinUnified,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileButton: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  avatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    backgroundColor: theme.colors.surface,
+  },
+  avatarPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.primarySurface,
+    borderWidth: 1,
+    borderColor: theme.alpha.brand18,
+  },
+  profileText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  name: {
+    color: theme.colors.text,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  username: {
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.roles.meta.fontSize,
+    lineHeight: theme.typography.roles.meta.lineHeight,
+    fontWeight: '600',
+  },
+  statusText: {
+    fontSize: theme.typography.roles.meta.fontSize,
+    lineHeight: theme.typography.roles.meta.lineHeight,
+    fontWeight: '700',
+  },
+  statusTextOnline: {
+    color: theme.colors.successText,
+  },
+  statusTextOffline: {
+    color: theme.colors.textSoft,
+  },
+  menu: {
+    position: 'absolute',
+    top: 76,
+    right: 12,
+    zIndex: 20,
+    minWidth: 220,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    overflow: 'hidden',
+  },
+  menuItem: {
+    minHeight: theme.layout.controlMinUnified,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  menuText: {
+    color: theme.colors.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  reportOverlay: {
+    zIndex: 24,
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: theme.colors.scrim,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+  },
+  reportCard: {
+    maxHeight: '82%',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    overflow: 'hidden',
+  },
+  reportContent: {
+    padding: 16,
+    gap: 16,
+  },
+  reportHeader: {
+    gap: 6,
+  },
+  reportTitle: {
+    color: theme.colors.text,
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  reportSubtitle: {
+    color: theme.colors.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  reasonGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  reasonChip: {
+    minHeight: theme.layout.controlMinUnified,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: theme.colors.surface,
+  },
+  reasonChipActive: {
+    borderColor: theme.colors.warningText,
+    backgroundColor: theme.colors.warningSurface,
+  },
+  reasonChipText: {
+    color: theme.colors.textSoft,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  reasonChipTextActive: {
+    color: theme.colors.warningText,
+  },
+  detailsSection: {
+    gap: 8,
+  },
+  detailsLabel: {
+    color: theme.colors.text,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  detailsInput: {
+    minHeight: 148,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    color: theme.colors.text,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: theme.typography.body,
+    lineHeight: 21,
+  },
+  detailsCounter: {
+    color: theme.colors.textSoft,
+    fontSize: theme.typography.roles.meta.fontSize,
+    lineHeight: theme.typography.roles.meta.lineHeight,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  reportActions: {
+    gap: 10,
+  },
+  messages: {
+    flexGrow: 1,
+    padding: 14,
+    gap: 8,
+  },
+  messagesEmpty: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  messagesLoading: {
+    flex: 1,
+  },
+  messageRow: {
+    flexDirection: 'row',
+  },
+  messageRowOwn: {
+    justifyContent: 'flex-end',
+  },
+  messageRowOther: {
+    justifyContent: 'flex-start',
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingHorizontal: 22,
+    gap: 7,
+  },
+  emptyIcon: {
+    width: 62,
+    height: 62,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.primarySurface,
+    marginBottom: 6,
+  },
+  emptyTitle: {
+    color: theme.colors.text,
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  emptyDescription: {
+    color: theme.colors.textMuted,
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  inputSafeArea: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    backgroundColor: theme.colors.backgroundElevated,
+  },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  input: {
+    flex: 1,
+    minHeight: theme.layout.controlMinUnified,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    color: theme.colors.text,
+    paddingHorizontal: 14,
+    fontSize: theme.typography.body,
+    lineHeight: 21,
+  },
+  sendButton: {
+    minWidth: theme.layout.controlMinUnified,
+    minHeight: theme.layout.controlMinUnified,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.primary,
+  },
+  sendButtonDisabled: {
+    backgroundColor: theme.colors.disabledSurface,
+  },
+  lockedNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginHorizontal: 12,
+    marginVertical: 10,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  lockedNoticeMuted: {
+    backgroundColor: theme.colors.surface,
+  },
+  lockedNoticeDanger: {
+    backgroundColor: theme.colors.dangerSurface,
+  },
+  lockedText: {
+    flex: 1,
+    color: theme.colors.text,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+});

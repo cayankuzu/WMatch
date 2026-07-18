@@ -1,0 +1,123 @@
+{
+  "expo": {
+    "name": "WMatch",
+    "slug": "wmatch",
+    "version": "1.0.36",
+    "icon": "./assets/branding/icon-wm-normalized.png",
+    "orientation": "default",
+    "userInterfaceStyle": "dark",
+    "scheme": "wmatch",
+    "ios": {
+      "bundleIdentifier": "com.wmatch.app",
+      "buildNumber": "39",
+      "googleServicesFile": "./firebase/GoogleService-Info.plist",
+      "supportsTablet": true,
+      "associatedDomains": [
+        "applinks:cayankuzu.github.io"
+      ],
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSPhotoLibraryUsageDescription": "WMatch profil fotoğrafı seçebilmek için galerine erişir.",
+        "NSLocationWhenInUseUsageDescription": "WMatch mesafe filtreleri ve yakınındaki eşleşmeler için konumunu kullanır."
+      },
+      "privacyManifests": {
+        "NSPrivacyAccessedAPITypes": [
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+            "NSPrivacyAccessedAPITypeReasons": [
+              "CA92.1"
+            ]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+            "NSPrivacyAccessedAPITypeReasons": [
+              "C617.1"
+            ]
+          }
+        ]
+      }
+    },
+    "android": {
+      "package": "com.wmatch.app",
+      "versionCode": 37,
+      "googleServicesFile": "./firebase/google-services.json",
+      "predictiveBackGestureEnabled": true,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/branding/icon-wm-normalized.png",
+        "backgroundColor": "#000000"
+      },
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "cayankuzu.github.io",
+              "pathPrefix": "/WMatch_web/auth"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
+    },
+    "web": {
+      "favicon": "./assets/branding/icon-wm-normalized.png"
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "WMatch profil fotoğrafı seçebilmek için galerine erişir.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "WMatch mesafe filtreleri ve yakınındaki eşleşmeler için konumunu kullanır."
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/branding/notification-icon.png",
+          "color": "#e10613",
+          "defaultChannel": "default",
+          "enableBackgroundRemoteNotifications": true
+        }
+      ],
+      "expo-dev-client",
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/branding/splash-logo-main.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#000000"
+        }
+      ],
+      "expo-secure-store",
+      "expo-image",
+      "@sentry/react-native",
+      "expo-asset"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    },
+    "extra": {
+      "eas": {
+        "projectId": "0aa025b7-dd97-4ad9-951c-3864e0beb8fc"
+      }
+    },
+    "owner": "cayan"
+  }
+}

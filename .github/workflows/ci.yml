@@ -1,0 +1,102 @@
+name: CI
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf # v2.1.1
+        with:
+          version: 2.109.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      - name: Generate dependency SBOM
+        run: npm sbom --sbom-format cyclonedx > "${RUNNER_TEMP}/wmatch-sbom.json"
+
+      - name: Dependency license and integrity guard
+        run: npm run check:licenses
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Source quality guard
+        run: npm run lint
+
+      - name: Signing identity guard
+        run: npm run check:signing
+
+      - name: Private secret guard
+        run: npm run check:secrets
+
+      - name: i18n parity
+        run: npm run check:i18n
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Edge contract guard
+        run: npm run check:edge
+
+      - name: Edge Function typecheck
+        run: npm run check:edge:type
+
+      - name: Migration static guard
+        run: npm run check:migrations
+
+      - name: Start clean Supabase database
+        run: supabase db start
+
+      - name: RLS attack matrix
+        run: npm run test:rls
+
+      - name: Replay migrations twice
+        run: |
+          supabase db reset --local --no-seed
+          supabase db reset --local --no-seed
+
+      - name: Verify migration schema diff
+        shell: bash
+        run: |
+          schema_diff="$(supabase db diff --from migrations --to local --schema public,storage,realtime)"
+          test -z "$schema_diff" || { echo "$schema_diff"; exit 1; }
+
+      - name: Expo dependency check
+        run: npx expo install --check
+
+      - name: Expo doctor
+        run: npm run doctor

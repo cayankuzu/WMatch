@@ -1,0 +1,28 @@
+{
+  "cli": {
+    "version": ">= 20.5.1",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "production": {
+      "android": {
+        "credentialsSource": "local",
+        "buildType": "app-bundle"
+      },
+      "ios": {
+        "credentialsSource": "local"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "android": {
+        "serviceAccountKeyPath": ".secrets/firebase-admin/mwatch-69a6f-firebase-adminsdk-fbsvc-dbceb2e0a2.json"
+      },
+      "ios": {
+        "ascAppId": "6779453259",
+        "appleTeamId": "HBRG8P523Z"
+      }
+    }
+  }
+}

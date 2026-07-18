@@ -1,0 +1,57 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@supabase/supabase-js@2.107.0": "2.107.0"
+  },
+  "jsr": {
+    "@supabase/supabase-js@2.107.0": {
+      "integrity": "e28d6ef6e79200417b4838a0051066c44170a1de7cccc8b00a671947b72ba0e3"
+    }
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@expo/vector-icons@15.1.1",
+        "npm:@react-native-async-storage/async-storage@2.2.0",
+        "npm:@react-native-community/slider@5.2.0",
+        "npm:@sentry/react-native@7.11",
+        "npm:@supabase/supabase-js@2.107.0",
+        "npm:@testing-library/react-native@^14.0.1",
+        "npm:@types/jest@29.5.14",
+        "npm:@types/node@^26.1.1",
+        "npm:@types/nodemailer@8.0.1",
+        "npm:@types/react@19.2.17",
+        "npm:deno@2.9.3",
+        "npm:expo-asset@~56.0.20",
+        "npm:expo-dev-client@~56.0.23",
+        "npm:expo-device@~56.0.4",
+        "npm:expo-font@~56.0.7",
+        "npm:expo-image-manipulator@~56.0.22",
+        "npm:expo-image-picker@~56.0.21",
+        "npm:expo-image@~56.0.11",
+        "npm:expo-linear-gradient@56.0.4",
+        "npm:expo-linking@~56.0.15",
+        "npm:expo-location@~56.0.21",
+        "npm:expo-notifications@~56.0.21",
+        "npm:expo-secure-store@~56.0.4",
+        "npm:expo-splash-screen@~56.0.13",
+        "npm:expo-status-bar@56.0.4",
+        "npm:expo@~56.0.16",
+        "npm:hono@4.12.30",
+        "npm:jest-expo@~56.0.5",
+        "npm:jest@29.7",
+        "npm:nodemailer@9.0.3",
+        "npm:react-native-safe-area-context@5.7",
+        "npm:react-native-url-polyfill@3.0.0",
+        "npm:react-native@0.85.3",
+        "npm:react@19.2.3",
+        "npm:supabase@2.109.1",
+        "npm:typescript@6.0.3",
+        "npm:vitest@^4.1.10"
+      ],
+      "overrides": {
+        "uuid": "^11.1.1"
+      }
+    }
+  }
+}
