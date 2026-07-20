@@ -483,8 +483,8 @@ function redactPayload(payload: string) {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = await getAuthHeaders();
+async function request<T>(path: string, init?: RequestInit, authHeaders?: HeadersInit): Promise<T> {
+  const headers = authHeaders ?? await getAuthHeaders();
   const method = getRequestMethod(init);
   const requestHeaders = new Headers(headers);
   const clientRequestId = createClientRequestId();
@@ -565,6 +565,39 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return parseJsonPayload<T>(rawPayload, responseRequestId, path);
 }
 
+function invalidateReadCache(prefixes: string[]) {
+  if (prefixes.length === 0) {
+    return;
+  }
+
+  readCacheMap.forEach((_value, scopedKey) => {
+    const path = scopedKey.slice(scopedKey.indexOf(':') + 1);
+    if (prefixes.some((prefix) => path.startsWith(prefix))) {
+      readCacheMap.delete(scopedKey);
+    }
+  });
+}
+
+function getMutationInvalidationPrefixes(key: string) {
+  if (/^(like|unlike|undo-like|reject-like|restore-like):/.test(key)) {
+    return ['/discovery', '/likes', '/matches', '/chats', '/swipe-quota', '/watch/live-now'];
+  }
+
+  if (/^(match-status|hide-chat|delete-chat|chat-settings|block-user|unblock-user):/.test(key)) {
+    return ['/chats', '/messages', '/matches', '/discovery', '/users', '/watch/live-now'];
+  }
+
+  if (key.startsWith('mark-thread-read:')) {
+    return ['/chats'];
+  }
+
+  if (/^(push-token|push-token-delete|report):/.test(key)) {
+    return [];
+  }
+
+  return ['/'];
+}
+
 async function runSingleFlight<T>(key: string, task: () => Promise<T>) {
   const existing = mutationFlightMap.get(key) as Promise<T> | undefined;
 
@@ -572,23 +605,35 @@ async function runSingleFlight<T>(key: string, task: () => Promise<T>) {
     return existing;
   }
 
-  const nextPromise = task().finally(() => {
-    readCacheMap.clear();
-    mutationFlightMap.delete(key);
-  });
+  const nextPromise = task()
+    .then((value) => {
+      invalidateReadCache(getMutationInvalidationPrefixes(key));
+      return value;
+    })
+    .finally(() => {
+      mutationFlightMap.delete(key);
+    });
 
   mutationFlightMap.set(key, nextPromise);
   return nextPromise;
 }
 
-async function runReadSingleFlight<T>(key: string, task: () => Promise<T>) {
+async function runReadSingleFlight<T>(
+  key: string,
+  task: (authHeaders: HeadersInit) => Promise<T>,
+  force = false,
+) {
   const scopeHeaders = await getAuthHeaders();
   const authFingerprint = scopeHeaders.Authorization?.slice(-18) ?? 'anonymous';
   const scopedKey = `${authFingerprint}:${key}`;
   const cached = readCacheMap.get(scopedKey);
 
-  if (cached && cached.expiresAt > Date.now()) {
+  if (!force && cached && cached.expiresAt > Date.now()) {
     return cached.value as T;
+  }
+
+  if (force) {
+    readCacheMap.delete(scopedKey);
   }
 
   const existing = readFlightMap.get(scopedKey) as Promise<T> | undefined;
@@ -597,7 +642,7 @@ async function runReadSingleFlight<T>(key: string, task: () => Promise<T>) {
     return existing;
   }
 
-  const nextPromise = task()
+  const nextPromise = task(scopeHeaders)
     .then((value) => {
       readCacheMap.set(scopedKey, {
         expiresAt: Date.now() + READ_CACHE_TTL_MS,
@@ -647,7 +692,7 @@ function isWithinCooldown(key: string, cooldownMs: number) {
 
 export async function getUsers(activeOnly = false): Promise<ApiUser[]> {
   const path = `/users${activeOnly ? '?activeOnly=1' : ''}`;
-  const data = await runReadSingleFlight(path, () => request<Record<string, unknown>>(path));
+  const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers));
   return assertArrayField<ApiUser>(assertObjectPayload(data, null, path), 'users', null, path);
 }
 
@@ -664,9 +709,9 @@ function buildQueryString(params: Record<string, string | number | null | undefi
   return queryString ? `?${queryString}` : '';
 }
 
-export async function getLiveNowUsers(options: { cursor?: string | null; limit?: number } = {}): Promise<LiveNowResponse> {
+export async function getLiveNowUsers(options: { cursor?: string | null; limit?: number; force?: boolean } = {}): Promise<LiveNowResponse> {
   const path = `/watch/live-now${buildQueryString({ cursor: options.cursor, limit: options.limit })}`;
-  const data = await runReadSingleFlight(path, () => request<Record<string, unknown>>(path));
+  const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers), options.force);
   const payload = assertObjectPayload(data, null, path);
   const pageInfo = assertObjectPayload(payload.pageInfo, null, path) as LiveNowResponse['pageInfo'];
 
@@ -680,10 +725,10 @@ export async function getLiveNowUsers(options: { cursor?: string | null; limit?:
 }
 
 export async function getWatchDiscoveryUsers(
-  options: { cursor?: string | null; limit?: number } = {},
+  options: { cursor?: string | null; limit?: number; force?: boolean } = {},
 ): Promise<WatchDiscoveryResponse> {
   const path = `/discovery/watch${buildQueryString({ cursor: options.cursor, limit: options.limit })}`;
-  const data = await runReadSingleFlight(path, () => request<Record<string, unknown>>(path));
+  const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers), options.force);
   const payload = assertObjectPayload(data, null, path);
   const pageInfo = assertObjectPayload(payload.pageInfo, null, path) as WatchDiscoveryResponse['pageInfo'];
 
@@ -697,10 +742,10 @@ export async function getWatchDiscoveryUsers(
 }
 
 export async function getCompatibilityDiscoveryEntries(
-  options: { cursor?: string | null; limit?: number } = {},
+  options: { cursor?: string | null; limit?: number; force?: boolean } = {},
 ): Promise<CompatibilityDiscoveryResponse> {
   const path = `/discovery/compatibility${buildQueryString({ cursor: options.cursor, limit: options.limit })}`;
-  const data = await runReadSingleFlight(path, () => request<Record<string, unknown>>(path));
+  const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers), options.force);
   const payload = assertObjectPayload(data, null, path);
   const pageInfo = assertObjectPayload(payload.pageInfo, null, path) as CompatibilityDiscoveryResponse['pageInfo'];
 
@@ -713,9 +758,9 @@ export async function getCompatibilityDiscoveryEntries(
   };
 }
 
-export async function getLikesDiscovery(): Promise<LikesDiscoveryResponse> {
+export async function getLikesDiscovery(force = false): Promise<LikesDiscoveryResponse> {
   const path = '/discovery/likes';
-  const data = await runReadSingleFlight(path, () => request<Record<string, unknown>>(path));
+  const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers), force);
   const payload = assertObjectPayload(data, null, path);
   const likedByUsers = assertArrayField<ApiUser>(payload, 'likedByUsers', null, path);
   const rawLikedByUserIds = Array.isArray(payload.likedByUserIds) ? payload.likedByUserIds : [];
@@ -828,7 +873,7 @@ export async function undoLikeUser(
 
 export async function getLikes(): Promise<{ liked: string[]; likedBy: string[] }> {
   const path = '/likes';
-  const data = await runReadSingleFlight(path, () => request<Record<string, unknown>>(path));
+  const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers));
   const payload = assertObjectPayload(data, null, path);
 
   return {
@@ -877,7 +922,7 @@ export async function restoreIncomingLike(userId: string): Promise<boolean> {
 
 export async function getMatches(): Promise<ApiMatch[]> {
   const path = '/matches';
-  const data = await runReadSingleFlight(path, () => request<Record<string, unknown>>(path));
+  const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers));
   return assertArrayField<ApiMatch>(assertObjectPayload(data, null, path), 'matches', null, path);
 }
 
@@ -929,7 +974,7 @@ export async function getChatThread(
 
   const suffix = params.toString() ? `?${params}` : '';
   const path = `/messages/${userId}${suffix}`;
-  const thread = await runReadSingleFlight(path, () => request<ApiChatThread>(path));
+  const thread = await runReadSingleFlight(path, (headers) => request<ApiChatThread>(path, undefined, headers));
   return thread ? normalizeChatThread(thread) : null;
 }
 
@@ -940,7 +985,7 @@ export async function sendMessage(userId: string, text: string, clientMessageId?
     body: JSON.stringify({ text: text.trim(), clientMessageId }),
   });
 
-  readCacheMap.clear();
+  invalidateReadCache(['/chats', `/messages/${userId}`]);
   return data.message;
 }
 
@@ -978,7 +1023,7 @@ export async function getChats(
   options: { cursor?: string | null; limit?: number } = {},
 ): Promise<ChatListResponse> {
   const path = `/chats${buildQueryString({ cursor: options.cursor, limit: options.limit })}`;
-  const data = await runReadSingleFlight(path, () => request<Record<string, unknown>>(path));
+  const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers));
   const payload = assertObjectPayload(data, null, path);
   const chats = assertArrayField<ApiChat | (Omit<ApiChat, 'user'> & { user: ApiUser | null })>(
     payload,
@@ -1113,7 +1158,7 @@ export function getBlockStatusForCurrentUser(status: MatchStatus, currentUserId:
 }
 
 export async function getSwipeQuota(): Promise<SwipeQuotaState> {
-  return runReadSingleFlight('/swipe-quota', () => request<SwipeQuotaState>('/swipe-quota'));
+  return runReadSingleFlight('/swipe-quota', (headers) => request<SwipeQuotaState>('/swipe-quota', undefined, headers));
 }
 
 export async function consumeSwipeQuota(kind: SwipeQuotaKind): Promise<SwipeQuotaState> {
@@ -1122,6 +1167,6 @@ export async function consumeSwipeQuota(kind: SwipeQuotaKind): Promise<SwipeQuot
     body: JSON.stringify({ kind }),
   });
 
-  readCacheMap.clear();
+  invalidateReadCache(['/swipe-quota']);
   return quota;
 }

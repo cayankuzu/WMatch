@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { useApp } from '../../context/AppContext';
+import { useLibrary } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
 import { useLocalization } from '../../context/LocalizationContext';
 import { likeUser, rejectIncomingLike, unlikeUser, type ApiUser } from '../../services/api';
@@ -49,7 +49,7 @@ export default function LikesScreen({
   const layout = useWindowClass();
   const gridColumns = layout.gridColumns;
   const { user: currentUser } = useAuth();
-  const { favorites, watched } = useApp();
+  const { favorites, watched } = useLibrary();
   const {
     likedUsers,
     likedByUsers,

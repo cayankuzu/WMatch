@@ -14,7 +14,7 @@ interface ChatMessageBubbleProps {
   isOwn: boolean;
   canShowReadReceipt: boolean;
   failedLabel: string;
-  onRetry?: () => void;
+  onFailedPress?: () => void;
 }
 
 function MessageStatusIcon({
@@ -41,7 +41,7 @@ export default function ChatMessageBubble({
   isOwn,
   canShowReadReceipt,
   failedLabel,
-  onRetry,
+  onFailedPress,
 }: ChatMessageBubbleProps) {
   const bubbleContent = (
     <View style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther]}>
@@ -57,7 +57,7 @@ export default function ChatMessageBubble({
     </View>
   );
 
-  if (!isOwn || message.clientStatus !== 'failed' || !onRetry) {
+  if (!isOwn || message.clientStatus !== 'failed' || !onFailedPress) {
     return bubbleContent;
   }
 
@@ -65,7 +65,7 @@ export default function ChatMessageBubble({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={failedLabel}
-      onPress={onRetry}
+      onPress={onFailedPress}
       style={styles.retryButton}
     >
       {bubbleContent}

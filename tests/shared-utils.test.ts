@@ -15,6 +15,27 @@ import {
   getCompatibilityBreakdown,
 } from '../src/shared/utils/compatibility.ts';
 import { BoundedMap } from '../src/shared/utils/boundedMap.ts';
+import { calculateKeyboardInset } from '../src/shared/utils/keyboard.ts';
+
+describe('keyboard layout utilities', () => {
+  it('adds only the keyboard area that Android did not already resize', () => {
+    expect(calculateKeyboardInset(900, 600, 300)).toBe(0);
+    expect(calculateKeyboardInset(900, 620, 300)).toBe(20);
+    expect(calculateKeyboardInset(900, 900, 300)).toBe(300);
+  });
+
+  it('keeps a visible composer gap above Android keyboard toolbars', () => {
+    expect(calculateKeyboardInset(900, 600, 300, 32)).toBe(32);
+    expect(calculateKeyboardInset(900, 620, 300, 32)).toBe(52);
+    expect(calculateKeyboardInset(900, 900, 300, 32)).toBe(332);
+  });
+
+  it('never returns a negative inset', () => {
+    expect(calculateKeyboardInset(900, 500, 300)).toBe(0);
+    expect(calculateKeyboardInset(900, 900, 0)).toBe(0);
+    expect(calculateKeyboardInset(900, 900, 0, 32)).toBe(0);
+  });
+});
 
 describe('validation utilities', () => {
   it('normalizes whitespace without preserving leading or repeated spaces', () => {

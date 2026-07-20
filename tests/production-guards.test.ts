@@ -52,6 +52,7 @@ describe('production guardrails', () => {
     const tmdbSource = read('src/services/tmdb.ts');
     const appSource = read('src/app/App.tsx');
     const liveNowSource = read('src/app/hooks/useLiveNowUsers.ts');
+    const userEventBusSource = read('src/services/userEventBus.ts');
     const rootSource = read('App.tsx');
     const metroSource = read('metro.config.js');
     const telemetrySource = read('src/services/telemetry.ts');
@@ -62,7 +63,8 @@ describe('production guardrails', () => {
     expect(tmdbSource).toContain('revalidateTMDB(path)');
     expect(tmdbSource).toContain('return persistentCache.value as T');
     expect(liveNowSource).toContain('FALLBACK_POLL_INTERVAL_MS = 30_000');
-    expect(liveNowSource).toContain("channel.on('broadcast', { event: 'discovery_changed' }");
+    expect(liveNowSource).toContain("subscribeToUserEvent(userId, 'discovery_changed'");
+    expect(userEventBusSource).toContain("channel.on('broadcast', { event }");
     expect(appSource).toContain('scheduleIdleWork');
     expect(appSource).toContain('globalThis.requestIdleCallback');
     expect(appSource).not.toContain('InteractionManager');
@@ -93,13 +95,17 @@ describe('production guardrails', () => {
     expect(debugScriptSource).not.toContain('--android');
   });
 
-  it('keeps navigation and the active screen in normal layout flow', () => {
+  it('keeps recent tabs mounted in normal layout flow with a strict memory bound', () => {
     const appSource = read('src/app/App.tsx');
     const navSource = read('src/app/components/BottomNav.tsx');
 
-    expect(appSource).toContain('const renderActiveScreen = () =>');
+    expect(appSource).toContain('const renderTab = (tab: AppTab) =>');
     expect(appSource).toContain('<View style={styles.content}>');
-    expect(appSource).toContain('renderedTab === activeTab ? renderActiveScreen()');
+    expect(appSource).toContain('renderedResidentTabs.map((tab) =>');
+    expect(appSource).toContain('MAX_RESIDENT_TABS = 3');
+    expect(appSource).toContain('TAB_RENDER_ORDER.filter((tab) => residentTabs.includes(tab))');
+    expect(appSource).toContain('collapsable={false}');
+    expect(appSource).toContain("display: 'none'");
     expect(appSource).not.toContain('screenLayer');
     expect(appSource).not.toContain("position: 'absolute'");
     expect(appSource).not.toContain('zIndex: 0');
@@ -112,9 +118,12 @@ describe('production guardrails', () => {
 
   it('uses a targeted private broadcast instead of Postgres Changes for discovery invalidation', () => {
     const source = read('src/app/hooks/useDiscoveryData.ts');
+    const busSource = read('src/services/userEventBus.ts');
 
-    expect(source).toContain('`user-events:${currentUserId}`');
-    expect(source).toContain("channel.on('broadcast', { event: 'discovery_changed' }");
+    expect(source).toContain("subscribeToUserEvent(");
+    expect(source).toContain("'discovery_changed'");
+    expect(busSource).toContain('`user-events:${userId}`');
+    expect(busSource).toContain("channel.on('broadcast', { event }");
     expect(source).not.toContain("'postgres_changes'");
   });
 
@@ -176,7 +185,9 @@ describe('production guardrails', () => {
     expect(edgeSource).not.toContain('MAX_COMPATIBILITY_CANDIDATE_ROWS');
     expect(migrationSource).toContain('ORDER BY candidate_scores.overlap_count DESC, candidate_scores.user_id ASC');
     expect(migrationSource).toContain('REVOKE ALL ON FUNCTION public.get_compatibility_candidate_page');
-    expect(screenSource).toContain('onEndReached');
+    expect(screenSource).toContain('onLoadMoreFeed={() => loadMore()}');
+    expect(screenSource).toContain('hasMore={hasMore}');
+    expect(screenSource).toContain('loadingMore={loadingMore}');
     expect(screenSource).toContain('loadMore');
   });
 
@@ -185,6 +196,7 @@ describe('production guardrails', () => {
     const migrationSource = read('supabase/migrations/20260714224500_atomic_user_movie_collections_rpc.sql');
     const typedMigrationSource = read('supabase/migrations/20260715183000_final_reaudit_contracts.sql');
     const p0MigrationSource = read('supabase/migrations/20260715201000_p0_reaudit_closures.sql');
+    const orderMigrationSource = read('supabase/migrations/20260719234500_movie_collection_order_contract.sql');
 
     expect(edgeSource).toContain('replace_user_media_collections');
     expect(edgeSource).not.toContain('const syncMovieCollection = async');
@@ -204,6 +216,32 @@ describe('production guardrails', () => {
     expect(p0MigrationSource).toContain('repair entry already closed');
     expect(p0MigrationSource).toContain('repair entry missing assumed media type');
     expect(p0MigrationSource).toContain('REVOKE ALL ON TABLE public.media_identity_repair_history FROM anon, authenticated, public');
+    expect(orderMigrationSource).toContain('CREATE OR REPLACE FUNCTION public.replace_user_media_collections');
+    expect(orderMigrationSource).toContain('ON CONFLICT (user_id, media_type, movie_id, type) DO UPDATE');
+    expect(orderMigrationSource).toContain('SET created_at = EXCLUDED.created_at');
+  });
+
+  it('keeps movie library sync ordered and separate from watch-session transitions', () => {
+    const appSource = read('src/context/AppContext.tsx');
+    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const watchReturnTypeMigrationSource = read('supabase/migrations/20260720012500_watch_session_media_type_ambiguity_fix.sql');
+
+    expect(appSource).toContain('const requestBody: Record<string, unknown>');
+    expect(appSource).toContain('if (payload.watchingAction) {');
+    expect(appSource).toContain('requestBody.currentlyWatching = payload.watchingId');
+    expect(appSource).not.toContain('currentlyWatching: payload.watchingId,');
+    expect(appSource).not.toContain("console.error('Movie sync error:'");
+    expect(appSource).toContain("telemetry.captureException(error, { scope: 'movie_sync' })");
+    expect(appSource).toContain("console.warn('Movie sync retry scheduled:', error)");
+    expect(appSource).toContain('return [movie, ...movies];');
+    expect(appSource.match(/const next = \[movie, \.\.\.current\];/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(edgeSource.match(/\.order\("created_at", \{ ascending: false \}\)/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(watchReturnTypeMigrationSource).toContain('CREATE OR REPLACE FUNCTION public.apply_watch_session_transition');
+    expect(watchReturnTypeMigrationSource).toContain('#variable_conflict use_column');
+    expect(watchReturnTypeMigrationSource).toContain('cw.media_type::TEXT');
+    expect(watchReturnTypeMigrationSource).toContain('cw.state::TEXT');
+    expect(watchReturnTypeMigrationSource).toContain('public.currently_watching.media_type::TEXT');
+    expect(watchReturnTypeMigrationSource).toContain('public.currently_watching.state::TEXT');
   });
 
   it('uses redacted structured Edge request logging', () => {
@@ -314,16 +352,29 @@ describe('production guardrails', () => {
     expect(safeFetchSource).toContain('return normalizeResponse');
   });
 
-  it('keeps chat presence scoped to the active thread modal', () => {
+  it('shows typing presence in both the chat list and active thread', () => {
     const chatScreenSource = read('src/app/components/ChatScreen.tsx');
     const chatModalSource = read('src/app/components/ChatModal.tsx');
 
-    expect(chatScreenSource).not.toContain('useChatPresence');
+    expect(chatScreenSource).toContain('useChatPresence');
+    expect(chatScreenSource).toContain("t('chat.screen.preview.typing')");
     expect(chatModalSource).toContain('useChatPresence');
+  });
+
+  it('keeps the active chat mounted when opening a peer profile from the thread', () => {
+    const source = read('src/app/components/ChatScreen.tsx');
+    const profileOpenSource = source.slice(
+      source.indexOf('onProfileClick={() => {'),
+      source.indexOf('{profileChat ? ('),
+    );
+
+    expect(profileOpenSource).toContain('setProfileChat(activeChat);');
+    expect(profileOpenSource).not.toContain('setActiveChat(null);');
   });
 
   it('loads Watch live-now users through the dedicated endpoint without match exclusions', () => {
     const liveNowSource = read('src/app/hooks/useLiveNowUsers.ts');
+    const watchHomeSource = read('src/app/hooks/useWatchHomeController.ts');
     const apiSource = read('src/services/api.ts');
     const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
     const liveNowRoute = edgeSource.slice(
@@ -334,6 +385,11 @@ describe('production guardrails', () => {
     expect(apiSource).toContain('`/watch/live-now${buildQueryString');
     expect(liveNowSource).toContain('getLiveNowUsers');
     expect(liveNowSource).not.toContain('getUsers(true)');
+    expect(liveNowSource).toContain('const currentFlight = inFlightRef.current');
+    expect(liveNowSource).toContain('await currentFlight');
+    expect(liveNowSource).toContain('if (!options.force)');
+    expect(watchHomeSource).toContain('activeWatchingKey');
+    expect(watchHomeSource).toContain('void refreshLiveNow({ force: true })');
     expect(liveNowRoute).toContain('supabase.rpc("get_live_now_users"');
     expect(liveNowRoute).toContain('decodeLiveNowCursor');
     expect(liveNowRoute).toContain('encodeLiveNowCursor');
@@ -355,22 +411,27 @@ describe('production guardrails', () => {
     expect(routeSource).toContain('decodeLiveNowCursor');
     expect(routeSource).toContain('pageInfo');
     expect(routeSource).not.toContain('.limit(200)');
+    expect(edgeSource).toContain('queueWatchSessionDiscoveryEvents');
+    expect(edgeSource).toContain('{ reason: "watch_session" }');
     expect(migrationSource).toContain('ORDER BY watching.updated_at DESC, watching.user_id DESC');
-    expect(matchSource).toContain('feedQueue.length - currentIndex <= 5');
-    expect(matchSource).toContain('void loadMore()');
+    expect(matchSource).toContain('getMediaRefKey({ id: activeWatchingId');
+    expect(matchSource).toContain('void refresh(true)');
+    expect(matchSource).toContain('onLoadMoreFeed={activeWatchingId ? loadMore : undefined}');
+    expect(matchSource).toContain('hasMore={Boolean(activeWatchingId && hasMore)}');
+    expect(read('src/app/components/SwipeModal.tsx')).toContain('queue.length - currentQueueIndex > 5');
   });
 
   it('keeps media identity typed for currently-watching and live-now hydration', () => {
     const typeSource = read('src/shared/types/index.ts');
-    const appSource = read('src/app/App.tsx');
+    const watchHomeSource = read('src/app/hooks/useWatchHomeController.ts');
     const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
     const migrationSource = read('supabase/migrations/20260715162000_media_type_live_now_contract.sql');
 
     expect(typeSource).toContain("currentlyWatchingMediaType: MediaType | null");
     expect(typeSource).toContain('export interface MediaRef');
-    expect(appSource).toContain('getMediaRefKey');
-    expect(appSource).toContain('tmdbService.getMediaByRef');
-    expect(appSource).toContain('LIVE_NOW_MEDIA_HYDRATION_BATCH_SIZE');
+    expect(watchHomeSource).toContain('getMediaRefKey');
+    expect(watchHomeSource).toContain('tmdbService.getMediaListByRefs');
+    expect(watchHomeSource).toContain('LIVE_NOW_MEDIA_HYDRATION_BATCH_SIZE');
     expect(edgeSource).toContain('currentlyWatchingMediaType');
     expect(edgeSource).toContain('p_media_type:');
     expect(edgeSource).toContain('normalizedCurrentlyWatchingMediaType');
@@ -488,9 +549,10 @@ describe('production guardrails', () => {
     const source = read('src/app/hooks/useChatPresence.ts');
 
     expect(source).toContain('buildTypingBroadcastTopic(pairKey)');
+    expect(source).toContain('buildAppPresenceTopic(otherUserId)');
+    expect(source).toContain('controller.presenceChannel.presenceState<AppPresencePayload>()');
     expect(source).toContain('private: true');
     expect(source).not.toContain('subscribeToAppPresence');
-    expect(source).toContain('presenceState<AppPresencePayload>');
   });
 
   it('keeps chat typing and presence on the authorized pair topic', () => {
@@ -503,7 +565,7 @@ describe('production guardrails', () => {
     expect(source).toContain('buildTypingBroadcastTopic');
     expect(source).toContain('const buildTypingBroadcastTopic = buildConversationTopic');
     expect(conversationControllerSource).toContain('buildTypingBroadcastTopic(pairKey)');
-    expect(conversationControllerSource).toContain("channel.on('presence'");
+    expect(conversationControllerSource).toContain("presenceChannel.on('presence'");
     expect(conversationControllerSource).toContain("channel.on('broadcast'");
     expect(source).toContain('conversationRemovalFlights');
     expect(source).toContain('CONVERSATION_CHANNEL_IDLE_MS');
@@ -620,15 +682,30 @@ describe('production guardrails', () => {
     expect(source).toContain('pagerRef.current?.scrollToIndex');
   });
 
+  it('renders compatibility as a direct inline swipe deck', () => {
+    const appSource = read('src/app/App.tsx');
+    const compatibilitySource = read('src/app/components/CompatibilityScreen.tsx');
+    const swipeModalSource = read('src/app/components/SwipeModal.tsx');
+
+    expect(compatibilitySource).toContain('<SwipeModal');
+    expect(compatibilitySource).toContain('presentation="inline"');
+    expect(compatibilitySource).toContain('onLoadMoreFeed={() => loadMore()}');
+    expect(compatibilitySource).toContain('SwipeDeckSkeleton');
+    expect(compatibilitySource).not.toContain('UserMiniCard');
+    expect(compatibilitySource).not.toContain('FlatList');
+    expect(swipeModalSource).toContain("presentation?: 'modal' | 'inline'");
+    expect(swipeModalSource).toContain("const isInline = presentation === 'inline'");
+    expect(swipeModalSource).toContain('return <View style={styles.container}>{content}</View>');
+    expect(appSource).toContain("tab === 'match' || tab === 'compatibility'");
+  });
+
   it('uses window-class grid columns instead of fixed two-column user grids', () => {
     const compatibilitySource = read('src/app/components/CompatibilityScreen.tsx');
     const likesSource = read('src/app/components/LikesScreen.tsx');
     const cardSource = read('src/app/components/UserMiniCard.tsx');
     const skeletonSource = read('src/app/components/ui/Skeleton.tsx');
 
-    expect(compatibilitySource).toContain('const gridColumns = layout.gridColumns');
     expect(likesSource).toContain('const gridColumns = layout.gridColumns');
-    expect(compatibilitySource).toContain('numColumns={gridColumns}');
     expect(likesSource).toContain('numColumns={gridColumns}');
     expect(compatibilitySource).not.toContain('numColumns={2}');
     expect(likesSource).not.toContain('numColumns={2}');
@@ -758,18 +835,18 @@ describe('production guardrails', () => {
     expect(enSource).toContain('This product uses the TMDB API but is not endorsed or certified by TMDB.');
   });
 
-  it('mounts only the deferred focused tab so hidden screens cannot run background work', () => {
+  it('keeps a bounded LRU of visited tabs while only the focused scene is interactive', () => {
     const source = read('src/app/App.tsx');
     const liveNowSource = read('src/app/hooks/useLiveNowUsers.ts');
 
-    expect(source).not.toContain('mountedTabs');
-    expect(source).not.toContain('TAB_WARMUP_SEQUENCE');
-    expect(source).toContain('renderActiveScreen');
-    expect(source).toContain('switch (renderedTab)');
+    expect(source).toContain('residentTabs');
+    expect(source).toContain('MAX_RESIDENT_TABS = 3');
+    expect(source).toContain('const renderTab = (tab: AppTab) =>');
+    expect(source).toContain('switch (tab)');
     expect(source).toContain("case 'watch':");
     expect(source).toContain("case 'profile':");
-    expect(source).not.toContain("display: 'none'");
-    expect(source).toContain("activeTab === 'watch'");
+    expect(source).toContain("display: 'none'");
+    expect(source).toContain("pointerEvents={isVisible ? 'auto' : 'none'}");
     expect(liveNowSource).toContain('if (!userId || !isFocused)');
   });
 
@@ -821,21 +898,78 @@ describe('production guardrails', () => {
     expect(edgeSource).toContain('DEFAULT_CHAT_THREAD_PAGE_SIZE = CHAT_THREAD_INITIAL_PAGE_SIZE');
   });
 
-  it('warms expensive tabs sequentially after the first frame', () => {
+  it('warms adaptive tab resources through the priority scheduler after the first frame', () => {
     const source = read('src/app/hooks/useAppDataWarmup.ts');
     const appSource = read('src/app/App.tsx');
+    const schedulerSource = read('src/services/launchScheduler.ts');
+    const usageSource = read('src/services/tabUsage.ts');
 
-    expect(source).toContain("'match',\n  'chat',\n  'likes',\n  'compatibility',\n  'profile'");
     expect(source).toContain('FIRST_FRAME_GRACE_MS = 250');
     expect(source).toContain('await waitForIdle()');
-    expect(source).toContain('await preloadTabData(user, tab)');
-    expect(source).not.toContain('PriorityTaskScheduler');
+    expect(source).toContain("await preloadTabData(user, tab, 'predictive')");
+    expect(source).toContain('loadTabWarmupOrder(user.id, currentTab)');
     expect(source).not.toContain('Promise.all');
-    expect(source).toContain('AppState.currentState');
-    expect(source).toContain("chats.slice(0, 2)");
+    expect(source).toContain("getAppState() !== 'active'");
+    expect(source).toContain("chats.slice(0, 1)");
     expect(source).toContain("preloadDiscoveryData('watch', user.id)");
     expect(source).toContain('preloadSwipeQuota(user.id)');
-    expect(appSource).toContain('useAppDataWarmup(user)');
+    expect(appSource).toContain('useAppDataWarmup(user, activeTab)');
+    expect(schedulerSource).toContain('MAX_CONCURRENT_TASKS = 2');
+    expect(schedulerSource).toContain("critical: 0");
+    expect(schedulerSource).toContain("intent: 1");
+    expect(usageSource).toContain('MAX_HISTORY_LENGTH = 3');
+  });
+
+  it('centralizes app lifecycle work and bounds prioritized media prefetching', () => {
+    const lifecycleSource = read('src/shared/utils/appLifecycle.ts');
+    const mediaQueueSource = read('src/shared/utils/mediaPrefetchQueue.ts');
+    const sourceFiles = [
+      'src/app/hooks/useAppDataWarmup.ts',
+      'src/app/hooks/useAppPresence.ts',
+      'src/app/hooks/useChatPresence.ts',
+      'src/app/hooks/useLiveNowUsers.ts',
+      'src/services/chatOutbox.ts',
+      'src/services/notifications.ts',
+    ];
+
+    expect(lifecycleSource).toContain("AppState.addEventListener('change'");
+    for (const file of sourceFiles) {
+      expect(read(file)).not.toContain('AppState.addEventListener');
+    }
+    expect(mediaQueueSource).toContain('MAX_CONCURRENT_PREFETCHES = 3');
+    expect(mediaQueueSource).toContain('MAX_QUEUED_PREFETCHES = 48');
+    expect(mediaQueueSource).toContain('critical: 0');
+    expect(mediaQueueSource).toContain('intent: 1');
+    expect(mediaQueueSource).toContain('predictive: 2');
+    expect(mediaQueueSource).toContain('idle: 3');
+    expect(mediaQueueSource).toContain("getAppState() !== 'active'");
+  });
+
+  it('keeps the primary profile gesture and imagery off the JS-heavy legacy path', () => {
+    const profileCardSource = read('src/app/components/ProfileCard.tsx');
+    const rootSource = read('App.tsx');
+
+    expect(rootSource).toContain('GestureHandlerRootView');
+    expect(profileCardSource).toContain('Gesture.Pan()');
+    expect(profileCardSource).toContain('useAnimatedStyle');
+    expect(profileCardSource).toContain('runOnJS(commitSwipeDown)');
+    expect(profileCardSource).toContain("cachePolicy=\"memory-disk\"");
+    expect(profileCardSource).not.toContain('PanResponder');
+    expect(profileCardSource).not.toContain('ImageBackground');
+  });
+
+  it('hydrates watch data stale-while-revalidate and cancels obsolete searches', () => {
+    const controllerSource = read('src/app/hooks/useWatchHomeController.ts');
+    const snapshotSource = read('src/services/watchHomeSnapshot.ts');
+    const tmdbSource = read('src/services/tmdb.ts');
+    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+
+    expect(controllerSource).toContain('readWatchHomeSnapshot()');
+    expect(controllerSource).toContain('new AbortController()');
+    expect(controllerSource).toContain('searchAbortControllerRef.current?.abort()');
+    expect(snapshotSource).toContain('MAX_STALE_AGE_MS');
+    expect(tmdbSource).toContain('getMediaListByRefs');
+    expect(edgeSource).toContain('/make-server-d962235e/tmdb/media-batch');
   });
 
   it('commits bottom navigation feedback before rendering the expensive destination screen', () => {
@@ -844,25 +978,28 @@ describe('production guardrails', () => {
 
     expect(appSource).toContain('const renderedTab = useDeferredValue(activeTab)');
     expect(appSource).toContain('setActiveTab(tab)');
-    expect(appSource).toContain('renderedTab === activeTab ? renderActiveScreen()');
-    expect(appSource).toContain('requestAnimationFrame(() => {');
-    expect(appSource).toContain('void preloadTabData(user, tab)');
+    expect(appSource).toContain('renderedResidentTabs.map((tab) =>');
+    expect(appSource).toContain("preloadTabData(user, tab, 'intent')");
+    expect(appSource).toContain('preloadTabModule(tab)');
     expect(appSource).toContain("telemetry.track('navigation.tab_committed'");
-    expect(appSource).toContain("activeTab === 'chat'");
+    expect(appSource).toContain("tab === 'chat'");
     expect(appSource).toContain('<ChatListSkeleton />');
     expect(appSource).toContain('<SwipeDeckSkeleton />');
+    expect(navSource).toContain('onPressIn={() => onTabIntent?.(item.id)}');
     expect(navSource).toContain('export default memo(BottomNav)');
   });
 
   it('streams visible home sections independently and keeps speculative media off the critical path', () => {
     const appSource = read('src/app/App.tsx');
+    const watchHomeSource = read('src/app/hooks/useWatchHomeController.ts');
     const watchSource = read('src/app/components/WatchScreen.tsx');
 
     expect(appSource).not.toContain('tmdbService.getTrending(1)');
-    expect(appSource).toContain('tmdbService.getPopularMovies(1)');
-    expect(appSource).toContain('tmdbService.getPopularTVShows(1)');
-    expect(appSource).toContain('.finally(() => setLoadingMovies(false))');
-    expect(appSource).toContain('.finally(() => setLoadingTV(false))');
+    expect(watchHomeSource).toContain('tmdbService.getPopularMovies(1)');
+    expect(watchHomeSource).toContain('tmdbService.getPopularTVShows(1)');
+    expect(watchHomeSource).toContain('.finally(() => setLoadingMovies(false))');
+    expect(watchHomeSource).toContain('.finally(() => setLoadingTV(false))');
+    expect(watchHomeSource).toContain('readWatchHomeSnapshot()');
     expect(watchSource).toContain('popularMoviesLoading');
     expect(watchSource).toContain('popularTVLoading');
   });
@@ -883,15 +1020,18 @@ describe('production guardrails', () => {
 
   it('keeps match presentation optimistic and moves notification side effects off the response path', () => {
     const matchSource = read('src/app/components/MatchScreen.tsx');
+    const swipeSource = read('src/app/components/SwipeModal.tsx');
     const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
     const likeRoute = edgeSource.slice(
       edgeSource.indexOf('app.post("/make-server-d962235e/likes/:userId"'),
       edgeSource.indexOf('app.post("/make-server-d962235e/likes/:userId/undo"'),
     );
 
-    expect(matchSource).toContain('predictedInstantMatch');
-    expect(matchSource).toContain('interactionLockOwnerRef.current = null');
-    expect(matchSource).toContain('setMatchedUser(entry.user)');
+    expect(matchSource).toContain('<SwipeModal');
+    expect(matchSource).not.toContain('predictedInstantMatch');
+    expect(swipeSource).toContain('predictedInstantMatch');
+    expect(swipeSource).toContain('interactionLockedRef.current = false');
+    expect(swipeSource).toContain('setMatchedUser(entry.user)');
     expect(likeRoute).toContain('runAfterResponse(matchNotificationTask)');
     expect(likeRoute).toContain('runAfterResponse(likeNotificationTask)');
     expect(likeRoute).toContain('matchedUser: null');
@@ -901,13 +1041,14 @@ describe('production guardrails', () => {
   it('bounds Live Now payloads and hydrates media progressively', () => {
     const constantsSource = read('src/shared/constants/index.ts');
     const hookSource = read('src/app/hooks/useLiveNowUsers.ts');
-    const appSource = read('src/app/App.tsx');
+    const watchHomeSource = read('src/app/hooks/useWatchHomeController.ts');
     const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
 
     expect(constantsSource).toContain('LIVE_NOW_PAGE_SIZE = 16');
     expect(hookSource).toContain('limit: LIVE_NOW_PAGE_SIZE');
-    expect(appSource).toContain('LIVE_NOW_MEDIA_HYDRATION_BATCH_SIZE = 6');
-    expect(appSource).toContain('commitResolvedMovies()');
+    expect(watchHomeSource).toContain('LIVE_NOW_MEDIA_HYDRATION_BATCH_SIZE = 6');
+    expect(watchHomeSource).toContain('const commit = () =>');
+    expect(watchHomeSource).toContain('tmdbService.getMediaListByRefs');
     expect(edgeSource).toContain('c.req.query("limit") ?? LIVE_NOW_PAGE_SIZE');
   });
 
@@ -932,11 +1073,66 @@ describe('production guardrails', () => {
 
   it('serializes push-token sync so startup and foreground work cannot race', () => {
     const source = read('src/services/notifications.ts');
+    const appSource = read('src/app/App.tsx');
+    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
 
     expect(source).toContain('let pushSyncInFlight:');
     expect(source).toContain('if (pushSyncInFlight.userId === normalizedUserId)');
     expect(source).toContain('return pushSyncInFlight.promise');
     expect(source).toContain('await pushSyncInFlight?.promise');
+    expect(source).toContain('Notifications.IosAuthorizationStatus.PROVISIONAL');
+    expect(source).toContain('Notifications.addPushTokenListener');
+    expect(source).toContain('PUSH_RETRY_DELAYS_MS');
+    expect(source).toContain('PUSH_REGISTRATION_STORAGE_KEY');
+    expect(source).toContain('Notifications.getNotificationChannelAsync');
+    expect(source).toContain('Notifications.AndroidImportance.NONE');
+    expect(source).toContain('android.settings.CHANNEL_NOTIFICATION_SETTINGS');
+    expect(source).toContain('allowProvisional: false');
+    expect(source).toContain('deactivateStoredPushRegistration(userId)');
+    expect(edgeSource).toContain('getExpoPushHeaders()');
+    expect(edgeSource).toContain('fetchExpoPushWithRetry');
+    expect(edgeSource).toContain('await drainPushDeliveryOutbox(supabase);');
+    expect(edgeSource.indexOf('if (retryableErrors.length > 0)')).toBeLessThan(
+      edgeSource.indexOf('if (acceptedCount > 0)'),
+    );
+    expect(appSource).toContain('void syncCurrentUserPush(user?.id)');
+    expect(appSource).toContain('subscribeToPushTokenChanges(user?.id)');
+    expect(appSource).toContain('openPushNotificationSettings');
+  });
+
+  it('restores the chat composer and exposes bounded failed-message actions', () => {
+    const modalSource = read('src/app/components/ChatModal.tsx');
+    const validationSource = read('src/shared/utils/validation.ts');
+
+    expect(modalSource).toContain("behavior={Platform.OS === 'ios' ? 'padding' : undefined}");
+    expect(modalSource).toContain("enabled={Platform.OS === 'ios'}");
+    expect(modalSource).toContain('calculateKeyboardInset(');
+    expect(modalSource).toContain('ANDROID_KEYBOARD_COMPOSER_GAP = 32');
+    expect(modalSource).toContain("Platform.OS === 'android' && isKeyboardVisible ? androidKeyboardInset : 0");
+    expect(modalSource).toContain('onLayout={handleRootLayout}');
+    expect(modalSource).toContain('composerInputRef.current?.blur()');
+    expect(modalSource).toContain('keyboardResetTimeoutRef.current = setTimeout');
+    expect(modalSource).toContain('dismissComposer();');
+    expect(modalSource).toContain('{messageCharacterCount}/{MAX_MESSAGE_LENGTH}');
+    expect(modalSource).toContain("t('chat.modal.retry.resend')");
+    expect(modalSource).toContain("t('chat.modal.retry.cancel')");
+    expect(modalSource).toContain('removePendingChatMessage(currentUserId, message.id)');
+    expect(validationSource).toContain('Array.from(value).slice(0, MAX_MESSAGE_LENGTH)');
+  });
+
+  it('only requests password reset delivery for a registered account', () => {
+    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const routeSource = edgeSource.slice(
+      edgeSource.indexOf('app.post("/make-server-d962235e/auth/password-reset"'),
+      edgeSource.indexOf('app.post("/make-server-d962235e/auth/signup"'),
+    );
+
+    expect(routeSource).toContain('"check_email_availability"');
+    expect(routeSource).toContain('availabilityRows[0]?.email_available === false');
+    expect(routeSource).toContain('code: "ACCOUNT_NOT_FOUND"');
+    expect(routeSource.indexOf('check_email_availability')).toBeLessThan(
+      routeSource.indexOf('resetPasswordForEmail'),
+    );
   });
 
   it('keeps protected release identity stable', () => {
@@ -951,8 +1147,8 @@ describe('production guardrails', () => {
 
     expect(appConfig.expo?.android?.package).toBe('com.wmatch.app');
     expect(appConfig.expo?.ios?.bundleIdentifier).toBe('com.wmatch.app');
-    expect(appConfig.expo?.extra?.eas?.projectId).toBe('0aa025b7-dd97-4ad9-951c-3864e0beb8fc');
-    expect(appConfig.expo?.owner).toBe('cayan');
+    expect(appConfig.expo?.extra?.eas?.projectId).toBe('5aab8659-db24-4152-aa79-142f210e16d1');
+    expect(appConfig.expo?.owner).toBe('cayann');
   });
 
   it('keeps UI typography scalable and above release minimums', () => {

@@ -73,8 +73,8 @@ describe('chat presence lifecycle', () => {
     const secondMount = await renderHook(() => useChatPresence(hookProps));
     await act(async () => Promise.resolve());
 
-    expect(mockCreateChannel).toHaveBeenCalledTimes(1);
-    expect(mockSubscribe).toHaveBeenCalledTimes(1);
+    expect(mockCreateChannel).toHaveBeenCalledTimes(2);
+    expect(mockSubscribe).toHaveBeenCalledTimes(2);
     expect(mockOn).toHaveBeenCalledTimes(4);
     expect(mockRemoveChannel).not.toHaveBeenCalled();
 
@@ -84,6 +84,6 @@ describe('chat presence lifecycle', () => {
       await Promise.resolve();
     });
 
-    expect(mockRemoveChannel).toHaveBeenCalledTimes(1);
+    expect(mockRemoveChannel).toHaveBeenCalledTimes(2);
   });
 });

@@ -32,10 +32,11 @@ const navItems: Array<{
 interface BottomNavProps {
   activeTab: AppTab;
   onTabChange: (tabId: AppTab) => void;
+  onTabIntent?: (tabId: AppTab) => void;
   onHeightChange?: (height: number) => void;
 }
 
-function BottomNav({ activeTab, onTabChange, onHeightChange }: BottomNavProps) {
+function BottomNav({ activeTab, onTabChange, onTabIntent, onHeightChange }: BottomNavProps) {
   const insets = useSafeAreaInsets();
   const { t } = useLocalization();
   const layout = useWindowClass();
@@ -71,6 +72,7 @@ function BottomNav({ activeTab, onTabChange, onHeightChange }: BottomNavProps) {
           return (
             <Pressable
               key={item.id}
+              onPressIn={() => onTabIntent?.(item.id)}
               onPress={() => onTabChange(item.id)}
               accessibilityRole="tab"
               accessibilityLabel={t(item.labelKey)}

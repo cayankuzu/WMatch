@@ -2,14 +2,14 @@
   "expo": {
     "name": "WMatch",
     "slug": "wmatch",
-    "version": "1.0.36",
+    "version": "1.0.43",
     "icon": "./assets/branding/icon-wm-normalized.png",
     "orientation": "default",
     "userInterfaceStyle": "dark",
     "scheme": "wmatch",
     "ios": {
       "bundleIdentifier": "com.wmatch.app",
-      "buildNumber": "39",
+      "buildNumber": "46",
       "googleServicesFile": "./firebase/GoogleService-Info.plist",
       "supportsTablet": true,
       "associatedDomains": [
@@ -39,7 +39,7 @@
     },
     "android": {
       "package": "com.wmatch.app",
-      "versionCode": 37,
+      "versionCode": 44,
       "googleServicesFile": "./firebase/google-services.json",
       "predictiveBackGestureEnabled": true,
       "adaptiveIcon": {
@@ -113,11 +113,11 @@
     "experiments": {
       "typedRoutes": false
     },
+    "owner": "cayann",
     "extra": {
       "eas": {
-        "projectId": "0aa025b7-dd97-4ad9-951c-3864e0beb8fc"
+        "projectId": "5aab8659-db24-4152-aa79-142f210e16d1"
       }
-    },
-    "owner": "cayan"
+    }
   }
 }

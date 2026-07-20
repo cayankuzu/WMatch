@@ -6,6 +6,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { Movie } from '../../services/tmdb';
 import type { ViewerPreview } from '../../shared/types';
 import { tmdbService } from '../../services/tmdb';
+import { telemetry } from '../../services/telemetry';
 import { theme } from '../../shared/theme';
 import ViewerCount from './ViewerCount';
 
@@ -23,6 +24,16 @@ const sizeMap = {
   medium: { width: 124, posterHeight: 184 },
   large: { width: 154, posterHeight: 228 },
 };
+let firstMediaDisplayed = false;
+
+function markFirstMediaDisplay() {
+  if (firstMediaDisplayed) {
+    return;
+  }
+
+  firstMediaDisplayed = true;
+  telemetry.markStartupMilestone('first_media_display');
+}
 
 function MovieCard({
   movie,
@@ -52,6 +63,7 @@ function MovieCard({
           includeBackdrop: true,
           posterSize,
           backdropSize: 'w500',
+          priority: 'intent',
         })
       }
       style={[styles.wrapper, { width: dimensions.width }]}
@@ -60,6 +72,8 @@ function MovieCard({
         accessible={false}
         cachePolicy="memory-disk"
         contentFit="cover"
+        onDisplay={markFirstMediaDisplay}
+        priority="normal"
         recyclingKey={`${movie.media_type ?? 'movie'}:${movie.id}`}
         source={{ uri: posterUri }}
         style={[styles.poster, { height: dimensions.posterHeight }]}

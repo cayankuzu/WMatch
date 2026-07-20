@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Alert, StyleSheet, View } from 'react-native';
 
-import { useApp } from '../../context/AppContext';
+import { useLibrary } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
 import { useLocalization } from '../../context/LocalizationContext';
 import { requestForegroundLocation } from '../../services/location';
@@ -21,7 +21,7 @@ interface ProfileScreenProps {
 
 export default function ProfileScreen({ onMovieClick }: ProfileScreenProps) {
   const { t } = useLocalization();
-  const { favorites, watched, libraryLoading, libraryError } = useApp();
+  const { favorites, watched, libraryLoading, libraryError } = useLibrary();
   const { user, logout, refreshUser, updateProfile, deleteAccount, checkAvailability } = useAuth();
   const [showSettings, setShowSettings] = useState(false);
   const [showEditProfile, setShowEditProfile] = useState(false);

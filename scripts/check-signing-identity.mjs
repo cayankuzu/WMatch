@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 
 const EXPECTED_ANDROID_PACKAGE = 'com.wmatch.app';
 const EXPECTED_IOS_BUNDLE_ID = 'com.wmatch.app';
-const EXPECTED_EAS_PROJECT_ID = '0aa025b7-dd97-4ad9-951c-3864e0beb8fc';
-const EXPECTED_EAS_OWNER = 'cayan';
+const EXPECTED_EAS_PROJECT_ID = '5aab8659-db24-4152-aa79-142f210e16d1';
+const EXPECTED_EAS_OWNER = 'cayann';
 const EXPECTED_RELEASE_SHA1 = 'E4:E0:3B:26:E1:7E:D9:1E:5C:26:EC:4A:71:22:0B:CF:E9:15:0C:34';
 
 const fail = (message) => {

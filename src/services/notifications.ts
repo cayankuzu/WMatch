@@ -1,23 +1,30 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
-import { AppState, Platform } from 'react-native';
+import { Linking, Platform } from 'react-native';
 
 import { registerPushToken, unregisterPushToken } from './api';
-import { supabase } from '../../utils/supabase/client';
 import { theme } from '../shared/theme';
+import { isAppActive } from '../shared/utils/appLifecycle';
+import { subscribeToUserEvent } from './userEventBus';
 
 let notificationsConfigured = false;
 let activePushToken: string | null = null;
 let activePushUserId: string | null = null;
 let lastPushSyncAt = 0;
 let lastPushSkipReason: string | null = null;
-let pushSyncInFlight: { userId: string | null; promise: Promise<void> } | null = null;
+let pushSyncInFlight: { userId: string | null; promise: Promise<PushNotificationSyncResult> } | null = null;
+let pushRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let pushRetryAttempt = 0;
 
 const PUSH_SYNC_COOLDOWN_MS = 60_000;
+const PUSH_RETRY_DELAYS_MS = [5_000, 15_000, 60_000, 5 * 60_000] as const;
 const LOCAL_PRESENTATION_FLAG = '__localPresentation';
 const LOCAL_PRESENTATION_TTL_MS = 90_000;
 const ANDROID_NOTIFICATION_CHANNEL_ID = 'wmatch-alerts-v2';
+const PUSH_REGISTRATION_STORAGE_KEY = '@wmatch/push-registration-v1';
 const recentlyPresentedNotificationKeys = new Map<string, number>();
 const activeLocalNotificationIdsByGroup = new Map<string, string>();
 
@@ -35,6 +42,42 @@ export type NotificationIntent =
       eventId: string | null;
       preferredTab: 'likedme';
     };
+
+export type PushNotificationSyncResult =
+  | { status: 'registered' }
+  | { status: 'settings-required'; reason: 'permission' | 'channel' }
+  | { status: 'skipped' }
+  | { status: 'retrying' };
+
+type StoredPushRegistration = {
+  token: string;
+  userId: string;
+};
+
+async function readStoredPushRegistration(): Promise<StoredPushRegistration | null> {
+  try {
+    const storedValue = await AsyncStorage.getItem(PUSH_REGISTRATION_STORAGE_KEY);
+
+    if (!storedValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(storedValue) as Partial<StoredPushRegistration>;
+    return typeof parsed.token === 'string' && typeof parsed.userId === 'string'
+      ? { token: parsed.token, userId: parsed.userId }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function storePushRegistration(registration: StoredPushRegistration) {
+  await AsyncStorage.setItem(PUSH_REGISTRATION_STORAGE_KEY, JSON.stringify(registration));
+}
+
+async function removeStoredPushRegistration() {
+  await AsyncStorage.removeItem(PUSH_REGISTRATION_STORAGE_KEY);
+}
 
 function normalizeString(value: unknown) {
   if (typeof value !== 'string') {
@@ -154,14 +197,22 @@ async function ensureAndroidChannel() {
 
   await Notifications.setNotificationChannelAsync(ANDROID_NOTIFICATION_CHANNEL_ID, {
     name: 'WMatch Alerts',
+    description: 'Messages, matches, likes and account activity',
     importance: Notifications.AndroidImportance.MAX,
+    sound: 'default',
+    enableVibrate: true,
+    showBadge: true,
     vibrationPattern: [0, 180, 120, 180],
     lightColor: theme.colors.notificationAccent,
   });
 
   await Notifications.setNotificationChannelAsync('default', {
     name: 'default',
+    description: 'WMatch notifications',
     importance: Notifications.AndroidImportance.MAX,
+    sound: 'default',
+    enableVibrate: true,
+    showBadge: true,
     vibrationPattern: [0, 180, 120, 180],
     lightColor: theme.colors.notificationAccent,
   });
@@ -190,13 +241,155 @@ export async function configureNotificationPresentation() {
   return true;
 }
 
+function clearPushRetry() {
+  if (pushRetryTimer) {
+    clearTimeout(pushRetryTimer);
+    pushRetryTimer = null;
+  }
+
+  pushRetryAttempt = 0;
+}
+
+function schedulePushRetry(userId: string) {
+  if (pushRetryTimer) {
+    return;
+  }
+
+  const delay = PUSH_RETRY_DELAYS_MS[Math.min(pushRetryAttempt, PUSH_RETRY_DELAYS_MS.length - 1)];
+  pushRetryAttempt += 1;
+  pushRetryTimer = setTimeout(() => {
+    pushRetryTimer = null;
+    void syncPushNotifications(userId);
+  }, delay);
+}
+
+function allowsNotifications(settings: Notifications.NotificationPermissionsStatus) {
+  if (settings.granted || settings.status === 'granted') {
+    return true;
+  }
+
+  const iosStatus = settings.ios?.status;
+  return (
+    iosStatus === Notifications.IosAuthorizationStatus.AUTHORIZED
+    || iosStatus === Notifications.IosAuthorizationStatus.PROVISIONAL
+    || iosStatus === Notifications.IosAuthorizationStatus.EPHEMERAL
+  );
+}
+
+function shouldRequestNotificationPermission(settings: Notifications.NotificationPermissionsStatus) {
+  if (!allowsNotifications(settings)) {
+    return settings.canAskAgain;
+  }
+
+  return (
+    Platform.OS === 'ios' &&
+    settings.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL &&
+    settings.canAskAgain
+  );
+}
+
+async function requestNotificationPermission() {
+  return Notifications.requestPermissionsAsync({
+    ios: {
+      allowAlert: true,
+      allowBadge: true,
+      allowSound: true,
+      allowProvisional: false,
+    },
+  });
+}
+
+async function isAndroidNotificationChannelBlocked(
+  settings: Notifications.NotificationPermissionsStatus,
+) {
+  if (Platform.OS !== 'android') {
+    return false;
+  }
+
+  if (settings.android?.importance === Notifications.AndroidImportance.NONE) {
+    return true;
+  }
+
+  const channel = await Notifications.getNotificationChannelAsync(ANDROID_NOTIFICATION_CHANNEL_ID);
+  return channel?.importance === Notifications.AndroidImportance.NONE;
+}
+
+function isIosNotificationPresentationBlocked(
+  settings: Notifications.NotificationPermissionsStatus,
+) {
+  if (
+    Platform.OS !== 'ios' ||
+    settings.ios?.status !== Notifications.IosAuthorizationStatus.AUTHORIZED
+  ) {
+    return false;
+  }
+
+  return (
+    settings.ios.allowsAlert === false &&
+    settings.ios.allowsDisplayInNotificationCenter === false &&
+    settings.ios.allowsDisplayOnLockScreen === false
+  );
+}
+
+async function deactivateStoredPushRegistration(userId: string) {
+  const storedRegistration = await readStoredPushRegistration();
+  const registeredToken =
+    activePushUserId === userId
+      ? activePushToken
+      : storedRegistration?.userId === userId
+        ? storedRegistration.token
+        : null;
+
+  if (!registeredToken) {
+    return;
+  }
+
+  try {
+    await unregisterPushToken(registeredToken);
+
+    if (storedRegistration?.userId === userId && storedRegistration.token === registeredToken) {
+      await removeStoredPushRegistration();
+    }
+
+    if (activePushUserId === userId && activePushToken === registeredToken) {
+      activePushToken = null;
+      activePushUserId = null;
+      lastPushSyncAt = 0;
+    }
+  } catch (error) {
+    console.warn('Disabled push token cleanup will be retried:', error);
+  }
+}
+
+export async function openPushNotificationSettings() {
+  if (Platform.OS === 'android' && Application.applicationId) {
+    try {
+      await Linking.sendIntent('android.settings.CHANNEL_NOTIFICATION_SETTINGS', [
+        {
+          key: 'android.provider.extra.APP_PACKAGE',
+          value: Application.applicationId,
+        },
+        {
+          key: 'android.provider.extra.CHANNEL_ID',
+          value: ANDROID_NOTIFICATION_CHANNEL_ID,
+        },
+      ]);
+      return;
+    } catch {
+      // Some Android vendors do not expose the channel settings intent.
+    }
+  }
+
+  await Linking.openSettings();
+}
+
 async function presentLocalNotification(config: {
   title: string | null | undefined;
   body: string | null | undefined;
   data: Record<string, unknown>;
   fallbackKey: string;
 }) {
-  if (Platform.OS === 'web' || AppState.currentState !== 'active') {
+  if (Platform.OS === 'web' || !isAppActive()) {
     return;
   }
 
@@ -227,9 +420,7 @@ async function presentLocalNotification(config: {
       priority: Notifications.AndroidNotificationPriority.MAX,
     },
     identifier: notificationGroupKey,
-    trigger: {
-      channelId: ANDROID_NOTIFICATION_CHANNEL_ID,
-    },
+    trigger: Platform.OS === 'android' ? { channelId: ANDROID_NOTIFICATION_CHANNEL_ID } : null,
   });
 
   activeLocalNotificationIdsByGroup.set(notificationGroupKey, notificationId);
@@ -262,14 +453,7 @@ export function subscribeToNotificationEventInserts(userId: string | null | unde
     return () => undefined;
   }
 
-  const channel = supabase.channel(`user-events:${userId}`, {
-    config: { private: true },
-  });
-
-  channel.on(
-    'broadcast',
-    { event: 'notification_changed' },
-    ({ payload }) => {
+  return subscribeToUserEvent(userId, 'notification_changed', (payload) => {
       const row = (payload as { notification?: {
         id?: string;
         kind?: string;
@@ -298,14 +482,7 @@ export function subscribeToNotificationEventInserts(userId: string | null | unde
         data,
         fallbackKey: row.id ?? `${row.kind ?? 'event'}:${Date.now()}`,
       });
-    },
-  );
-
-  channel.subscribe();
-
-  return () => {
-    void supabase.removeChannel(channel);
-  };
+    });
 }
 
 export function subscribeToNotificationResponses(listener: (intent: NotificationIntent) => void) {
@@ -334,6 +511,7 @@ export async function getLastNotificationIntent() {
 }
 
 export function resetPushNotificationSyncState() {
+  clearPushRetry();
   activePushToken = null;
   activePushUserId = null;
   lastPushSyncAt = 0;
@@ -342,31 +520,36 @@ export function resetPushNotificationSyncState() {
 
 export async function clearPushNotifications() {
   await pushSyncInFlight?.promise;
-  const tokenToRemove = activePushToken;
+  const storedRegistration = await readStoredPushRegistration();
+  const tokensToRemove = new Set(
+    [activePushToken, storedRegistration?.token ?? null].filter(
+      (token): token is string => typeof token === 'string' && token.length > 0,
+    ),
+  );
+
+  for (const token of tokensToRemove) {
+    try {
+      await unregisterPushToken(token);
+    } catch (error) {
+      console.warn('Push token cleanup skipped:', error);
+    }
+  }
+
+  await removeStoredPushRegistration().catch(() => undefined);
   resetPushNotificationSyncState();
-
-  if (!tokenToRemove) {
-    return;
-  }
-
-  try {
-    await unregisterPushToken(tokenToRemove);
-  } catch (error) {
-    console.warn('Push token cleanup skipped:', error);
-  }
 }
 
-async function syncPushNotificationsOnce(userId: string | null) {
+async function syncPushNotificationsOnce(userId: string | null): Promise<PushNotificationSyncResult> {
   try {
     await configureNotificationPresentation();
 
     if (!userId) {
       lastPushSkipReason = null;
-      return;
+      return { status: 'skipped' };
     }
 
     if (Platform.OS === 'web') {
-      return;
+      return { status: 'skipped' };
     }
 
     if (!Device.isDevice) {
@@ -374,25 +557,41 @@ async function syncPushNotificationsOnce(userId: string | null) {
         console.warn('Push notification sync skipped: real device required for remote push registration.');
         lastPushSkipReason = 'simulator';
       }
-      return;
+      return { status: 'skipped' };
     }
 
     await ensureAndroidChannel();
 
-    const existingPermissions = await Notifications.getPermissionsAsync();
-    let finalStatus = existingPermissions.status;
+    let finalPermissions = await Notifications.getPermissionsAsync();
 
-    if (finalStatus !== 'granted') {
-      const requestedPermissions = await Notifications.requestPermissionsAsync();
-      finalStatus = requestedPermissions.status;
+    if (shouldRequestNotificationPermission(finalPermissions)) {
+      finalPermissions = await requestNotificationPermission();
     }
 
-    if (finalStatus !== 'granted') {
+    if (!allowsNotifications(finalPermissions)) {
+      await deactivateStoredPushRegistration(userId);
+
       if (lastPushSkipReason !== 'permission') {
         console.warn('Push notification sync skipped: notification permission not granted.');
         lastPushSkipReason = 'permission';
       }
-      return;
+      return { status: 'settings-required', reason: 'permission' };
+    }
+
+    if (await isAndroidNotificationChannelBlocked(finalPermissions)) {
+      if (lastPushSkipReason !== 'channel') {
+        console.warn('Push notification sync skipped: Android notification channel is disabled.');
+        lastPushSkipReason = 'channel';
+      }
+      return { status: 'settings-required', reason: 'channel' };
+    }
+
+    if (isIosNotificationPresentationBlocked(finalPermissions)) {
+      if (lastPushSkipReason !== 'ios-presentation') {
+        console.warn('Push notification sync warning: iOS notification presentation is disabled.');
+        lastPushSkipReason = 'ios-presentation';
+      }
+      return { status: 'settings-required', reason: 'permission' };
     }
 
     const projectId = getProjectId();
@@ -405,15 +604,21 @@ async function syncPushNotificationsOnce(userId: string | null) {
       : await Notifications.getExpoPushTokenAsync();
     const token = tokenResponse.data;
     const now = Date.now();
-    const previousToken = activePushToken;
-    const previousUserId = activePushUserId;
+    const storedRegistration = await readStoredPushRegistration();
+    const previousToken =
+      activePushUserId === userId
+        ? activePushToken
+        : storedRegistration?.userId === userId
+          ? storedRegistration.token
+          : null;
+    const previousUserId = activePushUserId ?? storedRegistration?.userId ?? null;
 
     if (
       token === previousToken &&
       userId === previousUserId &&
       now - lastPushSyncAt < PUSH_SYNC_COOLDOWN_MS
     ) {
-      return;
+      return { status: 'registered' };
     }
 
     await registerPushToken(token, Platform.OS);
@@ -422,16 +627,45 @@ async function syncPushNotificationsOnce(userId: string | null) {
       await unregisterPushToken(previousToken).catch(() => undefined);
     }
 
+    await storePushRegistration({ token, userId });
     activePushToken = token;
     activePushUserId = userId;
     lastPushSyncAt = now;
     lastPushSkipReason = null;
+    clearPushRetry();
+    return { status: 'registered' };
   } catch (error) {
     console.warn('Push notification sync skipped:', error);
+    if (userId) {
+      schedulePushRetry(userId);
+    }
+    return { status: 'retrying' };
   }
 }
 
-export function syncPushNotifications(userId: string | null | undefined): Promise<void> {
+export function subscribeToPushTokenChanges(userId: string | null | undefined) {
+  if (!userId || Platform.OS === 'web') {
+    return () => undefined;
+  }
+
+  const tokenSubscription = Notifications.addPushTokenListener(() => {
+    lastPushSyncAt = 0;
+    void syncPushNotifications(userId);
+  });
+  const droppedSubscription = Notifications.addNotificationsDroppedListener(() => {
+    lastPushSyncAt = 0;
+    void syncPushNotifications(userId);
+  });
+
+  return () => {
+    tokenSubscription.remove();
+    droppedSubscription.remove();
+  };
+}
+
+export function syncPushNotifications(
+  userId: string | null | undefined,
+): Promise<PushNotificationSyncResult> {
   const normalizedUserId = userId ?? null;
 
   if (pushSyncInFlight) {

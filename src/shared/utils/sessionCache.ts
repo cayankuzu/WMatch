@@ -6,6 +6,7 @@ const USER_SESSION_STORAGE_PREFIXES = [
   'wmatch:movie-sync-outbox:',
   'wmatch:library-snapshot:',
   'wmatch:swipe-quota:',
+  'wmatch:tab-history:',
 ] as const;
 
 export function registerSessionCache(cleaner: () => void) {

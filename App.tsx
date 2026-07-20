@@ -2,6 +2,7 @@ import 'react-native-url-polyfill/auto';
 
 import { useCallback } from 'react';
 import { StyleSheet, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as ExpoSplashScreen from 'expo-splash-screen';
@@ -21,12 +22,14 @@ function App() {
   }, []);
 
   return (
-    <View style={styles.root} onLayout={handleRootLayout}>
-      <SafeAreaProvider>
-        <StatusBar style="light" />
-        <AppRoot />
-      </SafeAreaProvider>
-    </View>
+    <GestureHandlerRootView style={styles.root}>
+      <View style={styles.root} onLayout={handleRootLayout}>
+        <SafeAreaProvider>
+          <StatusBar style="light" />
+          <AppRoot />
+        </SafeAreaProvider>
+      </View>
+    </GestureHandlerRootView>
   );
 }
 

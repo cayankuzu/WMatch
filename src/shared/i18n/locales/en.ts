@@ -38,6 +38,14 @@ export const en: EnglishCatalog = {
   'common.retry': 'Please try again.',
   'common.loading': 'Loading...',
 
+  'notifications.permission.title': 'Enable notifications',
+  'notifications.permission.description':
+    'Allow WMatch notifications in system settings so you do not miss messages, matches, or likes.',
+  'notifications.permission.channelDescription':
+    'WMatch has notification permission, but its notification channel is disabled. Enable the channel in system settings.',
+  'notifications.permission.notNow': 'Not now',
+  'notifications.permission.openSettings': 'Open settings',
+
   'a11y.wmatchLoading': 'WMatch is loading',
   'a11y.openProfile': 'Open {name} profile',
   'a11y.openChat': 'Open chat with {name}',
@@ -182,6 +190,7 @@ export const en: EnglishCatalog = {
   'chat.screen.preview.blockedByOther': 'This chat is blocked.',
   'chat.screen.preview.ended': 'This chat has ended.',
   'chat.screen.preview.matched': 'You matched',
+  'chat.screen.preview.typing': 'Typing...',
   'chat.screen.tag.blockedByMe': 'Blocked',
   'chat.screen.tag.blockedByOther': 'Blocked',
   'chat.screen.tag.ended': 'Ended',
@@ -237,6 +246,12 @@ export const en: EnglishCatalog = {
   'chat.modal.alert.block.addFailed': 'User could not be blocked',
   'chat.modal.alert.settingsFailed': 'Chat settings could not be updated',
   'chat.modal.retry.failed': 'Failed',
+  'chat.modal.retry.title': 'Message not sent',
+  'chat.modal.retry.description': 'What would you like to do with this message?',
+  'chat.modal.retry.resend': 'Resend',
+  'chat.modal.retry.cancel': 'Cancel',
+  'chat.modal.retry.cancelFailedTitle': 'Message could not be removed',
+  'chat.modal.retry.cancelFailedDescription': 'The unsent message could not be removed.',
   'chat.modal.settings.title': 'Chat Settings',
   'chat.modal.settings.readReceipts.title': 'Read receipts',
   'chat.modal.settings.readReceipts.description':

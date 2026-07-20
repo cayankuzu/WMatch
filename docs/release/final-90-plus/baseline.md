@@ -17,8 +17,8 @@ The plan includes repo-side hardening, Supabase deployment evidence, release ver
 - Protected release identity is unchanged:
   - Android package: `com.wmatch.app`
   - iOS bundle identifier: `com.wmatch.app`
-  - EAS project id: `0aa025b7-dd97-4ad9-951c-3864e0beb8fc`
-  - EAS owner: `cayan`
+  - EAS project id: `5aab8659-db24-4152-aa79-142f210e16d1`
+  - EAS owner: `cayann`
   - Android release SHA-1 guard: `E4:E0:3B:26:E1:7E:D9:1E:5C:26:EC:4A:71:22:0B:CF:E9:15:0C:34`
 
 ## Current Release Coordinates

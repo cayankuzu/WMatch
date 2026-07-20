@@ -1,5 +1,8 @@
 import { BoundedMap } from '../shared/utils/boundedMap';
-import { scheduleMediaPrefetch } from '../shared/utils/mediaPrefetchQueue';
+import {
+  scheduleMediaPrefetch,
+  type MediaPrefetchPriority,
+} from '../shared/utils/mediaPrefetchQueue';
 import { registerSessionCache } from '../shared/utils/sessionCache';
 
 const completedPrefetches = new BoundedMap<string, true>(128);
@@ -19,6 +22,7 @@ function getFirstRemotePhoto(photos: string[]) {
 export async function prefetchProfilePhotos(
   photoGroups: string[][],
   limit = 4,
+  priority: MediaPrefetchPriority = 'predictive',
 ) {
   const uris = [...new Set(photoGroups.map(getFirstRemotePhoto).filter((uri): uri is string => Boolean(uri)))]
     .slice(0, limit);
@@ -35,7 +39,7 @@ export async function prefetchProfilePhotos(
       }
 
       const requestGeneration = prefetchGeneration;
-      const flight = scheduleMediaPrefetch(uri)
+      const flight = scheduleMediaPrefetch(uri, priority, 'profile')
         .then((success) => {
           if (success && requestGeneration === prefetchGeneration) {
             completedPrefetches.set(uri, true);

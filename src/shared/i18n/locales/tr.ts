@@ -34,6 +34,14 @@ export const tr = {
   'common.retry': 'Lütfen tekrar dene.',
   'common.loading': 'Yükleniyor...',
 
+  'notifications.permission.title': 'Bildirimleri aç',
+  'notifications.permission.description':
+    'Mesajları, eşleşmeleri ve beğenileri kaçırmamak için WMatch bildirimlerine sistem ayarlarından izin ver.',
+  'notifications.permission.channelDescription':
+    'WMatch bildirim izni açık ancak bildirim kanalı kapalı. Bildirim kanalını sistem ayarlarından etkinleştir.',
+  'notifications.permission.notNow': 'Şimdi değil',
+  'notifications.permission.openSettings': 'Ayarları aç',
+
   'a11y.wmatchLoading': 'WMatch yükleniyor',
   'a11y.openProfile': '{name} profilini aç',
   'a11y.openChat': '{name} ile sohbeti aç',
@@ -180,6 +188,7 @@ export const tr = {
   'chat.screen.preview.blockedByOther': 'Bu sohbet engelli.',
   'chat.screen.preview.ended': 'Bu sohbet sonlandırıldı.',
   'chat.screen.preview.matched': 'Eşleştiniz',
+  'chat.screen.preview.typing': 'Yazıyor...',
   'chat.screen.tag.blockedByMe': 'Engelledin',
   'chat.screen.tag.blockedByOther': 'Engellendi',
   'chat.screen.tag.ended': 'Bitti',
@@ -235,6 +244,12 @@ export const tr = {
   'chat.modal.alert.block.addFailed': 'Kullanıcı engellenemedi',
   'chat.modal.alert.settingsFailed': 'Sohbet ayarları güncellenemedi',
   'chat.modal.retry.failed': 'Gönderilemedi',
+  'chat.modal.retry.title': 'Mesaj gönderilemedi',
+  'chat.modal.retry.description': 'Bu mesaj için ne yapmak istiyorsun?',
+  'chat.modal.retry.resend': 'Yeniden gönder',
+  'chat.modal.retry.cancel': 'İptal et',
+  'chat.modal.retry.cancelFailedTitle': 'Mesaj kaldırılamadı',
+  'chat.modal.retry.cancelFailedDescription': 'Gönderilemeyen mesaj kaldırılamadı.',
   'chat.modal.settings.title': 'Sohbet Ayarları',
   'chat.modal.settings.readReceipts.title': 'Okundu bilgisi',
   'chat.modal.settings.readReceipts.description':

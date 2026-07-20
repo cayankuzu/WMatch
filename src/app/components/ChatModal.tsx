@@ -8,6 +8,8 @@ import {
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
+  type KeyboardEvent,
+  type LayoutChangeEvent,
   Platform,
   Pressable,
   ScrollView,
@@ -19,7 +21,6 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AccessibleModal from './ui/AccessibleModal';
 
-import { supabase } from '../../../utils/supabase/client';
 import { useLocalization } from '../../context/LocalizationContext';
 import {
   ApiRequestError,
@@ -48,10 +49,16 @@ import {
   writeChatThreadCache,
 } from '../../services/chatCache';
 import { normalizeChat, patchChat, type ChatPatch } from '../../services/chatState';
+import { subscribeToUserEvent } from '../../services/userEventBus';
 import { CHAT_THREAD_INITIAL_PAGE_SIZE, MAX_MESSAGE_LENGTH } from '../../shared/constants';
 import type { ChatSettings } from '../../shared/types';
 import { theme } from '../../shared/theme';
-import { validateMessageText } from '../../shared/utils/validation';
+import { calculateKeyboardInset } from '../../shared/utils/keyboard';
+import {
+  clampMessageText,
+  countMessageCharacters,
+  validateMessageText,
+} from '../../shared/utils/validation';
 import AppButton from './ui/AppButton';
 import ChatSettingsModal from './ChatSettingsModal';
 import ChatMessageBubble, { type LocalChatMessage } from './chat/ChatMessageBubble';
@@ -89,6 +96,7 @@ const MAX_REPORT_DETAILS_LENGTH = 1500;
 const TYPING_IDLE_TIMEOUT_MS = 1800;
 const CHAT_BOTTOM_PROXIMITY_PX = 120;
 const CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION = { minIndexForVisible: 0 } as const;
+const ANDROID_KEYBOARD_COMPOSER_GAP = 32;
 
 function toLocalMessage(message: ApiMessage): LocalChatMessage {
   return {
@@ -246,8 +254,13 @@ export default function ChatModal({
   const [savingSettings, setSavingSettings] = useState(false);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
   const [isTypingForPresence, setIsTypingForPresence] = useState(false);
   const listRef = useRef<FlatList<LocalChatMessage>>(null);
+  const composerInputRef = useRef<TextInput>(null);
+  const rootHeightRef = useRef(0);
+  const rootHeightWithoutKeyboardRef = useRef(0);
+  const androidKeyboardHeightRef = useRef(0);
   const userScrolledMessagesRef = useRef(false);
   const scrollOffsetRef = useRef(0);
   const mountedRef = useRef(true);
@@ -255,8 +268,10 @@ export default function ChatModal({
   const olderMessagesInFlightRef = useRef(false);
   const olderMessagesCursorRef = useRef<string | null>(initialCachedThread?.pageInfo?.nextCursor ?? null);
   const typingIdleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const keyboardResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const acknowledgedReadIdsRef = useRef<Set<string>>(new Set());
   const shouldBroadcastTyping = threadChat.canSend && isTypingForPresence;
+  const messageCharacterCount = countMessageCharacters(inputText);
 
   const peerPresence = useChatPresence({
     currentUserId,
@@ -293,6 +308,10 @@ export default function ChatModal({
       if (typingIdleTimeoutRef.current) {
         clearTimeout(typingIdleTimeoutRef.current);
         typingIdleTimeoutRef.current = null;
+      }
+      if (keyboardResetTimeoutRef.current) {
+        clearTimeout(keyboardResetTimeoutRef.current);
+        keyboardResetTimeoutRef.current = null;
       }
     };
   }, []);
@@ -342,19 +361,52 @@ export default function ChatModal({
     if (!threadChat.canSend) {
       setIsComposerFocused(false);
       setIsKeyboardVisible(false);
+      androidKeyboardHeightRef.current = 0;
+      setAndroidKeyboardInset(0);
       setIsTypingForPresence(false);
       return;
     }
 
-    const handleKeyboardShown = () => {
+    const syncAndroidKeyboardInset = (keyboardHeight: number) => {
+      if (Platform.OS !== 'android') {
+        return;
+      }
+
+      const nextInset = calculateKeyboardInset(
+        rootHeightWithoutKeyboardRef.current,
+        rootHeightRef.current,
+        keyboardHeight,
+        ANDROID_KEYBOARD_COMPOSER_GAP,
+      );
+      setAndroidKeyboardInset((current) => (current === nextInset ? current : nextInset));
+    };
+
+    const handleKeyboardShown = (event: KeyboardEvent) => {
       if (mountedRef.current) {
+        if (keyboardResetTimeoutRef.current) {
+          clearTimeout(keyboardResetTimeoutRef.current);
+          keyboardResetTimeoutRef.current = null;
+        }
         setIsKeyboardVisible(true);
+
+        if (Platform.OS === 'android') {
+          const measuredKeyboardHeight = Keyboard.metrics()?.height ?? 0;
+          const keyboardHeight = Math.max(event.endCoordinates.height, measuredKeyboardHeight, 0);
+          androidKeyboardHeightRef.current = keyboardHeight;
+          syncAndroidKeyboardInset(keyboardHeight);
+        }
       }
     };
 
     const handleKeyboardHidden = () => {
       if (mountedRef.current) {
+        if (keyboardResetTimeoutRef.current) {
+          clearTimeout(keyboardResetTimeoutRef.current);
+          keyboardResetTimeoutRef.current = null;
+        }
         setIsKeyboardVisible(false);
+        androidKeyboardHeightRef.current = 0;
+        setAndroidKeyboardInset(0);
       }
     };
 
@@ -366,6 +418,29 @@ export default function ChatModal({
       keyboardHideSubscription.remove();
     };
   }, [threadChat.canSend]);
+
+  const handleRootLayout = (event: LayoutChangeEvent) => {
+    const height = event.nativeEvent.layout.height;
+    rootHeightRef.current = height;
+
+    if (Platform.OS !== 'android') {
+      return;
+    }
+
+    const keyboardHeight = androidKeyboardHeightRef.current;
+    if (keyboardHeight <= 0) {
+      rootHeightWithoutKeyboardRef.current = height;
+      return;
+    }
+
+    const nextInset = calculateKeyboardInset(
+      rootHeightWithoutKeyboardRef.current,
+      height,
+      keyboardHeight,
+      ANDROID_KEYBOARD_COMPOSER_GAP,
+    );
+    setAndroidKeyboardInset((current) => (current === nextInset ? current : nextInset));
+  };
 
   const scrollToLatestMessage = (animated = true) => {
     const scroll = () => listRef.current?.scrollToOffset({ offset: 0, animated });
@@ -516,10 +591,6 @@ export default function ChatModal({
     userScrolledMessagesRef.current = false;
     void syncThread(Boolean(initialCachedThread), true, true);
 
-    const channel = supabase.channel(`user-events:${currentUserId}`, {
-      config: { private: true },
-    });
-
     const handleMessageInsert = (nextMessage: ApiMessage) => {
       const isCurrentThread =
         (nextMessage.sender_id === currentUserId && nextMessage.receiver_id === chat.userId) ||
@@ -548,7 +619,7 @@ export default function ChatModal({
       onChatUpdated?.();
     };
 
-    channel.on('broadcast', { event: 'chat_changed' }, ({ payload }) => {
+    const unsubscribeUserEvent = subscribeToUserEvent(currentUserId, 'chat_changed', (payload) => {
       const nextMessage = (payload as { message?: ApiMessage } | null)?.message;
 
       if (nextMessage) {
@@ -557,9 +628,7 @@ export default function ChatModal({
       }
 
       void syncThread(true);
-    });
-
-    channel.subscribe((status) => {
+    }, (status) => {
       if (status === 'SUBSCRIBED' && !cancelled) {
         void syncThread(true);
       }
@@ -567,7 +636,7 @@ export default function ChatModal({
 
     return () => {
       cancelled = true;
-      void supabase.removeChannel(channel);
+      unsubscribeUserEvent();
     };
   }, [chat.userId, currentUserId]);
 
@@ -590,14 +659,15 @@ export default function ChatModal({
   }, [chat.userId, currentUserId, hasOlderMessages, messages, threadChat]);
 
   const handleInputChange = (nextValue: string) => {
-    setInputText(nextValue);
+    const clampedValue = clampMessageText(nextValue);
+    setInputText(clampedValue);
 
     if (typingIdleTimeoutRef.current) {
       clearTimeout(typingIdleTimeoutRef.current);
       typingIdleTimeoutRef.current = null;
     }
 
-    if (!nextValue.trim()) {
+    if (!clampedValue.trim()) {
       setIsTypingForPresence(false);
       return;
     }
@@ -614,8 +684,21 @@ export default function ChatModal({
       return;
     }
 
+    composerInputRef.current?.blur();
     Keyboard.dismiss();
     setIsComposerFocused(false);
+
+    if (keyboardResetTimeoutRef.current) {
+      clearTimeout(keyboardResetTimeoutRef.current);
+    }
+    keyboardResetTimeoutRef.current = setTimeout(() => {
+      if (mountedRef.current) {
+        setIsKeyboardVisible(false);
+        androidKeyboardHeightRef.current = 0;
+        setAndroidKeyboardInset(0);
+      }
+      keyboardResetTimeoutRef.current = null;
+    }, 350);
   };
 
   const submitMessage = async (text: string, optimisticId?: string) => {
@@ -716,6 +799,7 @@ export default function ChatModal({
       typingIdleTimeoutRef.current = null;
     }
     setIsTypingForPresence(false);
+    dismissComposer();
     await submitMessage(text);
   };
 
@@ -725,6 +809,43 @@ export default function ChatModal({
     }
 
     void submitMessage(message.text, message.id);
+  };
+
+  const handleCancelFailedMessage = async (message: LocalChatMessage) => {
+    try {
+      await removePendingChatMessage(currentUserId, message.id);
+
+      if (mountedRef.current) {
+        setMessages((current) => current.filter((item) => item.id !== message.id));
+      }
+    } catch (error) {
+      Alert.alert(
+        t('chat.modal.retry.cancelFailedTitle'),
+        error instanceof Error ? error.message : t('chat.modal.retry.cancelFailedDescription'),
+      );
+    }
+  };
+
+  const handleFailedMessagePress = (message: LocalChatMessage) => {
+    if (message.clientStatus !== 'failed') {
+      return;
+    }
+
+    Alert.alert(
+      t('chat.modal.retry.title'),
+      t('chat.modal.retry.description'),
+      [
+        {
+          text: t('chat.modal.retry.cancel'),
+          style: 'destructive',
+          onPress: () => void handleCancelFailedMessage(message),
+        },
+        {
+          text: t('chat.modal.retry.resend'),
+          onPress: () => handleRetryMessage(message),
+        },
+      ],
+    );
   };
 
   const handleSettingsChange = async (nextSettings: ChatSettings) => {
@@ -989,6 +1110,8 @@ export default function ChatModal({
       : isKeyboardVisible
         ? 8
         : Math.max(insets.bottom, 10);
+  const androidComposerPadding =
+    Platform.OS === 'android' && isKeyboardVisible ? androidKeyboardInset : 0;
   const statusContent = useMemo(() => {
     if (threadChat.ended) {
       return null;
@@ -1017,9 +1140,16 @@ export default function ChatModal({
       <KeyboardAvoidingView
         accessibilityViewIsModal
         importantForAccessibility="yes"
-        style={styles.container}
-        behavior="padding"
+        style={[
+          styles.container,
+          androidComposerPadding > 0
+            ? { paddingBottom: androidComposerPadding }
+            : null,
+        ]}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        enabled={Platform.OS === 'ios'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 6 : 0}
+        onLayout={handleRootLayout}
       >
         <SafeAreaView edges={['top']} style={styles.safeArea}>
           <View accessibilityViewIsModal style={styles.header}>
@@ -1185,7 +1315,7 @@ export default function ChatModal({
                     isOwn={isOwn}
                     canShowReadReceipt={threadChat.peerSettings.readReceipts}
                     failedLabel={t('chat.modal.retry.failed')}
-                    onRetry={isOwn ? () => handleRetryMessage(item) : undefined}
+                    onFailedPress={isOwn ? () => handleFailedMessagePress(item) : undefined}
                   />
                 </View>
               );
@@ -1220,9 +1350,12 @@ export default function ChatModal({
           />
 
           {threadChat.canSend ? (
-            <View style={[styles.inputSafeArea, { paddingBottom: composerBottomPadding }]}>
+            <View
+              style={[styles.inputSafeArea, { paddingBottom: composerBottomPadding }]}
+            >
               <View style={styles.inputRow}>
                 <TextInput
+                  ref={composerInputRef}
                   value={inputText}
                   onChangeText={handleInputChange}
                   onFocus={() => {
@@ -1234,7 +1367,6 @@ export default function ChatModal({
                   placeholder={t('chat.modal.input.placeholder')}
                   accessibilityLabel={t('chat.modal.input.placeholder')}
                   placeholderTextColor={theme.colors.textSoft}
-                  maxLength={MAX_MESSAGE_LENGTH}
                   style={styles.input}
                   returnKeyType="send"
                   onSubmitEditing={() => void handleSend()}
@@ -1250,9 +1382,14 @@ export default function ChatModal({
                   <MaterialCommunityIcons name="send" size={18} color={theme.colors.white} />
                 </Pressable>
               </View>
+              <Text style={styles.messageCounter}>
+                {messageCharacterCount}/{MAX_MESSAGE_LENGTH}
+              </Text>
             </View>
           ) : (
-            <View style={[styles.inputSafeArea, { paddingBottom: composerBottomPadding }]}>
+            <View
+              style={[styles.inputSafeArea, { paddingBottom: composerBottomPadding }]}
+            >
               <View style={[styles.lockedNotice, threadChat.isBlocked ? styles.lockedNoticeDanger : styles.lockedNoticeMuted]}>
                 <MaterialCommunityIcons
                   name={threadChat.isBlocked ? 'block-helper' : 'message-lock-outline'}
@@ -1282,7 +1419,7 @@ export default function ChatModal({
       {showReportForm ? (
         <View style={styles.reportOverlay}>
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             style={styles.reportCard}
           >
             <ScrollView
@@ -1606,6 +1743,16 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
+  },
+  messageCounter: {
+    color: theme.colors.textSoft,
+    fontSize: theme.typography.roles.meta.fontSize,
+    lineHeight: theme.typography.roles.meta.lineHeight,
+    fontWeight: '700',
+    textAlign: 'right',
+    paddingHorizontal: 16,
+    paddingBottom: 6,
+    marginTop: -6,
   },
   input: {
     flex: 1,

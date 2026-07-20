@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
-import { useApp } from '../../context/AppContext';
+import { useLibrary } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
 import { useLocalization } from '../../context/LocalizationContext';
 import { getMovieKey, legacyMovieIdsToRefs, movieToMediaRef, tmdbService, type Movie } from '../../services/tmdb';
@@ -55,7 +55,7 @@ export default function ProfileViewer({
 }: ProfileViewerProps) {
   const { t } = useLocalization();
   const { user: currentUser } = useAuth();
-  const { favorites: currentFavorites, watched: currentWatched } = useApp();
+  const { favorites: currentFavorites, watched: currentWatched } = useLibrary();
   const [favorites, setFavorites] = useState<Movie[]>([]);
   const [watched, setWatched] = useState<Movie[]>([]);
   const [showCompatibility, setShowCompatibility] = useState(false);

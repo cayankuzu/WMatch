@@ -1,13 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  runOnJS,
+  useAnimatedScrollHandler,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 import {
-  Animated,
   FlatList,
-  ImageBackground,
   Linking,
-  PanResponder,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -106,10 +112,12 @@ export default function ProfileCard({
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
   const [selectedTab, setSelectedTab] = useState<'favorites' | 'watched'>('favorites');
   const [contentFilter, setContentFilter] = useState<'all' | 'movie' | 'tv'>('all');
-  const [swipeCue, setSwipeCue] = useState<'left' | 'right' | 'down' | null>(null);
   const [showImagePreview, setShowImagePreview] = useState(false);
-  const pan = useRef(new Animated.ValueXY()).current;
-  const scrollOffsetRef = useRef(0);
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const gestureStartX = useSharedValue(0);
+  const gestureStartY = useSharedValue(0);
+  const scrollOffset = useSharedValue(0);
   const photoListRef = useRef<FlatList<string> | null>(null);
 
   const photos = user.photos.filter((photo) => photo.trim().length > 0);
@@ -129,17 +137,18 @@ export default function ProfileCard({
   const resolvedHeaderRightPress = onHeaderRightPress ?? (swipeable ? onRefresh : undefined);
   const resolvedHeaderRightIcon = headerRightIcon ?? (swipeable && onRefresh ? 'reload' : undefined);
   const showHeaderBar = Boolean(onHeaderBack || resolvedHeaderRightPress || onSecondaryHeaderRightPress);
+  const canSwipeDown = Boolean(onSwipeDown);
 
   useEffect(() => {
     setCurrentPhotoIndex(0);
-    pan.setValue({ x: 0, y: 0 });
-    scrollOffsetRef.current = 0;
-    setSwipeCue(null);
+    translateX.value = 0;
+    translateY.value = 0;
+    scrollOffset.value = 0;
     setShowImagePreview(false);
     requestAnimationFrame(() => {
       photoListRef.current?.scrollToIndex({ index: 0, animated: false });
     });
-  }, [pan, user.id, user.name]);
+  }, [scrollOffset, translateX, translateY, user.id, user.name]);
 
   useEffect(() => {
     if (photos.length === 0 || currentPhotoIndex <= photos.length - 1) {
@@ -152,119 +161,138 @@ export default function ProfileCard({
     });
   }, [currentPhotoIndex, photos.length]);
 
-  const animateOut = (direction: -1 | 1, callback?: () => void) => {
-    Animated.timing(pan, {
-      toValue: { x: direction * 420, y: 0 },
-      duration: 110,
-      useNativeDriver: true,
-    }).start(() => {
-      pan.setValue({ x: 0, y: 0 });
-      setSwipeCue(null);
-      callback?.();
-    });
-  };
+  const commitSwipeLeft = useCallback(() => onSwipeLeft?.(), [onSwipeLeft]);
+  const commitSwipeRight = useCallback(() => onSwipeRight?.(), [onSwipeRight]);
+  const commitSwipeDown = useCallback(() => onSwipeDown?.(), [onSwipeDown]);
 
-  const animateDown = (callback?: () => void) => {
-    Animated.timing(pan, {
-      toValue: { x: 0, y: 180 },
-      duration: 120,
-      useNativeDriver: true,
-    }).start(() => {
-      pan.setValue({ x: 0, y: 0 });
-      setSwipeCue(null);
-      callback?.();
-    });
-  };
+  const panGesture = useMemo(
+    () => Gesture.Pan()
+      .enabled(swipeable)
+      .manualActivation(true)
+      .onTouchesDown((event) => {
+        const touch = event.allTouches[0];
+        if (touch) {
+          gestureStartX.value = touch.absoluteX;
+          gestureStartY.value = touch.absoluteY;
+        }
+      })
+      .onTouchesMove((event, stateManager) => {
+        const touch = event.allTouches[0];
+        if (!touch) {
+          return;
+        }
 
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => false,
-        onMoveShouldSetPanResponder: (_, gesture) =>
-          swipeable &&
-          (
-            (
-              Math.abs(gesture.dx) > 12 &&
-              Math.abs(gesture.dx) > Math.abs(gesture.dy) &&
-              ((gesture.dx > 0 && allowSwipeRight) || (gesture.dx < 0 && allowSwipeLeft))
-            ) ||
-            (
-              Boolean(onSwipeDown) &&
-              scrollOffsetRef.current <= 0 &&
-              gesture.dy > 14 &&
-              gesture.dy > Math.abs(gesture.dx)
-            )
-          ),
-        onPanResponderGrant: () => {
-          pan.stopAnimation();
-        },
-        onPanResponderMove: (_, gesture) => {
-          if (onSwipeDown && scrollOffsetRef.current <= 0 && gesture.dy > 0 && gesture.dy > Math.abs(gesture.dx)) {
-            pan.setValue({ x: 0, y: Math.max(0, gesture.dy) });
-            setSwipeCue(gesture.dy > 26 ? 'down' : null);
-            return;
-          }
+        const deltaX = touch.absoluteX - gestureStartX.value;
+        const deltaY = touch.absoluteY - gestureStartY.value;
+        const horizontalIntent = Math.abs(deltaX) > 12 && Math.abs(deltaX) > Math.abs(deltaY);
+        const downwardIntent = deltaY > 14 && deltaY > Math.abs(deltaX);
 
-          const wantsRight = gesture.dx > 0;
-          const wantsLeft = gesture.dx < 0;
+        if (horizontalIntent) {
+          const directionAllowed = deltaX > 0 ? allowSwipeRight : allowSwipeLeft;
+          directionAllowed ? stateManager.activate() : stateManager.fail();
+          return;
+        }
 
-          if ((wantsRight && !allowSwipeRight) || (wantsLeft && !allowSwipeLeft)) {
-            pan.setValue({ x: 0, y: 0 });
-            setSwipeCue(null);
-            return;
-          }
+        if (downwardIntent) {
+          canSwipeDown && scrollOffset.value <= 0 ? stateManager.activate() : stateManager.fail();
+          return;
+        }
 
-          pan.setValue({ x: gesture.dx, y: 0 });
-          setSwipeCue(gesture.dx > 28 ? 'right' : gesture.dx < -28 ? 'left' : null);
-        },
-        onPanResponderRelease: (_, gesture) => {
-          if (
-            onSwipeDown &&
-            scrollOffsetRef.current <= 0 &&
-            gesture.dy > DOWN_SWIPE_THRESHOLD &&
-            gesture.dy > Math.abs(gesture.dx)
-          ) {
-            animateDown(onSwipeDown);
-            return;
-          }
+        if (Math.abs(deltaY) > 14) {
+          stateManager.fail();
+        }
+      })
+      .onUpdate((event) => {
+        if (event.translationY > 0 && event.translationY > Math.abs(event.translationX) && canSwipeDown && scrollOffset.value <= 0) {
+          translateX.value = 0;
+          translateY.value = event.translationY;
+          return;
+        }
 
-          if (gesture.dx > SWIPE_THRESHOLD && allowSwipeRight) {
-            animateOut(1, onSwipeRight);
-            return;
-          }
+        translateY.value = 0;
+        translateX.value = event.translationX;
+      })
+      .onEnd((event) => {
+        if (translateY.value > DOWN_SWIPE_THRESHOLD && canSwipeDown) {
+          translateY.value = withTiming(180, { duration: 120 }, (finished) => {
+            if (finished) {
+              translateY.value = 0;
+              runOnJS(commitSwipeDown)();
+            }
+          });
+          return;
+        }
 
-          if (gesture.dx < -SWIPE_THRESHOLD && allowSwipeLeft) {
-            animateOut(-1, onSwipeLeft);
-            return;
-          }
+        if (translateX.value > SWIPE_THRESHOLD && allowSwipeRight) {
+          translateX.value = withTiming(420, { duration: 110 }, (finished) => {
+            if (finished) {
+              translateX.value = 0;
+              runOnJS(commitSwipeRight)();
+            }
+          });
+          return;
+        }
 
-          Animated.spring(pan, {
-            toValue: { x: 0, y: 0 },
-            useNativeDriver: true,
-          }).start(() => setSwipeCue(null));
-        },
-        onPanResponderTerminate: () => {
-          Animated.spring(pan, {
-            toValue: { x: 0, y: 0 },
-            useNativeDriver: true,
-          }).start(() => setSwipeCue(null));
-        },
-        onPanResponderTerminationRequest: () => false,
-        onShouldBlockNativeResponder: () => false,
+        if (translateX.value < -SWIPE_THRESHOLD && allowSwipeLeft) {
+          translateX.value = withTiming(-420, { duration: 110 }, (finished) => {
+            if (finished) {
+              translateX.value = 0;
+              runOnJS(commitSwipeLeft)();
+            }
+          });
+          return;
+        }
+
+        translateX.value = withSpring(0, { damping: 18, stiffness: 220, velocity: event.velocityX });
+        translateY.value = withSpring(0, { damping: 18, stiffness: 220, velocity: event.velocityY });
+      })
+      .onFinalize((_event, success) => {
+        if (!success) {
+          translateX.value = withSpring(0, { damping: 18, stiffness: 220 });
+          translateY.value = withSpring(0, { damping: 18, stiffness: 220 });
+        }
       }),
-    [allowSwipeLeft, allowSwipeRight, onSwipeDown, onSwipeLeft, onSwipeRight, pan, swipeable],
+    [
+      allowSwipeLeft,
+      allowSwipeRight,
+      canSwipeDown,
+      commitSwipeDown,
+      commitSwipeLeft,
+      commitSwipeRight,
+      gestureStartX,
+      gestureStartY,
+      scrollOffset,
+      swipeable,
+      translateX,
+      translateY,
+    ],
   );
+
+  const cardAnimatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: swipeable ? translateX.value : 0 },
+      { translateY: swipeable ? translateY.value : 0 },
+      { rotate: swipeable ? `${Math.max(-8, Math.min(8, translateX.value / 27.5))}deg` : '0deg' },
+    ],
+  }));
+  const leftCueStyle = useAnimatedStyle(() => ({
+    opacity: Math.max(0, Math.min(1, -translateX.value / 90)),
+  }));
+  const rightCueStyle = useAnimatedStyle(() => ({
+    opacity: Math.max(0, Math.min(1, translateX.value / 90)),
+  }));
+  const downCueStyle = useAnimatedStyle(() => ({
+    opacity: Math.max(0, Math.min(1, translateY.value / 80)),
+  }));
+  const handleScroll = useAnimatedScrollHandler((event) => {
+    scrollOffset.value = event.contentOffset.y;
+  });
 
   const currentList = selectedTab === 'favorites' ? favorites : watched;
   const filteredList = currentList.filter((item) => {
     if (contentFilter === 'movie') return item.media_type === 'movie' || Boolean(item.title);
     if (contentFilter === 'tv') return item.media_type === 'tv' || Boolean(item.name);
     return true;
-  });
-
-  const rotate = pan.x.interpolate({
-    inputRange: [-220, 0, 220],
-    outputRange: ['-8deg', '0deg', '8deg'],
   });
 
   const openLetterboxd = () => {
@@ -313,15 +341,8 @@ export default function ProfileCard({
         : t('profile.card.empty.watched.other');
 
   return (
-    <Animated.View
-      style={[
-        styles.animatedShell,
-        swipeable && {
-          transform: [{ translateX: pan.x }, { translateY: pan.y }, { rotate }],
-        },
-      ]}
-      {...(swipeable ? panResponder.panHandlers : {})}
-    >
+    <GestureDetector gesture={panGesture}>
+    <Animated.View style={[styles.animatedShell, cardAnimatedStyle]}>
       {showHeaderBar ? (
         <View style={styles.swipeTopBar}>
           {onHeaderBack ? (
@@ -352,15 +373,13 @@ export default function ProfileCard({
         </View>
       ) : null}
 
-      <ScrollView
+      <Animated.ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: PROFILE_CARD_BOTTOM_SPACING + bottomInset }}
         bounces={!swipeable || Boolean(onSwipeDown)}
         alwaysBounceVertical={!swipeable && Boolean(onRefresh)}
         scrollEventThrottle={16}
-        onScroll={(event) => {
-          scrollOffsetRef.current = event.nativeEvent.contentOffset.y;
-        }}
+        onScroll={handleScroll}
         refreshControl={
           !swipeable && onRefresh ? (
             <AppRefreshControl
@@ -396,32 +415,39 @@ export default function ProfileCard({
                   const nextIndex = Math.round(event.nativeEvent.contentOffset.x / photoPageWidth);
                   setCurrentPhotoIndex(Math.min(Math.max(nextIndex, 0), photos.length - 1));
                 }}
-                renderItem={({ item }) => (
-                  <ImageBackground source={{ uri: item }} style={[styles.hero, { width: photoPageWidth }]} imageStyle={styles.heroImage}>
+                renderItem={({ item, index }) => (
+                  <View style={[styles.hero, { width: photoPageWidth }]}>
+                    <Image
+                      cachePolicy="memory-disk"
+                      contentFit="cover"
+                      enforceEarlyResizing
+                      priority={index === currentPhotoIndex ? 'high' : 'normal'}
+                      recyclingKey={`profile-hero:${user.id ?? user.username}:${index}`}
+                      source={{ uri: item }}
+                      style={styles.heroImage}
+                      transition={90}
+                    />
                     <View style={styles.heroScrim} />
                     <Pressable onPress={() => setShowImagePreview(true)} style={StyleSheet.absoluteFill} />
-                  </ImageBackground>
+                  </View>
                 )}
               />
 
-              {swipeCue ? (
-                <View
-                  style={[
-                    styles.swipeCue,
-                    swipeCue === 'right'
-                      ? styles.swipeCueRight
-                      : swipeCue === 'left'
-                        ? styles.swipeCueLeft
-                        : styles.swipeCueDown,
-                  ]}
-                >
-                  <MaterialCommunityIcons
-                    name={swipeCue === 'right' ? 'heart' : swipeCue === 'left' ? 'close' : 'undo-variant'}
-                    size={swipeCue === 'down' ? 34 : 38}
-                    color={theme.colors.white}
-                  />
-                  {swipeCue === 'down' ? <Text style={styles.swipeCueText}>{t('common.back')}</Text> : null}
-                </View>
+              {swipeable ? (
+                <>
+                  <Animated.View pointerEvents="none" style={[styles.swipeCue, styles.swipeCueLeft, leftCueStyle]}>
+                    <MaterialCommunityIcons name="close" size={38} color={theme.colors.white} />
+                  </Animated.View>
+                  <Animated.View pointerEvents="none" style={[styles.swipeCue, styles.swipeCueRight, rightCueStyle]}>
+                    <MaterialCommunityIcons name="heart" size={38} color={theme.colors.white} />
+                  </Animated.View>
+                  {onSwipeDown ? (
+                    <Animated.View pointerEvents="none" style={[styles.swipeCue, styles.swipeCueDown, downCueStyle]}>
+                      <MaterialCommunityIcons name="undo-variant" size={34} color={theme.colors.white} />
+                      <Text style={styles.swipeCueText}>{t('common.back')}</Text>
+                    </Animated.View>
+                  ) : null}
+                </>
               ) : null}
 
               {photos.length > 1 ? (
@@ -577,7 +603,7 @@ export default function ProfileCard({
             </>
           )}
         </View>
-      </ScrollView>
+      </Animated.ScrollView>
 
       <ImagePreviewModal
         visible={showImagePreview}
@@ -587,6 +613,7 @@ export default function ProfileCard({
         onClose={() => setShowImagePreview(false)}
       />
     </Animated.View>
+    </GestureDetector>
   );
 }
 
@@ -615,7 +642,11 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
   },
   heroImage: {
-    resizeMode: 'cover',
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
   },
   heroScrim: {
     position: 'absolute',

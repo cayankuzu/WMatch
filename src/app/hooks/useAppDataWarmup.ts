@@ -1,20 +1,19 @@
 import { useEffect } from 'react';
-import { AppState } from 'react-native';
 
 import { preloadChatList, preloadChatThread } from '../../services/chatCache';
+import {
+  cancelQueuedLaunchTasks,
+  scheduleLaunchTask,
+  type LaunchTaskPriority,
+} from '../../services/launchScheduler';
 import { prefetchProfilePhotos } from '../../services/profileImagePrefetch';
+import { loadTabWarmupOrder } from '../../services/tabUsage';
 import { telemetry } from '../../services/telemetry';
 import type { AppTab, AppUser } from '../../shared/types';
+import { getAppState, subscribeToForeground } from '../../shared/utils/appLifecycle';
 import { preloadDiscoveryData } from './useDiscoveryData';
 import { preloadSwipeQuota } from './useSwipeQuota';
 
-const WARMUP_ORDER: AppTab[] = [
-  'match',
-  'chat',
-  'likes',
-  'compatibility',
-  'profile',
-];
 const FIRST_FRAME_GRACE_MS = 250;
 
 function waitForIdle() {
@@ -28,11 +27,7 @@ function waitForIdle() {
   });
 }
 
-function isInBackground() {
-  return AppState.currentState === 'background';
-}
-
-export async function preloadTabData(user: AppUser, tab: AppTab) {
+async function preloadTabResources(user: AppUser, tab: AppTab) {
   if (tab === 'match') {
     await preloadDiscoveryData('watch', user.id);
     await preloadSwipeQuota(user.id);
@@ -41,7 +36,7 @@ export async function preloadTabData(user: AppUser, tab: AppTab) {
 
   if (tab === 'chat') {
     const { chats } = await preloadChatList(user.id);
-    for (const chat of chats.slice(0, 2)) {
+    for (const chat of chats.slice(0, 1)) {
       await preloadChatThread(user.id, chat.userId);
     }
     return;
@@ -60,36 +55,48 @@ export async function preloadTabData(user: AppUser, tab: AppTab) {
   }
 
   if (tab === 'profile') {
-    await prefetchProfilePhotos([user.photos], user.photos.length);
+    await prefetchProfilePhotos([user.photos], 2, 'predictive');
   }
 }
 
-export default function useAppDataWarmup(user: AppUser | null) {
+export function preloadTabData(
+  user: AppUser,
+  tab: AppTab,
+  priority: LaunchTaskPriority = 'intent',
+) {
+  return scheduleLaunchTask({
+    key: `tab:${user.id}:${tab}`,
+    priority,
+    run: () => preloadTabResources(user, tab),
+  });
+}
+
+export default function useAppDataWarmup(user: AppUser | null, currentTab: AppTab) {
   useEffect(() => {
     if (!user) {
       return;
     }
 
     let cancelled = false;
-    let nextIndex = 0;
     let running = false;
 
     const run = async () => {
-      if (running || cancelled || isInBackground()) {
+      if (running || cancelled || getAppState() !== 'active') {
         return;
       }
 
       running = true;
-      while (!cancelled && !isInBackground() && nextIndex < WARMUP_ORDER.length) {
+      const warmupOrder = await loadTabWarmupOrder(user.id, currentTab);
+
+      for (const tab of warmupOrder) {
         await waitForIdle();
-        if (cancelled || isInBackground()) {
+        if (cancelled || getAppState() !== 'active') {
           break;
         }
 
-        const tab = WARMUP_ORDER[nextIndex++];
         const span = telemetry.startSpan('app.data_warmup');
         try {
-          await preloadTabData(user, tab);
+          await preloadTabData(user, tab, 'predictive');
           span.end({ tab, outcome: 'success' });
         } catch (error) {
           span.end({ tab, outcome: 'error' });
@@ -101,22 +108,19 @@ export default function useAppDataWarmup(user: AppUser | null) {
       }
 
       running = false;
-      if (!cancelled && nextIndex >= WARMUP_ORDER.length) {
+      if (!cancelled) {
         telemetry.markStartupMilestone('background_warmup_ready');
       }
     };
 
     const startTimer = setTimeout(() => void run(), FIRST_FRAME_GRACE_MS);
-    const appStateSubscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        void run();
-      }
-    });
+    const unsubscribeForeground = subscribeToForeground(() => void run());
 
     return () => {
       cancelled = true;
       clearTimeout(startTimer);
-      appStateSubscription.remove();
+      cancelQueuedLaunchTasks(`tab:${user.id}:`);
+      unsubscribeForeground();
     };
-  }, [user]);
+  }, [currentTab, user]);
 }

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Alert,
   StyleSheet,
+  View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -36,9 +37,14 @@ interface SwipeModalProps {
   instantMatchUserIds?: string[];
   startIndex: number;
   onClose: () => void;
+  presentation?: 'modal' | 'inline';
+  onBack?: () => void;
   onMovieClick?: (movie: Movie) => void;
   onOpenMessages?: () => void;
   onRefreshFeed?: () => Promise<void> | void;
+  onLoadMoreFeed?: () => Promise<void> | void;
+  hasMore?: boolean;
+  loadingMore?: boolean;
   onMatchUser?: (user: ApiUser) => void;
   allowSwipeLeft?: boolean;
   allowSwipeRight?: boolean;
@@ -48,6 +54,10 @@ interface SwipeModalProps {
   onUndoSwipeLeftUser?: (user: ApiUser) => Promise<SwipeActionResult | boolean | void> | SwipeActionResult | boolean | void;
   onUndoSwipeRightUser?: (user: ApiUser) => Promise<SwipeActionResult | boolean | void> | SwipeActionResult | boolean | void;
   activeQuotaKinds?: SwipeQuotaKind[];
+  emptyContent?: ReactNode;
+  banner?: ReactNode;
+  reportSource?: string;
+  onUserRemoved?: (user: ApiUser) => void;
 }
 
 interface SwipeHistoryEntry {
@@ -101,9 +111,14 @@ export default function SwipeModal({
   instantMatchUserIds = [],
   startIndex,
   onClose,
+  presentation = 'modal',
+  onBack,
   onMovieClick,
   onOpenMessages,
   onRefreshFeed,
+  onLoadMoreFeed,
+  hasMore = false,
+  loadingMore = false,
   onMatchUser,
   allowSwipeLeft = true,
   allowSwipeRight = true,
@@ -113,6 +128,10 @@ export default function SwipeModal({
   onUndoSwipeLeftUser,
   onUndoSwipeRightUser,
   activeQuotaKinds,
+  emptyContent,
+  banner,
+  reportSource = 'swipe_modal',
+  onUserRemoved,
 }: SwipeModalProps) {
   const { user: currentUser } = useAuth();
   const { t } = useLocalization();
@@ -135,6 +154,10 @@ export default function SwipeModal({
   const activeInstantMatchActionIdRef = useRef<string | null>(null);
   const dismissedInstantMatchActionIdsRef = useRef(new Set<string>());
   const instantMatchUserIdSet = useMemo(() => new Set(instantMatchUserIds), [instantMatchUserIds]);
+  const isInline = presentation === 'inline';
+  const bottomInset = isInline ? 84 : 84 + insets.bottom;
+  const activeBackHandler = isInline ? onBack : onClose;
+  const sourceQueue = useMemo(() => users.slice(startIndex), [startIndex, users]);
 
   const currentData = queue[currentQueueIndex];
   const lastHistoryEntry = history.at(-1) ?? null;
@@ -204,6 +227,34 @@ export default function SwipeModal({
     interactionLockedRef.current = false;
     setInteractionLocked(false);
   }, [currentData?.user.id]);
+
+  useEffect(() => {
+    if (history.length === 0 && currentQueueIndex === 0) {
+      setQueue(sourceQueue);
+      setFinished(false);
+      return;
+    }
+
+    setQueue((current) => {
+      const knownUserIds = new Set(current.map((entry) => entry.user.id));
+      const additions = sourceQueue.filter((entry) => !knownUserIds.has(entry.user.id));
+
+      if (additions.length === 0) {
+        return current;
+      }
+
+      setFinished(false);
+      return [...current, ...additions];
+    });
+  }, [currentQueueIndex, history.length, sourceQueue]);
+
+  useEffect(() => {
+    if (!hasMore || loadingMore || !onLoadMoreFeed || queue.length - currentQueueIndex > 5) {
+      return;
+    }
+
+    void onLoadMoreFeed();
+  }, [currentQueueIndex, hasMore, loadingMore, onLoadMoreFeed, queue.length]);
 
   const handleRefreshFeed = async () => {
     if (interactionLockedRef.current) {
@@ -514,13 +565,8 @@ export default function SwipeModal({
     }
   }, [history, queuedUndoActionId]);
 
-  if (!currentData && !finished && history.length === 0) {
-    return null;
-  }
-
-  return (
-    <AccessibleModal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView accessibilityViewIsModal importantForAccessibility="yes" edges={['top']} style={styles.container}>
+  const content = (
+    <>
         {currentData ? (
           <ProfileViewer
             user={currentData.user}
@@ -531,22 +577,24 @@ export default function SwipeModal({
             onSwipeLeft={() => void advance('left')}
             onSwipeRight={() => void advance('right')}
             onSwipeDown={!interactionLocked && hasUndoTarget ? () => void undoLastAction() : undefined}
-            onBack={onClose}
+            onBack={activeBackHandler}
             onHeaderRightPress={interactionLocked ? undefined : () => void handleRefreshFeed()}
             headerRightIcon={interactionLocked ? undefined : 'reload'}
             onSecondaryHeaderRightPress={interactionLocked ? undefined : () => setShowMenu((value) => !value)}
             secondaryHeaderRightIcon={interactionLocked ? undefined : 'dots-vertical'}
-            bottomInset={84 + insets.bottom}
+            bottomInset={bottomInset}
           />
-        ) : (
+        ) : finished || history.length > 0 ? (
           <SwipeUndoPlaceholder
             onUndo={hasUndoTarget ? () => void undoLastAction() : undefined}
             onReload={() => void handleRefreshFeed()}
-            onBack={onClose}
-            bottomInset={84 + insets.bottom}
+            onBack={activeBackHandler}
+            bottomInset={bottomInset}
             undoPending={hasUndoTarget && !canUndoLastAction}
           />
-        )}
+        ) : emptyContent}
+
+        {banner ? <View pointerEvents="box-none" style={styles.bannerOverlay}>{banner}</View> : null}
 
         <SwipeQuotaBar
           remainingLikes={quota.remainingLikes}
@@ -556,16 +604,17 @@ export default function SwipeModal({
           loading={!quota.ready}
           activeKinds={resolvedActiveQuotaKinds}
           bottomOffset={0}
-          respectSafeArea
+          respectSafeArea={!isInline}
         />
 
         <SwipeActionMenuOverlay
           visible={showMenu}
           user={currentData?.user ?? null}
-          reportSource="swipe_modal"
+          reportSource={reportSource}
           onClose={() => setShowMenu(false)}
           showFeedback={feedbackPopup.showPopup}
           onBlockSuccess={async (user) => {
+            onUserRemoved?.(user);
             removeCurrentUserFromQueue(user.id);
             await onRefreshFeed?.();
           }}
@@ -592,10 +641,23 @@ export default function SwipeModal({
             setMatchedRewardLikes(undefined);
           }}
           onOpenMessages={() => {
-            onClose();
+            if (!isInline) {
+              onClose();
+            }
             onOpenMessages?.();
           }}
         />
+    </>
+  );
+
+  if (isInline) {
+    return <View style={styles.container}>{content}</View>;
+  }
+
+  return (
+    <AccessibleModal visible animationType="slide" onRequestClose={onClose}>
+      <SafeAreaView accessibilityViewIsModal importantForAccessibility="yes" edges={['top']} style={styles.container}>
+        {content}
       </SafeAreaView>
     </AccessibleModal>
   );
@@ -605,5 +667,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: theme.colors.background,
+  },
+  bannerOverlay: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    right: 12,
+    zIndex: 5,
   },
 });

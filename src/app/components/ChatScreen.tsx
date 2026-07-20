@@ -8,12 +8,12 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  type ViewToken,
   View,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { supabase } from '../../../utils/supabase/client';
 import { useAuth } from '../../context/AuthContext';
 import { useLocalization } from '../../context/LocalizationContext';
 import {
@@ -38,6 +38,7 @@ import {
   upsertChat,
   type ChatPatch,
 } from '../../services/chatState';
+import { subscribeToUserEvent } from '../../services/userEventBus';
 import { SCREEN_BOTTOM_SPACING, SCREEN_SIDE_SPACING } from '../../shared/constants';
 import type { Movie } from '../../services/tmdb';
 import { theme } from '../../shared/theme';
@@ -50,6 +51,7 @@ import DataState from './ui/DataState';
 import DataWarningBanner from './ui/DataWarningBanner';
 import { ChatListSkeleton } from './ui/Skeleton';
 import AppRefreshControl from './ui/AppRefreshControl';
+import useChatPresence from '../hooks/useChatPresence';
 
 interface ChatScreenProps {
   onMovieClick?: (movie: Movie) => void;
@@ -247,23 +249,37 @@ function applyMessageInsertToChats({
 
 function ChatListItem({
   chat,
+  currentUserId,
+  presenceEnabled,
   onIntent,
   onPress,
   t,
 }: {
   chat: ApiChat;
+  currentUserId: string;
+  presenceEnabled: boolean;
   onIntent: () => void;
   onPress: () => void;
   t: ReturnType<typeof useLocalization>['t'];
 }) {
   const photo = chat.user.photos.find((item) => item.trim().length > 0) ?? null;
   const tags = getChatTags(chat, t);
+  const peerPresence = useChatPresence({
+    currentUserId,
+    otherUserId: chat.userId,
+    peerSettings: chat.peerSettings,
+    isTyping: false,
+    publishTyping: false,
+    enabled: presenceEnabled,
+  });
+  const isPeerTyping = !chat.ended && !chat.isBlocked && peerPresence.isTyping;
+  const preview = isPeerTyping ? t('chat.screen.preview.typing') : getChatPreview(chat, t);
 
   return (
     <Pressable
       key={chat.userId}
       accessibilityRole="button"
-      accessibilityLabel={`${chat.user.name}. ${getChatPreview(chat, t)}. ${chat.unread ? t('chat.screen.tag.unread') : ''}`}
+      accessibilityLabel={`${chat.user.name}. ${preview}. ${chat.unread ? t('chat.screen.tag.unread') : ''}`}
       accessibilityState={{ selected: chat.unread }}
       onPressIn={onIntent}
       onPress={onPress}
@@ -286,9 +302,10 @@ function ChatListItem({
               style={[
                 styles.lastMessage,
                 chat.unread && styles.lastMessageUnread,
+                isPeerTyping && styles.lastMessageTyping,
               ]}
             >
-              {getChatPreview(chat, t)}
+              {preview}
             </Text>
           </View>
 
@@ -333,11 +350,31 @@ export default function ChatScreen({
   const [activeChat, setActiveChat] = useState<ApiChat | null>(null);
   const [profileChat, setProfileChat] = useState<ApiChat | null>(null);
   const [profileBlockBusy, setProfileBlockBusy] = useState(false);
+  const [visibleChatIds, setVisibleChatIds] = useState<Set<string>>(
+    () => new Set(initialCachedChats.slice(0, 12).map((chat) => chat.userId)),
+  );
   const chatsRef = useRef<ApiChat[]>([]);
   const chatPageInfoRef = useRef(chatPageInfo);
   const loadRequestSequenceRef = useRef(0);
   const loadingMoreRef = useRef(false);
   const silentRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewabilityConfigRef = useRef({ itemVisiblePercentThreshold: 10 });
+  const onViewableItemsChangedRef = useRef(
+    ({ viewableItems }: { viewableItems: Array<ViewToken<ApiChat>> }) => {
+      const nextVisibleChatIds = new Set(
+        viewableItems
+          .map(({ item }) => item?.userId)
+          .filter((userId): userId is string => Boolean(userId)),
+      );
+
+      setVisibleChatIds((current) => {
+        const unchanged =
+          current.size === nextVisibleChatIds.size &&
+          [...current].every((userId) => nextVisibleChatIds.has(userId));
+        return unchanged ? current : nextVisibleChatIds;
+      });
+    },
+  );
 
   const filters = useMemo<Array<{ label: string; value: FilterType }>>(
     () => [
@@ -592,11 +629,7 @@ export default function ChatScreen({
     }
 
     const activeThreadUserId = activeChat?.userId ?? null;
-    const channel = supabase.channel(`user-events:${currentUser.id}`, {
-      config: { private: true },
-    });
-
-    channel.on('broadcast', { event: 'chat_changed' }, ({ payload }) => {
+    const unsubscribeUserEvent = subscribeToUserEvent(currentUser.id, 'chat_changed', (payload) => {
       const nextMessage = (payload as { message?: ApiMessage } | null)?.message;
 
       if (!nextMessage) {
@@ -620,16 +653,14 @@ export default function ChatScreen({
       if (!hasChat) {
         scheduleSilentRefresh();
       }
-    });
-
-    channel.subscribe((status) => {
+    }, (status) => {
       if (status === 'SUBSCRIBED') {
         scheduleSilentRefresh();
       }
     });
 
     return () => {
-      void supabase.removeChannel(channel);
+      unsubscribeUserEvent();
     };
   }, [activeChat?.userId, currentUser?.id, scheduleSilentRefresh]);
 
@@ -771,6 +802,8 @@ export default function ChatScreen({
         }
         data={filteredChats}
         keyExtractor={(item) => item.userId}
+        onViewableItemsChanged={onViewableItemsChangedRef.current}
+        viewabilityConfig={viewabilityConfigRef.current}
         initialNumToRender={12}
         maxToRenderPerBatch={12}
         windowSize={7}
@@ -866,6 +899,8 @@ export default function ChatScreen({
         renderItem={({ item }) => (
           <ChatListItem
             chat={item}
+            currentUserId={currentUser!.id}
+            presenceEnabled={visibleChatIds.has(item.userId)}
             onIntent={() => {
               if (currentUser) {
                 void preloadChatThread(currentUser.id, item.userId);
@@ -896,7 +931,6 @@ export default function ChatScreen({
             }
 
             setProfileChat(activeChat);
-            setActiveChat(null);
           }}
         />
       ) : null}

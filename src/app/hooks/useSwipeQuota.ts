@@ -1,6 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AppState } from 'react-native';
 
 import { consumeSwipeQuota, getSwipeQuota } from '../../services/api';
 import {
@@ -12,6 +11,7 @@ import {
 import type { SwipeQuotaKind, SwipeQuotaState } from '../../shared/types';
 import { getServerNowMs } from '../../shared/utils/serverTime';
 import { registerSessionCache } from '../../shared/utils/sessionCache';
+import { subscribeToForeground as subscribeToAppForeground } from '../../shared/utils/appLifecycle';
 
 const quotaCache = new Map<string, SwipeQuotaState | null>();
 const quotaListeners = new Map<string, Set<(state: SwipeQuotaState | null) => void>>();
@@ -22,7 +22,7 @@ const quotaLastServerStateAt = new Map<string, number>();
 const clockListeners = new Set<(now: number) => void>();
 const foregroundListeners = new Set<() => void>();
 let clockInterval: ReturnType<typeof setInterval> | null = null;
-let appStateSubscription: ReturnType<typeof AppState.addEventListener> | null = null;
+let unsubscribeAppForeground: (() => void) | null = null;
 let cacheGeneration = 0;
 const SWIPE_QUOTA_STORAGE_PREFIX = 'wmatch:swipe-quota:';
 const SWIPE_QUOTA_REVALIDATE_AFTER_MS = 30_000;
@@ -59,20 +59,18 @@ function subscribeClock(listener: (now: number) => void) {
 function subscribeForeground(listener: () => void) {
   foregroundListeners.add(listener);
 
-  if (!appStateSubscription) {
-    appStateSubscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') {
-        foregroundListeners.forEach((currentListener) => currentListener());
-      }
+  if (!unsubscribeAppForeground) {
+    unsubscribeAppForeground = subscribeToAppForeground(() => {
+      foregroundListeners.forEach((currentListener) => currentListener());
     });
   }
 
   return () => {
     foregroundListeners.delete(listener);
 
-    if (foregroundListeners.size === 0 && appStateSubscription) {
-      appStateSubscription.remove();
-      appStateSubscription = null;
+    if (foregroundListeners.size === 0 && unsubscribeAppForeground) {
+      unsubscribeAppForeground();
+      unsubscribeAppForeground = null;
     }
   };
 }

@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -6,6 +7,7 @@ import type { Movie } from '../../services/tmdb';
 import { SCREEN_BOTTOM_SPACING } from '../../shared/constants';
 import type { ViewerPreview } from '../../shared/types';
 import { theme } from '../../shared/theme';
+import { telemetry } from '../../services/telemetry';
 import EmptyState from './EmptyState';
 import MovieRow from './MovieRow';
 import SearchBar from './SearchBar';
@@ -67,6 +69,16 @@ export default function WatchScreen({
   const { t } = useLocalization();
   const hasHomeContent = liveNowMovies.length > 0 || popularMovies.length > 0 || popularTVShows.length > 0;
   const hasActiveSearch = isSearching && searchQuery.trim().length > 0;
+
+  useEffect(() => {
+    if (hasHomeContent) {
+      telemetry.markStartupMilestone('watch_content_ready', {
+        liveNowCount: liveNowMovies.length,
+        movieCount: popularMovies.length,
+        tvCount: popularTVShows.length,
+      });
+    }
+  }, [hasHomeContent, liveNowMovies.length, popularMovies.length, popularTVShows.length]);
 
   return (
     <SafeAreaView

@@ -3,6 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 import { sendMessage, type ApiMessage } from './api';
 import { telemetry } from './telemetry';
 import { MAX_MESSAGE_LENGTH } from '../shared/constants';
+import { countMessageCharacters } from '../shared/utils/validation';
 
 export interface PendingChatMessage {
   clientMessageId: string;
@@ -29,7 +30,7 @@ function validatePendingMessage(message: PendingChatMessage) {
     throw new Error('Invalid chat outbox peer identifier.');
   }
 
-  if (!normalizedText || normalizedText.length > MAX_MESSAGE_LENGTH) {
+  if (!normalizedText || countMessageCharacters(normalizedText) > MAX_MESSAGE_LENGTH) {
     throw new Error('Invalid chat outbox message body.');
   }
 

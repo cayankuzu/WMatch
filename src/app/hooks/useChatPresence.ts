@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { supabase } from '../../../utils/supabase/client';
+import {
+  buildAppPresenceTopic,
+  type AppPresencePayload,
+  type AppPresenceSnapshot,
+} from '../../services/presence';
 import type { ChatSettings } from '../../shared/types';
 
 const DEFAULT_CHAT_SETTINGS: ChatSettings = {
@@ -9,15 +14,6 @@ const DEFAULT_CHAT_SETTINGS: ChatSettings = {
   typingIndicator: true,
   notifications: true,
 };
-
-interface AppPresencePayload {
-  userId: string;
-  kind: 'app' | 'viewer';
-  isOnline: boolean;
-  updatedAt: string;
-}
-
-type AppPresenceSnapshot = Record<string, AppPresencePayload[]>;
 
 interface TypingBroadcastPayload {
   userId: string;
@@ -32,6 +28,7 @@ interface ChatPresenceState {
 
 interface ConversationRealtimeController {
   channel: ReturnType<typeof supabase.channel>;
+  presenceChannel: ReturnType<typeof supabase.channel>;
   currentUserId: string;
   isJoined: boolean;
   consumers: number;
@@ -53,19 +50,20 @@ function buildChatPairKey(leftUserId: string, rightUserId: string) {
   return leftUserId < rightUserId ? `${leftUserId}:${rightUserId}` : `${rightUserId}:${leftUserId}`;
 }
 
-function getLatestAppPresenceEntry(
+function hasOnlineAppPresence(
   state: AppPresenceSnapshot,
   otherUserId: string,
-): AppPresencePayload | null {
-  const entries = Object.values(state)
+): boolean {
+  return Object.values(state)
     .flat()
-    .filter((entry) => entry.kind === 'app' && entry.userId === otherUserId)
-    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
-
-  return entries[0] ?? null;
+    .some((entry) => entry.kind === 'app' && entry.userId === otherUserId && entry.isOnline);
 }
 
-function createConversationController(pairKey: string, currentUserId: string) {
+function createConversationController(
+  pairKey: string,
+  currentUserId: string,
+  otherUserId: string,
+) {
   const channel = supabase.channel(buildTypingBroadcastTopic(pairKey), {
     config: {
       private: true,
@@ -73,14 +71,15 @@ function createConversationController(pairKey: string, currentUserId: string) {
         self: true,
         ack: false,
       },
-      presence: {
-        key: currentUserId,
-      },
     },
+  });
+  const presenceChannel = supabase.channel(buildAppPresenceTopic(otherUserId), {
+    config: { private: true },
   });
 
   const controller: ConversationRealtimeController = {
     channel,
+    presenceChannel,
     currentUserId,
     isJoined: false,
     consumers: 0,
@@ -93,9 +92,9 @@ function createConversationController(pairKey: string, currentUserId: string) {
     controller.presenceListeners.forEach((listener) => listener());
   };
 
-  channel.on('presence', { event: 'sync' }, notifyPresenceListeners);
-  channel.on('presence', { event: 'join' }, notifyPresenceListeners);
-  channel.on('presence', { event: 'leave' }, notifyPresenceListeners);
+  presenceChannel.on('presence', { event: 'sync' }, notifyPresenceListeners);
+  presenceChannel.on('presence', { event: 'join' }, notifyPresenceListeners);
+  presenceChannel.on('presence', { event: 'leave' }, notifyPresenceListeners);
   channel.on('broadcast', { event: TYPING_BROADCAST_EVENT }, ({ payload }) => {
     const typingPayload = payload as TypingBroadcastPayload;
 
@@ -104,22 +103,14 @@ function createConversationController(pairKey: string, currentUserId: string) {
     });
   });
 
-  channel.subscribe(async (status) => {
+  channel.subscribe((status) => {
     if (status !== 'SUBSCRIBED') {
       return;
     }
 
     controller.isJoined = true;
-    void channel
-      .track({
-        userId: currentUserId,
-        kind: 'app',
-        isOnline: true,
-        updatedAt: new Date().toISOString(),
-      })
-      .then(notifyPresenceListeners)
-      .catch(() => undefined);
   });
+  presenceChannel.subscribe();
 
   conversationControllers.set(pairKey, controller);
   return controller;
@@ -134,11 +125,17 @@ async function removeConversationController(
   }
 
   controller.isJoined = false;
-  await controller.channel.untrack().catch(() => undefined);
-  const status = await supabase.removeChannel(controller.channel).catch(() => 'error' as const);
+  const [typingStatus, presenceStatus] = await Promise.all([
+    supabase.removeChannel(controller.channel).catch(() => 'error' as const),
+    supabase.removeChannel(controller.presenceChannel).catch(() => 'error' as const),
+  ]);
 
-  if (status !== 'ok') {
+  if (typingStatus !== 'ok') {
     controller.channel.teardown();
+  }
+
+  if (presenceStatus !== 'ok') {
+    controller.presenceChannel.teardown();
   }
 }
 
@@ -163,7 +160,11 @@ function beginConversationControllerRemoval(
   return removalFlight;
 }
 
-async function acquireConversationController(pairKey: string, currentUserId: string) {
+async function acquireConversationController(
+  pairKey: string,
+  currentUserId: string,
+  otherUserId: string,
+) {
   const removalFlight = conversationRemovalFlights.get(pairKey);
 
   if (removalFlight) {
@@ -177,7 +178,7 @@ async function acquireConversationController(pairKey: string, currentUserId: str
     controller = undefined;
   }
 
-  controller ??= createConversationController(pairKey, currentUserId);
+  controller ??= createConversationController(pairKey, currentUserId, otherUserId);
 
   if (controller.disposalTimer) {
     clearTimeout(controller.disposalTimer);
@@ -224,12 +225,14 @@ export default function useChatPresence({
   peerSettings,
   isTyping,
   publishTyping = true,
+  enabled = true,
 }: {
   currentUserId: string;
   otherUserId: string;
   peerSettings?: ChatSettings | null;
   isTyping: boolean;
   publishTyping?: boolean;
+  enabled?: boolean;
 }) {
   const [peerPresence, setPeerPresence] = useState<ChatPresenceState>({
     isOnline: false,
@@ -246,6 +249,18 @@ export default function useChatPresence({
   isTypingRef.current = isTyping;
 
   useEffect(() => {
+    if (!enabled) {
+      setPeerPresence((current) =>
+        current.isOnline || current.isTyping
+          ? {
+              isOnline: false,
+              isTyping: false,
+            }
+          : current,
+      );
+      return;
+    }
+
     let cancelled = false;
     let controller: ConversationRealtimeController | null = null;
 
@@ -254,11 +269,12 @@ export default function useChatPresence({
         return;
       }
 
-      const state = controller.channel.presenceState<AppPresencePayload>();
-      const entry = getLatestAppPresenceEntry(state, otherUserId);
+      const state = controller.presenceChannel.presenceState<AppPresencePayload>();
       setPeerPresence((current) => ({
         ...current,
-        isOnline: resolvedPeerSettings.onlineStatus ? Boolean(entry?.isOnline) : false,
+        isOnline: resolvedPeerSettings.onlineStatus
+          ? hasOnlineAppPresence(state, otherUserId)
+          : false,
       }));
     };
     const handleTypingBroadcast = (payload: TypingBroadcastPayload) => {
@@ -273,7 +289,7 @@ export default function useChatPresence({
 
       setPeerPresence((current) => ({
         ...current,
-        isTyping: Boolean(payload.isTyping),
+        isTyping: resolvedPeerSettings.typingIndicator && Boolean(payload.isTyping),
       }));
 
       if (payload.isTyping) {
@@ -287,7 +303,7 @@ export default function useChatPresence({
       }
     };
 
-    void acquireConversationController(pairKey, currentUserId).then((nextController) => {
+    void acquireConversationController(pairKey, currentUserId, otherUserId).then((nextController) => {
       if (cancelled) {
         releaseConversationController(pairKey, nextController);
         return;
@@ -334,10 +350,18 @@ export default function useChatPresence({
         typingResetTimeoutRef.current = null;
       }
     };
-  }, [currentUserId, otherUserId, pairKey, publishTyping, resolvedPeerSettings.onlineStatus]);
+  }, [
+    currentUserId,
+    enabled,
+    otherUserId,
+    pairKey,
+    publishTyping,
+    resolvedPeerSettings.onlineStatus,
+    resolvedPeerSettings.typingIndicator,
+  ]);
 
   useEffect(() => {
-    if (!publishTyping) {
+    if (!enabled || !publishTyping) {
       return;
     }
 
@@ -363,7 +387,7 @@ export default function useChatPresence({
 
       void sendCurrentState(false);
     };
-  }, [currentUserId, isTyping, pairKey, publishTyping]);
+  }, [currentUserId, enabled, isTyping, pairKey, publishTyping]);
 
   return peerPresence;
 }

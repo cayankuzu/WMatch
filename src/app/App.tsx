@@ -1,39 +1,38 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, AppState, BackHandler, Platform, StyleSheet, View } from 'react-native';
+import { memo, Suspense, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
+import { Alert, BackHandler, Platform, StyleSheet, View } from 'react-native';
 
 import { AuthProvider, useAuth } from '../context/AuthContext';
-import { AppProvider, useApp } from '../context/AppContext';
+import { AppProvider, useWatchSession } from '../context/AppContext';
 import { LocalizationProvider, useLocalization } from '../context/LocalizationContext';
 import { markChatThreadRead, markNotificationEventRead } from '../services/api';
 import {
   getLastNotificationIntent,
+  openPushNotificationSettings,
   subscribeToForegroundNotificationPresentation,
   subscribeToNotificationEventInserts,
   subscribeToNotificationResponses,
+  subscribeToPushTokenChanges,
   syncPushNotifications,
   type NotificationIntent,
 } from '../services/notifications';
 import { flushPendingChatMessages } from '../services/chatOutbox';
-import { getMediaRefKey, getMovieKey, tmdbService, type Movie } from '../services/tmdb';
+import { recordTabUsage } from '../services/tabUsage';
+import type { Movie } from '../services/tmdb';
 import { telemetry } from '../services/telemetry';
 import { DEFAULT_BOTTOM_NAV_HEIGHT } from '../shared/constants';
-import type { AppTab, AuthScreen, ViewerPreview } from '../shared/types';
+import type { AppTab, AuthScreen } from '../shared/types';
 import { theme } from '../shared/theme';
+import { subscribeToForeground } from '../shared/utils/appLifecycle';
 import useTransientPopup from './hooks/useTransientPopup';
 import useAppDataWarmup, { preloadTabData } from './hooks/useAppDataWarmup';
 import useAppPresence from './hooks/useAppPresence';
-import useLiveNowUsers from './hooks/useLiveNowUsers';
+import useWatchHomeController from './hooks/useWatchHomeController';
 import BottomNav from './components/BottomNav';
-import ChatScreen from './components/ChatScreen';
-import CompatibilityScreen from './components/CompatibilityScreen';
 import CurrentMovieBar from './components/CurrentMovieBar';
 import ForgotPasswordScreen from './components/ForgotPasswordScreen';
-import LikesScreen from './components/LikesScreen';
 import LoginScreen from './components/LoginScreen';
-import MatchScreen from './components/MatchScreen';
 import MovieDetailModal from './components/MovieDetailModal';
 import PasswordRecoveryScreen from './components/PasswordRecoveryScreen';
-import ProfileScreen from './components/ProfileScreen';
 import SignUpScreen from './components/SignUpScreen';
 import SplashScreen from './components/SplashScreen';
 import TransientPopup from './components/ui/TransientPopup';
@@ -41,25 +40,14 @@ import VerifyEmailScreen from './components/VerifyEmailScreen';
 import WatchScreen from './components/WatchScreen';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ChatListSkeleton, SwipeDeckSkeleton, UserGridSkeleton } from './components/ui/Skeleton';
-
-function getUniqueMovies(movies: Movie[]) {
-  const seen = new Set<string>();
-
-  return movies.filter((movie) => {
-    const key = getMovieKey(movie);
-
-    if (seen.has(key)) {
-      return false;
-    }
-
-    seen.add(key);
-    return true;
-  });
-}
-
-function mergeUniqueMovies(current: Movie[], incoming: Movie[]) {
-  return getUniqueMovies([...current, ...incoming]);
-}
+import {
+  LazyChatScreen,
+  LazyCompatibilityScreen,
+  LazyLikesScreen,
+  LazyMatchScreen,
+  LazyProfileScreen,
+  preloadTabModule,
+} from './tabModules';
 
 function scheduleIdleWork(work: () => void, timeoutMs = 1200) {
   if (typeof globalThis.requestIdleCallback === 'function') {
@@ -72,12 +60,15 @@ function scheduleIdleWork(work: () => void, timeoutMs = 1200) {
 }
 
 const MemoWatchScreen = memo(WatchScreen);
-const MemoMatchScreen = memo(MatchScreen);
-const MemoCompatibilityScreen = memo(CompatibilityScreen);
-const MemoLikesScreen = memo(LikesScreen);
-const MemoChatScreen = memo(ChatScreen);
-const MemoProfileScreen = memo(ProfileScreen);
-const LIVE_NOW_MEDIA_HYDRATION_BATCH_SIZE = 6;
+const MAX_RESIDENT_TABS = 3;
+const TAB_RENDER_ORDER: readonly AppTab[] = [
+  'watch',
+  'match',
+  'compatibility',
+  'likes',
+  'chat',
+  'profile',
+];
 
 function AppContent() {
   const { t } = useLocalization();
@@ -104,61 +95,96 @@ function AppContent() {
     resumeCurrentlyWatching,
     watchingExpiredNotice,
     dismissWatchingExpiredNotice,
-  } = useApp();
+  } = useWatchSession();
 
   const [authScreen, setAuthScreen] = useState<AuthScreen>('login');
   const [activeTab, setActiveTab] = useState<AppTab>('watch');
   const renderedTab = useDeferredValue(activeTab);
+  const [residentTabs, setResidentTabs] = useState<AppTab[]>(['watch']);
+  const renderedResidentTabs = TAB_RENDER_ORDER.filter((tab) => residentTabs.includes(tab));
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
-  const [searchResults, setSearchResults] = useState<Movie[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
-  const [moviesPage, setMoviesPage] = useState(1);
-  const [tvPage, setTvPage] = useState(1);
-  const [loadingMovies, setLoadingMovies] = useState(true);
-  const [loadingTV, setLoadingTV] = useState(true);
-  const [refreshingHome, setRefreshingHome] = useState(false);
-  const [homeError, setHomeError] = useState<string | null>(null);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [popularMovies, setPopularMovies] = useState<Movie[]>([]);
-  const [popularTVShows, setPopularTVShows] = useState<Movie[]>([]);
-  const [liveNowMovies, setLiveNowMovies] = useState<Movie[]>([]);
-  const [liveNowMediaLoading, setLiveNowMediaLoading] = useState(false);
   const [bottomNavHeight, setBottomNavHeight] = useState(DEFAULT_BOTTOM_NAV_HEIGHT);
   const [pendingNotificationIntent, setPendingNotificationIntent] = useState<NotificationIntent | null>(null);
   const [requestedChatUserId, setRequestedChatUserId] = useState<string | null>(null);
   const [likesPreferredTab, setLikesPreferredTab] = useState<'liked' | 'likedme' | null>(null);
   const exitBackPressAtRef = useRef(0);
   const tabSwitchStartedAtRef = useRef(0);
-  const searchRequestSeqRef = useRef(0);
   const handledNotificationRequestIdsRef = useRef(new Set<string>());
+  const pushSettingsPromptedUserIdsRef = useRef(new Set<string>());
   const { message: exitPopupMessage, showPopup: showExitPopup } = useTransientPopup();
-  const {
-    users: watchUsers,
-    pageInfo: liveNowPageInfo,
-    loading: liveNowLoading,
-    error: liveNowError,
-    refresh: refreshLiveNow,
-    loadMore: loadMoreLiveNow,
-  } = useLiveNowUsers(user?.id ?? null, activeTab === 'watch');
+  const watchHome = useWatchHomeController(user, activeTab, activeWatching);
 
   useAppPresence(user?.id ?? null);
-  useAppDataWarmup(user);
+  useAppDataWarmup(user, activeTab);
+  const syncCurrentUserPush = useCallback(
+    async (userId: string | null | undefined) => {
+      const result = await syncPushNotifications(userId);
+
+      if (
+        !userId ||
+        result.status !== 'settings-required' ||
+        pushSettingsPromptedUserIdsRef.current.has(userId)
+      ) {
+        return;
+      }
+
+      pushSettingsPromptedUserIdsRef.current.add(userId);
+      Alert.alert(
+        t('notifications.permission.title'),
+        result.reason === 'channel'
+          ? t('notifications.permission.channelDescription')
+          : t('notifications.permission.description'),
+        [
+          {
+            text: t('notifications.permission.notNow'),
+            style: 'cancel',
+          },
+          {
+            text: t('notifications.permission.openSettings'),
+            onPress: () => {
+              void openPushNotificationSettings();
+            },
+          },
+        ],
+      );
+    },
+    [t],
+  );
+  const prepareTab = useCallback((tab: AppTab) => {
+    void preloadTabModule(tab).catch((error) => {
+      telemetry.captureException(error, { operation: 'tab_module_preload', tab });
+    });
+
+    if (!user || tab === activeTab) {
+      return;
+    }
+
+    void preloadTabData(user, tab, 'intent').catch((error) => {
+      telemetry.captureException(error, { operation: 'tab_intent_preload', tab });
+    });
+  }, [activeTab, user]);
   const switchTab = useCallback((tab: AppTab) => {
     if (tab === activeTab) {
       return;
     }
 
     tabSwitchStartedAtRef.current = Date.now();
-    setActiveTab(tab);
-    requestAnimationFrame(() => {
-      telemetry.track('navigation.tab_intent', { tab });
-      if (user) {
-        void preloadTabData(user, tab);
-      }
+    telemetry.track('navigation.tab_intent', { tab });
+    prepareTab(tab);
+    setResidentTabs((current) => {
+      const next = [...current.filter((item) => item !== tab), tab];
+      return next.slice(-MAX_RESIDENT_TABS);
     });
-  }, [activeTab, user]);
+    setActiveTab(tab);
+    if (user) {
+      recordTabUsage(user.id, tab);
+    }
+  }, [activeTab, prepareTab, user]);
+
+  useEffect(() => {
+    setActiveTab('watch');
+    setResidentTabs(['watch']);
+  }, [user?.id]);
 
   useEffect(() => {
     if (renderedTab !== activeTab || tabSwitchStartedAtRef.current === 0) {
@@ -186,158 +212,34 @@ function AppContent() {
     }
   }, [authLoading, user?.id]);
 
-  const loadInitialData = useCallback(async () => {
-    setHomeError(null);
-    setLoadingMovies(true);
-    setLoadingTV(true);
-
-    const results = await Promise.allSettled([
-      tmdbService.getPopularMovies(1)
-        .then((moviesData) => {
-          setPopularMovies(getUniqueMovies(moviesData.results.slice(0, 12)));
-          setMoviesPage(1);
-          telemetry.markStartupMilestone('popular_movies_ready');
-        })
-        .finally(() => setLoadingMovies(false)),
-      tmdbService.getPopularTVShows(1)
-        .then((tvData) => {
-          setPopularTVShows(getUniqueMovies(tvData.results.slice(0, 12)));
-          setTvPage(1);
-          telemetry.markStartupMilestone('popular_tv_ready');
-        })
-        .finally(() => setLoadingTV(false)),
-    ]);
-    const failures = results.filter((result) => result.status === 'rejected');
-
-    if (failures.length > 0) {
-      const firstFailure = failures[0].reason;
-      setHomeError(firstFailure instanceof Error ? firstFailure.message : t('data.error.generic'));
-
-      if (failures.length === results.length) {
-        throw firstFailure;
-      }
-    }
-  }, [t]);
-
-  const refreshHome = useCallback(async () => {
-    setRefreshingHome(true);
-
-    try {
-      await Promise.allSettled([loadInitialData(), refreshLiveNow({ force: true })]);
-    } finally {
-      setRefreshingHome(false);
-    }
-  }, [loadInitialData, refreshLiveNow]);
-
-  const activeWatchingRefs = useMemo(() => {
-    const refs: Array<{ id: number; mediaType?: 'movie' | 'tv' | null }> = [];
-
-    if (activeWatching?.id) {
-      refs.push({ id: activeWatching.id, mediaType: activeWatching.media_type ?? 'movie' });
-    }
-
-    watchUsers.forEach((item) => {
-      if (item.currentlyWatching) {
-        refs.push({
-          id: item.currentlyWatching,
-          mediaType: item.currentlyWatchingMediaType ?? 'movie',
-        });
-      }
-    });
-
-    return refs;
-  }, [activeWatching?.id, activeWatching?.media_type, watchUsers]);
-
-  const viewerCounts = useMemo(
-    () =>
-      activeWatchingRefs.reduce<Record<string, number>>((accumulator, ref) => {
-        const key = getMediaRefKey(ref);
-        accumulator[key] = (accumulator[key] ?? 0) + 1;
-        return accumulator;
-      }, {}),
-    [activeWatchingRefs],
-  );
-
-  const viewerProfiles = useMemo(() => {
-    const profilesByMovie: Record<string, ViewerPreview[]> = {};
-
-    const addViewer = (
-      ref: { id: number; mediaType?: 'movie' | 'tv' | null },
-      profile: { id: string; name: string; photos: string[] },
-    ) => {
-      const key = getMediaRefKey(ref);
-      const nextViewer: ViewerPreview = {
-        id: profile.id,
-        name: profile.name,
-        photo: profile.photos.find((photo) => photo.trim().length > 0) ?? null,
-      };
-
-      const currentViewers = profilesByMovie[key] ?? [];
-
-      if (currentViewers.some((viewer) => viewer.id === nextViewer.id)) {
-        return;
-      }
-
-      profilesByMovie[key] = [...currentViewers, nextViewer];
-    };
-
-    if (user && activeWatching?.id) {
-      addViewer({ id: activeWatching.id, mediaType: activeWatching.media_type ?? 'movie' }, user);
-    }
-
-    watchUsers.forEach((item) => {
-      if (item.currentlyWatching) {
-        addViewer(
-          {
-            id: item.currentlyWatching,
-            mediaType: item.currentlyWatchingMediaType ?? 'movie',
-          },
-          item,
-        );
-      }
-    });
-
-    return profilesByMovie;
-  }, [activeWatching?.id, activeWatching?.media_type, user, watchUsers]);
-
   useEffect(() => {
     if (!user) {
       return;
     }
 
-    void loadInitialData().catch((error) => {
-      console.warn('Initial media data could not be loaded:', error);
-    });
-  }, [loadInitialData, user?.id]);
-
-  useEffect(() => {
-    if (!user) {
-      return;
-    }
-
-    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') {
-        void refreshLiveNow();
-        void syncPushNotifications(user.id);
-        void flushPendingChatMessages(user.id);
-      }
+    const unsubscribeForeground = subscribeToForeground(() => {
+      void watchHome.refreshLiveNow();
+      void syncCurrentUserPush(user.id);
+      void flushPendingChatMessages(user.id);
     });
 
-    return () => {
-      appStateSubscription.remove();
-    };
-  }, [refreshLiveNow, user?.id]);
+    return unsubscribeForeground;
+  }, [syncCurrentUserPush, user?.id, watchHome.refreshLiveNow]);
 
   useEffect(() => {
+    void syncCurrentUserPush(user?.id);
+    const unsubscribePushTokenChanges = subscribeToPushTokenChanges(user?.id);
     const cancelIdleWork = scheduleIdleWork(() => {
-      void syncPushNotifications(user?.id);
       if (user?.id) {
         void flushPendingChatMessages(user.id);
       }
     });
 
-    return cancelIdleWork;
-  }, [user?.id]);
+    return () => {
+      cancelIdleWork();
+      unsubscribePushTokenChanges();
+    };
+  }, [syncCurrentUserPush, user?.id]);
 
   useEffect(() => {
     const unsubscribeForegroundPresentation = subscribeToForegroundNotificationPresentation();
@@ -446,126 +348,6 @@ function AppContent() {
   }, [activeTab, likesPreferredTab]);
 
   useEffect(() => {
-    const cancelIdleWork = scheduleIdleWork(() => {
-      void tmdbService.prefetchMovieArtwork(
-        [...popularMovies, ...popularTVShows].slice(0, 16),
-        { posterSize: 'w200' },
-      );
-    });
-
-    return cancelIdleWork;
-  }, [popularMovies, popularTVShows]);
-
-  useEffect(() => {
-    if (liveNowMovies.length === 0) {
-      return;
-    }
-
-    const cancelIdleWork = scheduleIdleWork(() => {
-      void tmdbService.prefetchMovieArtwork(liveNowMovies.slice(0, 12), {
-        includeBackdrop: true,
-        posterSize: 'w200',
-        backdropSize: 'w500',
-      });
-    });
-
-    return cancelIdleWork;
-  }, [liveNowMovies]);
-
-  useEffect(() => {
-    if (searchResults.length === 0) {
-      return;
-    }
-
-    const cancelIdleWork = scheduleIdleWork(() => {
-      void tmdbService.prefetchMovieArtwork(searchResults.slice(0, 12), { posterSize: 'w200' });
-    });
-
-    return cancelIdleWork;
-  }, [searchResults]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function hydrateLiveNowMovies() {
-      const seenRefs = new Set<string>();
-      const uniqueRefs = activeWatchingRefs.filter((ref) => {
-        const key = getMediaRefKey(ref);
-
-        if (seenRefs.has(key)) {
-          return false;
-        }
-
-        seenRefs.add(key);
-        return true;
-      });
-
-      if (uniqueRefs.length === 0) {
-        setLiveNowMovies([]);
-        setLiveNowMediaLoading(false);
-        return;
-      }
-
-      const lookup = new Map<string, Movie>();
-
-      [...popularMovies, ...popularTVShows].forEach((movie) => {
-        const key = getMovieKey(movie);
-
-        if (!lookup.has(key)) {
-          lookup.set(key, movie);
-        }
-      });
-
-      const missingRefs = uniqueRefs.filter((ref) => !lookup.has(getMediaRefKey(ref)));
-
-      const commitResolvedMovies = () => {
-        if (cancelled) {
-          return;
-        }
-
-        setLiveNowMovies(
-          uniqueRefs
-            .map((ref) => lookup.get(getMediaRefKey(ref)))
-            .filter((movie): movie is Movie => movie != null),
-        );
-      };
-
-      commitResolvedMovies();
-
-      if (missingRefs.length > 0) {
-        setLiveNowMediaLoading(true);
-
-        for (let index = 0; index < missingRefs.length; index += LIVE_NOW_MEDIA_HYDRATION_BATCH_SIZE) {
-          const batch = missingRefs.slice(index, index + LIVE_NOW_MEDIA_HYDRATION_BATCH_SIZE);
-
-          try {
-            const fetchedMovies = await Promise.all(batch.map((ref) => tmdbService.getMediaByRef(ref)));
-            fetchedMovies.forEach((movie) => {
-              if (movie) {
-                lookup.set(getMovieKey(movie), movie);
-              }
-            });
-            commitResolvedMovies();
-          } catch (error) {
-            console.warn('Live now media batch could not be hydrated:', error);
-          }
-        }
-      }
-
-      if (!cancelled) {
-        commitResolvedMovies();
-        setLiveNowMediaLoading(false);
-      }
-    }
-
-    void hydrateLiveNowMovies();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeWatchingRefs, popularMovies, popularTVShows]);
-
-  useEffect(() => {
     if (!watchingExpiredNotice) {
       return;
     }
@@ -610,54 +392,6 @@ function AppContent() {
     return () => subscription.remove();
   }, [activeTab, authScreen, selectedMovie, showExitPopup, switchTab, t, user]);
 
-  const loadMoreMovies = useCallback(async () => {
-    if (loadingMovies) {
-      return;
-    }
-
-    setLoadingMovies(true);
-
-    try {
-      const nextPage = moviesPage + 1;
-      const data = await tmdbService.getPopularMovies(nextPage);
-      setPopularMovies((current) => mergeUniqueMovies(current, data.results.slice(0, 12)));
-      setMoviesPage(nextPage);
-      setHomeError(null);
-    } catch (error) {
-      setHomeError(error instanceof Error ? error.message : t('data.error.generic'));
-    } finally {
-      setLoadingMovies(false);
-    }
-  }, [loadingMovies, moviesPage, t]);
-
-  const loadMoreTVShows = useCallback(async () => {
-    if (loadingTV) {
-      return;
-    }
-
-    setLoadingTV(true);
-
-    try {
-      const nextPage = tvPage + 1;
-      const data = await tmdbService.getPopularTVShows(nextPage);
-      setPopularTVShows((current) => mergeUniqueMovies(current, data.results.slice(0, 12)));
-      setTvPage(nextPage);
-      setHomeError(null);
-    } catch (error) {
-      setHomeError(error instanceof Error ? error.message : t('data.error.generic'));
-    } finally {
-      setLoadingTV(false);
-    }
-  }, [loadingTV, t, tvPage]);
-
-  const handleWatchRefresh = useCallback(() => {
-    void refreshHome();
-  }, [refreshHome]);
-
-  const handleLoadMoreLiveNow = useCallback(() => {
-    void loadMoreLiveNow();
-  }, [loadMoreLiveNow]);
-
   const openChatTab = useCallback(() => {
     switchTab('chat');
   }, [switchTab]);
@@ -666,80 +400,39 @@ function AppContent() {
     switchTab('watch');
   }, [switchTab]);
 
-  const handleSearch = useCallback(async (query: string, filter: 'all' | 'movie' | 'tv') => {
-    const requestSeq = searchRequestSeqRef.current + 1;
-    searchRequestSeqRef.current = requestSeq;
-    const normalizedQuery = query.trim();
-    setSearchQuery(normalizedQuery);
-    setIsSearching(Boolean(normalizedQuery));
-    setSearchError(null);
-
-    if (!normalizedQuery) {
-      setSearchResults([]);
-      setSearchLoading(false);
-      setIsSearching(false);
-      return;
-    }
-
-    setSearchLoading(true);
-
-    try {
-      const response = filter === 'movie'
-        ? await tmdbService.searchMovies(normalizedQuery, 1)
-        : filter === 'tv'
-          ? await tmdbService.searchTVShows(normalizedQuery, 1)
-          : await tmdbService.searchMulti(normalizedQuery, 1);
-
-      if (searchRequestSeqRef.current !== requestSeq) {
-        return;
-      }
-
-      setSearchResults(getUniqueMovies(response.results.slice(0, 12)));
-    } catch (error) {
-      if (searchRequestSeqRef.current === requestSeq) {
-        setSearchResults([]);
-        setSearchError(error instanceof Error ? error.message : t('data.error.generic'));
-      }
-    } finally {
-      if (searchRequestSeqRef.current === requestSeq) {
-        setSearchLoading(false);
-      }
-    }
-  }, [t]);
-
-  const renderActiveScreen = () => {
-    switch (renderedTab) {
+  const renderTab = (tab: AppTab) => {
+    switch (tab) {
       case 'watch':
         return (
           <MemoWatchScreen
-            isSearching={isSearching}
-            searchQuery={searchQuery}
-            searchResults={searchResults}
-            popularMoviesLoading={loadingMovies}
-            popularTVLoading={loadingTV}
-            homeError={homeError}
-            liveNowError={liveNowError}
-            liveNowLoading={liveNowLoading || liveNowMediaLoading}
-            searchLoading={searchLoading}
-            searchError={searchError}
-            liveNowMovies={liveNowMovies}
-            popularMovies={popularMovies}
-            popularTVShows={popularTVShows}
-            viewerCounts={viewerCounts}
-            viewerProfiles={viewerProfiles}
-            refreshing={refreshingHome}
-            onRefresh={handleWatchRefresh}
+            isSearching={watchHome.isSearching}
+            searchQuery={watchHome.searchQuery}
+            searchResults={watchHome.searchResults}
+            popularMoviesLoading={watchHome.loadingMovies}
+            popularTVLoading={watchHome.loadingTV}
+            homeError={watchHome.homeError}
+            liveNowError={watchHome.liveNowError}
+            liveNowLoading={watchHome.liveNowLoading}
+            searchLoading={watchHome.searchLoading}
+            searchError={watchHome.searchError}
+            liveNowMovies={watchHome.liveNowMovies}
+            popularMovies={watchHome.popularMovies}
+            popularTVShows={watchHome.popularTVShows}
+            viewerCounts={watchHome.viewerCounts}
+            viewerProfiles={watchHome.viewerProfiles}
+            refreshing={watchHome.refreshingHome}
+            onRefresh={watchHome.refreshHome}
             onMovieClick={setSelectedMovie}
-            onSearch={handleSearch}
-            onSearchStateChange={setIsSearching}
-            onLoadMoreLiveNow={liveNowPageInfo.hasMore ? handleLoadMoreLiveNow : undefined}
-            onLoadMoreMovies={loadMoreMovies}
-            onLoadMoreTVShows={loadMoreTVShows}
+            onSearch={watchHome.handleSearch}
+            onSearchStateChange={watchHome.setIsSearching}
+            onLoadMoreLiveNow={watchHome.canLoadMoreLiveNow ? watchHome.loadMoreLiveNow : undefined}
+            onLoadMoreMovies={watchHome.loadMoreMovies}
+            onLoadMoreTVShows={watchHome.loadMoreTVShows}
           />
         );
       case 'match':
         return (
-          <MemoMatchScreen
+          <LazyMatchScreen
             onMovieClick={setSelectedMovie}
             onOpenMessages={openChatTab}
             onBack={openWatchTab}
@@ -747,14 +440,15 @@ function AppContent() {
         );
       case 'compatibility':
         return (
-          <MemoCompatibilityScreen
+          <LazyCompatibilityScreen
             onMovieClick={setSelectedMovie}
             onOpenMessages={openChatTab}
+            onBack={openWatchTab}
           />
         );
       case 'likes':
         return (
-          <MemoLikesScreen
+          <LazyLikesScreen
             onMovieClick={setSelectedMovie}
             onOpenMessages={openChatTab}
             preferredTab={likesPreferredTab}
@@ -762,23 +456,23 @@ function AppContent() {
         );
       case 'chat':
         return (
-          <MemoChatScreen
+          <LazyChatScreen
             onMovieClick={setSelectedMovie}
             requestedOpenUserId={requestedChatUserId}
             onRequestedOpenUserIdHandled={handleRequestedChatUserHandled}
           />
         );
       case 'profile':
-        return <MemoProfileScreen onMovieClick={setSelectedMovie} />;
+        return <LazyProfileScreen onMovieClick={setSelectedMovie} />;
     }
   };
 
-  const renderTabTransition = () => {
-    if (activeTab === 'chat') {
+  const renderTabFallback = (tab: AppTab) => {
+    if (tab === 'chat') {
       return <ChatListSkeleton />;
     }
 
-    if (activeTab === 'match') {
+    if (tab === 'match' || tab === 'compatibility') {
       return <SwipeDeckSkeleton />;
     }
 
@@ -848,10 +542,28 @@ function AppContent() {
         onResumeWatching={resumeCurrentlyWatching}
       />
       <View style={styles.content}>
-        {renderedTab === activeTab ? renderActiveScreen() : renderTabTransition()}
+        {renderedResidentTabs.map((tab) => {
+          const isVisible = tab === renderedTab;
+
+          return (
+            <View
+              key={tab}
+              collapsable={false}
+              accessibilityElementsHidden={!isVisible}
+              importantForAccessibility={isVisible ? 'auto' : 'no-hide-descendants'}
+              pointerEvents={isVisible ? 'auto' : 'none'}
+              style={[styles.tabScene, !isVisible && styles.hiddenTabScene]}
+            >
+              <Suspense fallback={isVisible ? renderTabFallback(tab) : null}>
+                {renderTab(tab)}
+              </Suspense>
+            </View>
+          );
+        })}
       </View>
       <BottomNav
         activeTab={activeTab}
+        onTabIntent={prepareTab}
         onTabChange={switchTab}
         onHeightChange={handleBottomNavHeight}
       />
@@ -882,5 +594,11 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+  tabScene: {
+    flex: 1,
+  },
+  hiddenTabScene: {
+    display: 'none',
   },
 });

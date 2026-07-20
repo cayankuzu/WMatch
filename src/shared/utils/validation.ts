@@ -20,6 +20,14 @@ export function normalizeBio(value: string) {
   return value.replace(/\r\n/g, '\n').trim();
 }
 
+export function countMessageCharacters(value: string) {
+  return Array.from(value).length;
+}
+
+export function clampMessageText(value: string) {
+  return Array.from(value).slice(0, MAX_MESSAGE_LENGTH).join('');
+}
+
 export function validateDisplayName(value: string) {
   const normalizedValue = normalizeWhitespace(value);
 
@@ -81,7 +89,7 @@ export function validateMessageText(value: string) {
     return 'Mesaj boş olamaz.';
   }
 
-  if (normalizedValue.length > MAX_MESSAGE_LENGTH) {
+  if (countMessageCharacters(normalizedValue) > MAX_MESSAGE_LENGTH) {
     return `Mesaj en fazla ${MAX_MESSAGE_LENGTH} karakter olabilir.`;
   }
 

@@ -1,5 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { ImageBackground, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Image } from 'expo-image';
+import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { useLocalization } from '../../context/LocalizationContext';
 import type { Movie } from '../../services/tmdb';
@@ -46,14 +47,20 @@ export default function UserMiniCard({
     >
       <View style={styles.photoWrap}>
         {photo ? (
-          <ImageBackground
+          <View style={styles.photo}>
+            <Image
+              cachePolicy="memory-disk"
+              contentFit="cover"
+              enforceEarlyResizing
+              priority="normal"
+              recyclingKey={`profile-mini:${user.id}:${photo}`}
             source={{ uri: photo }}
             blurRadius={concealed ? 22 : 0}
-            style={styles.photo}
-            imageStyle={styles.photoImage}
-          >
+              style={styles.photoImage}
+              transition={80}
+            />
             <View style={styles.photoScrim} />
-          </ImageBackground>
+          </View>
         ) : (
           <View style={[styles.photo, styles.placeholder]}>
             <View style={styles.placeholderIconWrap}>
@@ -160,8 +167,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   photoImage: {
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
   },
   photoScrim: {
     ...StyleSheet.absoluteFill,

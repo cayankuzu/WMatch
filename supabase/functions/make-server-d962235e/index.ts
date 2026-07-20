@@ -71,6 +71,7 @@ const PROFILE_PHOTOS_SIGNED_PREFIX = `${Deno.env.get("SUPABASE_URL")!}/storage/v
 const PROFILE_PHOTO_SIGNED_URL_TTL_SECONDS = 6 * 60 * 60;
 const MAX_SIGNUP_ATTEMPTS_PER_HOUR = 6;
 const MAX_PASSWORD_RESET_REQUESTS_PER_HOUR = 6;
+const MAX_PASSWORD_RESET_LOOKUPS_PER_HOUR = 20;
 const MAX_AVAILABILITY_CHECKS_PER_MINUTE = 20;
 const MAX_PROFILE_UPDATES_PER_MINUTE = 20;
 const MAX_LIKES_PER_MINUTE = 60;
@@ -92,6 +93,7 @@ const DEFAULT_COMPATIBILITY_PAGE_SIZE = 40;
 const MAX_COMPATIBILITY_PAGE_SIZE = 80;
 const DEFAULT_WATCH_DISCOVERY_PAGE_SIZE = 40;
 const MAX_WATCH_DISCOVERY_PAGE_SIZE = 80;
+const MAX_WATCH_EVENT_RECIPIENTS = 80;
 const MAX_CHAT_MESSAGE_PEER_ROWS = 500;
 const MAX_RELATIONSHIP_ROWS = 2_000;
 const DEFAULT_DIRECTORY_PAGE_SIZE = 80;
@@ -99,12 +101,14 @@ const MAX_DIRECTORY_PAGE_SIZE = 120;
 const MONETIZATION_ENABLED = Deno.env.get("MONETIZATION_ENABLED") === "true";
 const WATCH_SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
 const API_VERSION = "2026-07-19";
-const RELEASE_VERSION = "1.0.36";
-const REQUIRED_SCHEMA_VERSION = "20260718120000";
+const RELEASE_VERSION = "1.0.43";
+const REQUIRED_SCHEMA_VERSION = "20260720012500";
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const TMDB_PROXY_CACHE_TTL_MS = 30 * 60 * 1000;
 const TMDB_PROXY_MAX_CACHE_ENTRIES = 300;
 const ANDROID_NOTIFICATION_CHANNEL_ID = "wmatch-alerts-v2";
+const EXPO_PUSH_MAX_HTTP_ATTEMPTS = 3;
+const EXPO_PUSH_RETRY_BASE_DELAY_MS = 400;
 const DEFAULT_CHAT_SETTINGS = {
   readReceipts: true,
   onlineStatus: true,
@@ -1560,6 +1564,68 @@ const queuePairStateEvents = (supabase: any, leftUserId: string, rightUserId: st
   queueUserEvents(supabase, [leftUserId, rightUserId], "chat_changed", { reason });
 };
 
+const queueWatchSessionDiscoveryEvents = (
+  supabase: any,
+  currentUserId: string,
+  refs: Array<{ movieId?: number | null; mediaType?: unknown }>,
+) => {
+  const uniqueRefs = new Map<string, { movieId: number; mediaType: MediaType }>();
+
+  refs.forEach((ref) => {
+    if (!ref.movieId || ref.movieId <= 0) {
+      return;
+    }
+
+    const mediaType = normalizeMediaType(ref.mediaType);
+    uniqueRefs.set(`${mediaType}:${ref.movieId}`, { movieId: ref.movieId, mediaType });
+  });
+
+  if (uniqueRefs.size === 0) {
+    return;
+  }
+
+  const task = (async () => {
+    const recipientIds = new Set<string>();
+
+    await Promise.all([...uniqueRefs.values()].map(async (ref) => {
+      const { data, error } = await supabase
+        .from("currently_watching")
+        .select("user_id")
+        .eq("movie_id", ref.movieId)
+        .eq("media_type", ref.mediaType)
+        .eq("state", "active")
+        .gt("expires_at", new Date().toISOString())
+        .neq("user_id", currentUserId)
+        .limit(MAX_WATCH_EVENT_RECIPIENTS);
+
+      if (error) {
+        throw error;
+      }
+
+      (data ?? []).forEach((row: { user_id?: string | null }) => {
+        if (row.user_id) {
+          recipientIds.add(row.user_id);
+        }
+      });
+    }));
+
+    if (recipientIds.size > 0) {
+      await publishUserEvents(
+        supabase,
+        [...recipientIds],
+        "discovery_changed",
+        { reason: "watch_session" },
+      );
+    }
+  })().catch((error) => {
+    console.error("Watch session discovery event error:", error);
+  });
+
+  if (!runAfterResponse(task)) {
+    void task;
+  }
+};
+
 const buildMessageNotificationBody = (text: string) => {
   const normalized = normalizeWhitespace(text).trim();
 
@@ -1750,6 +1816,7 @@ const loadMovieCollectionsForUsers = async (
     .from("user_movies")
     .select("user_id, movie_id, media_type, type")
     .in("user_id", userIds)
+    .order("created_at", { ascending: false })
     .limit(Math.min(MAX_RELATIONSHIP_ROWS, Math.max(1, userIds.length * (MAX_FAVORITES_COUNT + MAX_WATCHED_COUNT))));
 
   if (error) {
@@ -1987,18 +2054,68 @@ const chunkArray = <T,>(items: T[], chunkSize: number) => {
   return chunks;
 };
 
+const getExpoPushHeaders = () => {
+  const accessToken = Deno.env.get("EXPO_ACCESS_TOKEN")?.trim();
+
+  return {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+  };
+};
+
+const waitFor = (delayMs: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+
+const fetchExpoPushWithRetry = async (url: string, init: RequestInit) => {
+  let lastResponse: Response | null = null;
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < EXPO_PUSH_MAX_HTTP_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(url, init);
+      lastResponse = response;
+
+      if (response.status !== 429 && response.status < 500) {
+        return response;
+      }
+
+      if (attempt === EXPO_PUSH_MAX_HTTP_ATTEMPTS - 1) {
+        return response;
+      }
+
+      const retryAfterSeconds = Number(response.headers.get("retry-after"));
+      const retryDelayMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+        ? Math.min(5_000, retryAfterSeconds * 1_000)
+        : EXPO_PUSH_RETRY_BASE_DELAY_MS * (2 ** attempt);
+      await waitFor(retryDelayMs);
+    } catch (error) {
+      lastError = error;
+
+      if (attempt === EXPO_PUSH_MAX_HTTP_ATTEMPTS - 1) {
+        throw error;
+      }
+
+      await waitFor(EXPO_PUSH_RETRY_BASE_DELAY_MS * (2 ** attempt));
+    }
+  }
+
+  if (lastResponse) {
+    return lastResponse;
+  }
+
+  throw lastError ?? new Error("Expo push request failed.");
+};
+
 const resolveExpoPushReceipts = async (
   ticketTokenPairs: Array<{ ticketId: string; token: string }>,
 ) => {
   const invalidTokens = new Set<string>();
 
   for (const receiptChunk of chunkArray(ticketTokenPairs, 300)) {
-    const response = await fetch("https://exp.host/--/api/v2/push/getReceipts", {
+    const response = await fetchExpoPushWithRetry("https://exp.host/--/api/v2/push/getReceipts", {
       method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
+      headers: getExpoPushHeaders(),
       body: JSON.stringify({
         ids: receiptChunk.map((item) => item.ticketId),
       }),
@@ -2083,12 +2200,9 @@ const sendPushNotifications = async (
     let acceptedCount = 0;
 
     for (const messageChunk of chunkArray(messages, 100)) {
-      const response = await fetch("https://exp.host/--/api/v2/push/send", {
+      const response = await fetchExpoPushWithRetry("https://exp.host/--/api/v2/push/send", {
         method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
+        headers: getExpoPushHeaders(),
         body: JSON.stringify(messageChunk),
       });
 
@@ -2143,15 +2257,15 @@ const sendPushNotifications = async (
       await supabase.from("device_push_tokens").delete().in("token", [...invalidTokens]);
     }
 
-    if (acceptedCount > 0) {
-      return { status: "submitted" as const, error: null };
-    }
-
     if (retryableErrors.length > 0) {
       return {
         status: "retry" as const,
         error: [...new Set(retryableErrors)].join(","),
       };
+    }
+
+    if (acceptedCount > 0) {
+      return { status: "submitted" as const, error: null };
     }
 
     return { status: "no_tokens" as const, error: null };
@@ -2312,12 +2426,15 @@ const dispatchNotificationEvents = async (
     ),
   );
 
-  const pushTask = drainPushDeliveryOutbox(
-    supabase,
-    storedNotifications
-      .map((notification) => notification.eventId)
-      .filter((eventId): eventId is string => typeof eventId === "string"),
-  );
+  const pushTask = (async () => {
+    await drainPushDeliveryOutbox(
+      supabase,
+      storedNotifications
+        .map((notification) => notification.eventId)
+        .filter((eventId): eventId is string => typeof eventId === "string"),
+    );
+    await drainPushDeliveryOutbox(supabase);
+  })();
 
   if (options.deferPush && runAfterResponse(pushTask)) {
     return;
@@ -2605,6 +2722,7 @@ const loadUserPayloadMap = async (
         .from("user_movies")
         .select("user_id, movie_id, media_type, type")
         .in("user_id", userIds)
+        .order("created_at", { ascending: false })
         .limit(Math.min(MAX_RELATIONSHIP_ROWS, Math.max(1, userIds.length * (MAX_FAVORITES_COUNT + MAX_WATCHED_COUNT)))),
       supabase
         .from("currently_watching")
@@ -3557,6 +3675,54 @@ app.get("/make-server-d962235e/health", async (c) => {
   });
 });
 
+app.post("/make-server-d962235e/tmdb/media-batch", async (c) => {
+  try {
+    const body = await c.req.json().catch(() => null) as {
+      refs?: Array<{ id?: unknown; mediaType?: unknown }>;
+    } | null;
+    const refs = Array.isArray(body?.refs)
+      ? body.refs
+          .filter((ref) => Number.isInteger(ref.id) && Number(ref.id) > 0 && (ref.mediaType === "movie" || ref.mediaType === "tv"))
+          .map((ref) => ({ id: Number(ref.id), mediaType: ref.mediaType as "movie" | "tv" }))
+      : [];
+    const uniqueRefs = [...new Map(refs.map((ref) => [`${ref.mediaType}:${ref.id}`, ref])).values()].slice(0, 16);
+
+    if (uniqueRefs.length === 0) {
+      return c.json({ error: "At least one valid media reference is required." }, 400);
+    }
+
+    const supabase = getSupabase();
+    const rateLimit = await enforceRateLimit(supabase, {
+      action: "tmdb_media_batch",
+      key: buildAbuseKey([getClientIp(c), "media-batch"]),
+      limit: MAX_TMDB_PROXY_REQUESTS_PER_MINUTE,
+      windowSeconds: 60,
+    });
+
+    if (!rateLimit.allowed) {
+      return c.json({ error: "Too many requests.", retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+    }
+
+    const items = await Promise.all(uniqueRefs.map(async (ref) => {
+      const path = `/${ref.mediaType}/${ref.id}`;
+      const query = new URLSearchParams({ language: "tr-TR" });
+
+      try {
+        const payload = await fetchTmdbProxyPayload(`${path}?${query.toString()}`, path, query);
+        return { ...ref, payload };
+      } catch {
+        return { ...ref, payload: null };
+      }
+    }));
+
+    return c.json({ items });
+  } catch (error) {
+    const code = getTmdbProxyErrorCode(error);
+    console.error("TMDB batch error:", { code, message: getErrorMessage(error, "unknown") });
+    return c.json({ error: "Film servisi gecici olarak kullanilamiyor.", code }, 502);
+  }
+});
+
 app.get("/make-server-d962235e/tmdb/*", async (c) => {
   try {
     const { path, query } = normalizeTmdbProxyPath(c.req.url);
@@ -3674,14 +3840,23 @@ app.post("/make-server-d962235e/auth/password-reset", async (c) => {
     const { email, redirectTo } = await c.req.json();
     const supabase = getSupabase();
     const normalizedEmail = typeof email === "string" ? normalizeEmail(email) : "";
-    const rateLimit = await enforceRateLimit(supabase, {
-      action: "auth_password_reset",
-      key: buildAbuseKey([getClientIp(c), normalizedEmail]),
-      limit: MAX_PASSWORD_RESET_REQUESTS_PER_HOUR,
-      windowSeconds: 60 * 60,
-    });
+    const clientIp = getClientIp(c);
+    const [rateLimit, lookupRateLimit] = await Promise.all([
+      enforceRateLimit(supabase, {
+        action: "auth_password_reset",
+        key: buildAbuseKey([clientIp, normalizedEmail]),
+        limit: MAX_PASSWORD_RESET_REQUESTS_PER_HOUR,
+        windowSeconds: 60 * 60,
+      }),
+      enforceRateLimit(supabase, {
+        action: "auth_password_reset_lookup",
+        key: buildAbuseKey([clientIp]),
+        limit: MAX_PASSWORD_RESET_LOOKUPS_PER_HOUR,
+        windowSeconds: 60 * 60,
+      }),
+    ]);
 
-    if (!rateLimit.allowed) {
+    if (!rateLimit.allowed || !lookupRateLimit.allowed) {
       return c.json({ error: "Cok sik sifre sifirlama istegi gonderdin. Lutfen daha sonra tekrar dene." }, 429);
     }
 
@@ -3691,6 +3866,29 @@ app.post("/make-server-d962235e/auth/password-reset", async (c) => {
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return c.json({ error: "Gecerli bir e-posta adresi gir." }, 400);
+    }
+
+    const { data: availabilityRows, error: availabilityError } = await supabase.rpc(
+      "check_email_availability",
+      { p_email: normalizedEmail },
+    );
+
+    if (availabilityError) {
+      console.error("Password reset account lookup error:", availabilityError);
+      return c.json({ error: "Hesap kontrolu su anda yapilamiyor. Lutfen tekrar dene." }, 503);
+    }
+
+    const accountExists = Array.isArray(availabilityRows)
+      && availabilityRows[0]?.email_available === false;
+
+    if (!accountExists) {
+      return c.json(
+        {
+          error: "Bu e-posta adresiyle kayitli bir hesap bulunamadi.",
+          code: "ACCOUNT_NOT_FOUND",
+        },
+        404,
+      );
     }
 
     const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
@@ -3705,12 +3903,13 @@ app.post("/make-server-d962235e/auth/password-reset", async (c) => {
         status: (error as { status?: number })?.status,
         message: getErrorMessage(error, "delivery failed"),
       });
+      return c.json({ error: "Sifre sifirlama maili gonderilemedi. Lutfen tekrar dene." }, 502);
     }
 
     return c.json({ success: true });
   } catch (error) {
     console.error("Password reset request error:", error);
-    return c.json({ success: true });
+    return c.json({ error: "Sifre sifirlama istegi tamamlanamadi." }, 500);
   }
 });
 
@@ -3848,6 +4047,27 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
       currentlyWatchingAction !== "stop"
     ) {
       return c.json({ error: "Geçersiz izleme aksiyonu." }, 400);
+    }
+
+    let previousWatchingForEvents: {
+      movie_id: number;
+      media_type?: string | null;
+      state?: string | null;
+      expires_at?: string | null;
+    } | null = null;
+
+    if (requestedWatchingMutation) {
+      const { data: previousWatching, error: previousWatchingError } = await supabase
+        .from("currently_watching")
+        .select("movie_id, media_type, state, expires_at")
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (previousWatchingError) {
+        console.error("Previous watch state lookup error:", previousWatchingError);
+      } else {
+        previousWatchingForEvents = previousWatching ?? null;
+      }
     }
 
     const profileUpdates: Record<string, unknown> = {};
@@ -4168,6 +4388,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
       .from("user_movies")
       .select("movie_id, media_type, type")
       .eq("user_id", userId)
+      .order("created_at", { ascending: false })
       .limit(MAX_FAVORITES_COUNT + MAX_WATCHED_COUNT);
 
     if (moviesError) {
@@ -4205,6 +4426,23 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
           watchedMedia !== undefined,
       });
       queueUserEvents(supabase, [userId], "discovery_changed", { reason: "profile" });
+    }
+
+    if (requestedWatchingMutation) {
+      queueWatchSessionDiscoveryEvents(supabase, userId, [
+        previousWatchingForEvents?.state === "active"
+          ? {
+              movieId: previousWatchingForEvents.movie_id,
+              mediaType: previousWatchingForEvents.media_type,
+            }
+          : {},
+        refreshedCurrentlyWatching?.state === "active"
+          ? {
+              movieId: refreshedCurrentlyWatching.movie_id,
+              mediaType: refreshedCurrentlyWatching.media_type,
+            }
+          : {},
+      ]);
     }
 
     const [signedProfile] = await signProfilePhotosForPayloads(supabase, [

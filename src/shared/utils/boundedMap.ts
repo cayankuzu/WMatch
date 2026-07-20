@@ -45,6 +45,10 @@ export class BoundedMap<K, V> {
     return this.values.delete(key);
   }
 
+  forEach(callback: (value: V, key: K) => void) {
+    this.values.forEach(callback);
+  }
+
   clear() {
     this.values.clear();
   }

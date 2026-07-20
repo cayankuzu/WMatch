@@ -19,7 +19,8 @@ Canonical package manager: npm with `package-lock.json`
 - Android package/applicationId: `com.wmatch.app`
 - Android namespace: `com.wmatch.app`
 - iOS bundle identifier: `com.wmatch.app`
-- EAS project id: `0aa025b7-dd97-4ad9-951c-3864e0beb8fc`
+- EAS project id: `5aab8659-db24-4152-aa79-142f210e16d1`
+- EAS owner: `cayann`
 - Android release SHA-1 guard: `E4:E0:3B:26:E1:7E:D9:1E:5C:26:EC:4A:71:22:0B:CF:E9:15:0C:34`
 
 Signing files, keystores, provisioning files, Firebase platform files, and non-example `.env` files must not be tracked by Git.

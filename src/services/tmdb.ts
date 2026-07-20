@@ -2,10 +2,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_BASE, fetchWithRetry } from '../../utils/supabase/client';
 import { publicAnonKey } from '../../utils/supabase/info';
 import type { MediaRef, MediaType } from '../shared/types';
-import { scheduleMediaPrefetch } from '../shared/utils/mediaPrefetchQueue';
+import {
+  scheduleMediaPrefetch,
+  type MediaPrefetchPriority,
+} from '../shared/utils/mediaPrefetchQueue';
 
 const IMAGE_BASE_URL = 'https://image.tmdb.org/t/p';
-const EMPTY_IMAGE = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
+const EMPTY_IMAGE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 const FALLBACK_POSTER = EMPTY_IMAGE;
 const FALLBACK_BACKDROP = EMPTY_IMAGE;
 const CACHE_TTL_MS = 30 * 60 * 1000;
@@ -73,6 +76,14 @@ interface PersistentCacheEntry {
   value: unknown;
   expiresAt: number;
   storedAt: number;
+}
+
+interface TMDBBatchResponse {
+  items: Array<{
+    id: number;
+    mediaType: MediaKind;
+    payload: TMDBPayload | null;
+  }>;
 }
 
 function getPersistentCacheKey(path: string) {
@@ -146,10 +157,8 @@ function putMemoryCache(
 
 async function readPersistentCache(path: string) {
   try {
-    // Cache maintenance is intentionally off the first-content critical path.
-    // The requested entry can be read directly while pruning continues in the
-    // background.
-    void initializePersistentCache();
+    // Read the requested entry directly; full-cache pruning starts only after
+    // first content when the next network response is persisted.
     const cacheKey = getPersistentCacheKey(path);
     const rawValue = await AsyncStorage.getItem(cacheKey);
 
@@ -230,13 +239,14 @@ async function writePersistentCache(path: string, value: unknown) {
   }
 }
 
-function requestTMDB<T>(path: string): Promise<T> {
-  const inflightRequest = inflightRequests.get(path);
+function requestTMDB<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const inflightRequest = signal ? null : inflightRequests.get(path);
   if (inflightRequest) {
     return inflightRequest as Promise<T>;
   }
 
   const request = fetchWithRetry(`${API_BASE}/tmdb${path}`, {
+    signal,
     headers: {
       Authorization: `Bearer ${publicAnonKey}`,
     },
@@ -253,10 +263,14 @@ function requestTMDB<T>(path: string): Promise<T> {
       return payload;
     })
     .finally(() => {
-      inflightRequests.delete(path);
+      if (!signal) {
+        inflightRequests.delete(path);
+      }
     });
 
-  inflightRequests.set(path, request as Promise<unknown>);
+  if (!signal) {
+    inflightRequests.set(path, request as Promise<unknown>);
+  }
   return request;
 }
 
@@ -266,7 +280,7 @@ function revalidateTMDB(path: string) {
   });
 }
 
-async function fetchTMDB<T>(path: string): Promise<T> {
+async function fetchTMDB<T>(path: string, signal?: AbortSignal): Promise<T> {
   const cached = responseCache.get(path);
 
   if (cached) {
@@ -301,7 +315,7 @@ async function fetchTMDB<T>(path: string): Promise<T> {
     return persistentCache.value as T;
   }
 
-  return requestTMDB<T>(path);
+  return requestTMDB<T>(path, signal);
 }
 
 function normalizeMovie(payload: TMDBPayload, fallbackType?: 'movie' | 'tv'): Movie {
@@ -385,8 +399,12 @@ function mergeSearchResponses(...responses: TMDBResponse[]) {
   };
 }
 
-async function safeFetchResponse(path: string, fallbackType?: 'movie' | 'tv'): Promise<TMDBResponse> {
-  const payload = await fetchTMDB<Omit<TMDBResponse, 'results'> & { results: TMDBPayload[] }>(path);
+async function safeFetchResponse(
+  path: string,
+  fallbackType?: 'movie' | 'tv',
+  signal?: AbortSignal,
+): Promise<TMDBResponse> {
+  const payload = await fetchTMDB<Omit<TMDBResponse, 'results'> & { results: TMDBPayload[] }>(path, signal);
   return normalizeResponse(payload, fallbackType);
 }
 
@@ -395,6 +413,7 @@ async function searchWithLanguageFallback(
   query: string,
   page = 1,
   fallbackType?: 'movie' | 'tv',
+  signal?: AbortSignal,
 ): Promise<TMDBResponse> {
   const normalizedQuery = query.trim();
 
@@ -410,6 +429,7 @@ async function searchWithLanguageFallback(
   const localizedResponse = await safeFetchResponse(
     `/search/${kind}?language=tr-TR&query=${encodeURIComponent(normalizedQuery)}&page=${page}`,
     fallbackType,
+    signal,
   );
 
   if (localizedResponse.results.length >= 8) {
@@ -420,10 +440,12 @@ async function searchWithLanguageFallback(
     safeFetchResponse(
       `/search/${kind}?query=${encodeURIComponent(normalizedQuery)}&page=${page}`,
       fallbackType,
+      signal,
     ),
     safeFetchResponse(
       `/search/${kind}?language=en-US&query=${encodeURIComponent(normalizedQuery)}&page=${page}`,
       fallbackType,
+      signal,
     ),
   ]);
 
@@ -487,14 +509,46 @@ async function fetchDetailsWithFallback(kind: MediaKind, id: number): Promise<Mo
   }
 }
 
-async function prefetchImages(urls: string[]) {
+async function fetchMediaBatch(refs: Array<{ id: number; mediaType: MediaKind }>) {
+  const response = await fetchWithRetry(`${API_BASE}/tmdb/media-batch`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${publicAnonKey}`,
+      'Content-Type': 'application/json',
+      'Idempotency-Key': `tmdb-batch:${refs.map((ref) => `${ref.mediaType}:${ref.id}`).join(',')}`,
+    },
+    body: JSON.stringify({ refs }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`TMDB batch request failed with status ${response.status}`);
+  }
+
+  const data = await response.json() as TMDBBatchResponse;
+  const movies = new Map<string, Movie>();
+
+  data.items.forEach((item) => {
+    if (!item.payload) {
+      return;
+    }
+
+    const path = `/${item.mediaType}/${item.id}?language=tr-TR`;
+    putMemoryCache(path, item.payload);
+    void writePersistentCache(path, item.payload);
+    movies.set(getMediaRefKey(item), normalizeMovie(item.payload, item.mediaType));
+  });
+
+  return movies;
+}
+
+async function prefetchImages(urls: string[], priority: MediaPrefetchPriority) {
   const nextUrls = Array.from(new Set(urls.filter((url) => url && url !== EMPTY_IMAGE))).filter(
     (url) => !prefetchedImages.has(url),
   ).slice(0, MAX_IMAGE_PREFETCH_PER_CALL);
 
   await Promise.allSettled(
     nextUrls.map(async (url) => {
-      const success = await scheduleMediaPrefetch(url);
+      const success = await scheduleMediaPrefetch(url, priority, 'tmdb-artwork');
       if (success) {
         prefetchedImages.add(url);
 
@@ -533,16 +587,16 @@ export const tmdbService = {
     return safeFetchResponse(`/tv/popular?language=tr-TR&page=${page}`, 'tv');
   },
 
-  searchMulti(query: string, page = 1) {
-    return searchWithLanguageFallback('multi', query, page);
+  searchMulti(query: string, page = 1, signal?: AbortSignal) {
+    return searchWithLanguageFallback('multi', query, page, undefined, signal);
   },
 
-  searchMovies(query: string, page = 1) {
-    return searchWithLanguageFallback('movie', query, page, 'movie');
+  searchMovies(query: string, page = 1, signal?: AbortSignal) {
+    return searchWithLanguageFallback('movie', query, page, 'movie', signal);
   },
 
-  searchTVShows(query: string, page = 1) {
-    return searchWithLanguageFallback('tv', query, page, 'tv');
+  searchTVShows(query: string, page = 1, signal?: AbortSignal) {
+    return searchWithLanguageFallback('tv', query, page, 'tv', signal);
   },
 
   async getMovieDetails(id: number): Promise<Movie> {
@@ -594,14 +648,7 @@ export const tmdbService = {
   },
 
   async getMediaListByIds(ids: number[]): Promise<Movie[]> {
-    const resolved: Array<Movie | null> = [];
-
-    for (let index = 0; index < ids.length; index += MEDIA_LOOKUP_BATCH_SIZE) {
-      const batch = ids.slice(index, index + MEDIA_LOOKUP_BATCH_SIZE);
-      resolved.push(...(await Promise.all(batch.map((id) => this.getMediaById(id)))));
-    }
-
-    return resolved.filter((movie): movie is Movie => movie != null);
+    return this.getMediaListByRefs(ids.map((id) => ({ id, mediaType: 'movie' as const })));
   },
 
   async getMediaListByRefs(refs: Array<MediaRef | { id: number; mediaType?: MediaKind | null }>): Promise<Movie[]> {
@@ -609,7 +656,28 @@ export const tmdbService = {
 
     for (let index = 0; index < refs.length; index += MEDIA_LOOKUP_BATCH_SIZE) {
       const batch = refs.slice(index, index + MEDIA_LOOKUP_BATCH_SIZE);
-      resolved.push(...(await Promise.all(batch.map((ref) => this.getMediaByRef(ref)))));
+      const typedBatch = batch.map((ref) => ({ id: ref.id, mediaType: ref.mediaType ?? 'movie' }));
+
+      try {
+        const batchMovies = await fetchMediaBatch(typedBatch);
+        const batchResolved = typedBatch.map((ref) => batchMovies.get(getMediaRefKey(ref)) ?? null);
+        const missingIndexes = batchResolved
+          .map((movie, batchIndex) => movie ? -1 : batchIndex)
+          .filter((batchIndex) => batchIndex >= 0);
+
+        if (missingIndexes.length > 0) {
+          const fallbacks = await Promise.all(
+            missingIndexes.map((batchIndex) => this.getMediaByRef(typedBatch[batchIndex])),
+          );
+          fallbacks.forEach((movie, fallbackIndex) => {
+            batchResolved[missingIndexes[fallbackIndex]] = movie;
+          });
+        }
+
+        resolved.push(...batchResolved);
+      } catch {
+        resolved.push(...(await Promise.all(batch.map((ref) => this.getMediaByRef(ref)))));
+      }
     }
 
     return resolved.filter((movie): movie is Movie => movie != null);
@@ -621,6 +689,7 @@ export const tmdbService = {
       includeBackdrop?: boolean;
       posterSize?: PosterSize;
       backdropSize?: BackdropSize;
+      priority?: MediaPrefetchPriority;
     },
   ) {
     const posterSize = options?.posterSize ?? 'w200';
@@ -636,6 +705,6 @@ export const tmdbService = {
       return movieUrls;
     });
 
-    await prefetchImages(urls);
+    await prefetchImages(urls, options?.priority ?? 'predictive');
   },
 };

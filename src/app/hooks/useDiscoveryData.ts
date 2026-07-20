@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState } from 'react-native';
 
-import { supabase } from '../../../utils/supabase/client';
 import {
   ApiRequestError,
   getCompatibilityDiscoveryEntries,
@@ -12,7 +10,9 @@ import {
 import type { CompatibilityDiscoveryEntry } from '../../shared/types';
 import { BoundedMap } from '../../shared/utils/boundedMap';
 import { registerSessionCache } from '../../shared/utils/sessionCache';
+import { subscribeToForeground } from '../../shared/utils/appLifecycle';
 import { prefetchProfilePhotos } from '../../services/profileImagePrefetch';
+import { subscribeToUserEvent } from '../../services/userEventBus';
 
 const REALTIME_DEBOUNCE_MS = 500;
 const DISCOVERY_CACHE_TTL_MS = 300_000;
@@ -136,7 +136,7 @@ async function preloadLikesSlice(userId: string, force: boolean) {
   }
 
   const requestGeneration = discoveryCacheGeneration;
-  const flight = getLikesDiscovery()
+  const flight = getLikesDiscovery(force)
     .then((value) => {
       if (requestGeneration === discoveryCacheGeneration) {
         likesSliceCache.set(userId, {
@@ -189,7 +189,7 @@ export async function preloadDiscoveryData(
 
     if (mode === 'watch') {
       const [watchResponse, likesDiscovery] = await Promise.all([
-        getWatchDiscoveryUsers(),
+        getWatchDiscoveryUsers({ force }),
         preloadLikesSlice(userId, force),
       ]);
       pageInfo = watchResponse.pageInfo;
@@ -205,7 +205,7 @@ export async function preloadDiscoveryData(
       void prefetchProfilePhotos(watchResponse.users.map((user) => user.photos), 4);
     } else if (mode === 'compatibility') {
       const [compatibilityResponse, likesDiscovery] = await Promise.all([
-        getCompatibilityDiscoveryEntries(),
+        getCompatibilityDiscoveryEntries({ force }),
         preloadLikesSlice(userId, force),
       ]);
       pageInfo = compatibilityResponse.pageInfo;
@@ -372,19 +372,28 @@ export default function useDiscoveryData(mode: DiscoveryMode, currentUserId?: st
 
   const loadData = useCallback(
     async (options?: LoadOptions) => {
-      if (loadInFlightRef.current) {
+      const currentFlight = loadInFlightRef.current;
+
+      if (currentFlight) {
         if (options?.showRefreshing) {
           setRefreshing(true);
         }
 
         try {
-          await loadInFlightRef.current;
+          await currentFlight;
         } finally {
           if (options?.showRefreshing) {
             setRefreshing(false);
           }
         }
-        return;
+
+        if (!options?.force) {
+          return;
+        }
+
+        if (loadInFlightRef.current && loadInFlightRef.current !== currentFlight) {
+          return;
+        }
       }
 
       if (!currentUserId) {
@@ -628,16 +637,12 @@ export default function useDiscoveryData(mode: DiscoveryMode, currentUserId?: st
       return;
     }
 
-    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') {
-        const cachedSnapshot = getCachedDiscoverySnapshot(mode, currentUserId);
-        void loadData({ force: !isDiscoverySnapshotFresh(cachedSnapshot) });
-      }
+    const unsubscribeForeground = subscribeToForeground(() => {
+      const cachedSnapshot = getCachedDiscoverySnapshot(mode, currentUserId);
+      void loadData({ force: !isDiscoverySnapshotFresh(cachedSnapshot) });
     });
 
-    return () => {
-      appStateSubscription.remove();
-    };
+    return unsubscribeForeground;
   }, [currentUserId, loadData]);
 
   useEffect(() => {
@@ -645,13 +650,11 @@ export default function useDiscoveryData(mode: DiscoveryMode, currentUserId?: st
       return;
     }
 
-    const channel = supabase.channel(`user-events:${currentUserId}`, {
-      config: { private: true },
-    });
-
-    channel.on('broadcast', { event: 'discovery_changed' }, scheduleRefresh);
-
-    channel.subscribe();
+    const unsubscribeUserEvent = subscribeToUserEvent(
+      currentUserId,
+      'discovery_changed',
+      scheduleRefresh,
+    );
 
     return () => {
       if (refreshTimeoutRef.current) {
@@ -659,7 +662,7 @@ export default function useDiscoveryData(mode: DiscoveryMode, currentUserId?: st
         refreshTimeoutRef.current = null;
       }
 
-      void supabase.removeChannel(channel);
+      unsubscribeUserEvent();
     };
   }, [currentUserId, mode, scheduleRefresh]);
 

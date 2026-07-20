@@ -7,7 +7,7 @@ const fail = (message) => {
 };
 
 const migrationsDir = 'supabase/migrations';
-const expectedLatest = '20260718120000_production_integrity_hardening.sql';
+const expectedLatest = '20260720012500_watch_session_media_type_ambiguity_fix.sql';
 const historicalNoopMigrations = new Set([
   '20260703131500_per_user_chat_deletion_state.sql',
 ]);
@@ -20,6 +20,18 @@ if (migrations.at(-1) !== expectedLatest) {
 }
 
 const latestSource = readFileSync(join(migrationsDir, expectedLatest), 'utf8');
+const appPresenceSource = readFileSync(
+  join(migrationsDir, '20260719113000_app_presence_private_topics.sql'),
+  'utf8',
+);
+const movieCollectionOrderSource = readFileSync(
+  join(migrationsDir, '20260719234500_movie_collection_order_contract.sql'),
+  'utf8',
+);
+const productionHardeningSource = readFileSync(
+  join(migrationsDir, '20260718120000_production_integrity_hardening.sql'),
+  'utf8',
+);
 const internalDenySource = readFileSync(
   join(migrationsDir, '20260610133000_internal_tables_explicit_deny_policies.sql'),
   'utf8',
@@ -83,8 +95,36 @@ for (const token of requiredTokens) {
   }
 }
 
-if (!latestSource.includes("'20260718120000'")) {
+if (!latestSource.includes("'20260720012500'")) {
   fail('latest migration does not advance the schema contract');
+}
+
+if (
+  !latestSource.includes('CREATE OR REPLACE FUNCTION public.apply_watch_session_transition')
+  || !latestSource.includes('#variable_conflict use_column')
+  || !latestSource.includes('cw.media_type::TEXT')
+  || !latestSource.includes('currently_watching.state::TEXT')
+) {
+  fail('latest migration does not pin watch session return types');
+}
+
+if (
+  !movieCollectionOrderSource.includes('CREATE OR REPLACE FUNCTION public.replace_user_media_collections')
+  || !movieCollectionOrderSource.includes('ON CONFLICT (user_id, media_type, movie_id, type) DO UPDATE')
+  || !movieCollectionOrderSource.includes("SET created_at = EXCLUDED.created_at")
+) {
+  fail('movie collection order migration does not preserve movie collection order');
+}
+
+if (
+  !appPresenceSource.includes("realtime.topic() = 'presence:' || (SELECT auth.uid())::TEXT")
+  || !appPresenceSource.includes('FROM public.matches AS match')
+) {
+  fail('app presence migration does not secure app presence topics to owners and active matches');
+}
+
+if (!productionHardeningSource.includes("'20260718120000'")) {
+  fail('production hardening migration contract is missing');
 }
 
 for (const table of ['request_rate_limits', 'kv_store_d962235e']) {

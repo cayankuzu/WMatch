@@ -2,7 +2,6 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import * as Linking from 'expo-linking';
 import * as SecureStore from 'expo-secure-store';
 import type { EmailOtpType, Session } from '@supabase/supabase-js';
-import { AppState } from 'react-native';
 
 import { API_BASE, fetchWithRetry, getAuthHeaders, supabase } from '../../utils/supabase/client';
 import { publicAnonKey } from '../../utils/supabase/info';
@@ -25,6 +24,7 @@ import type { AppUser, ProfileUpdateInput, SignUpData } from '../shared/types';
 import { syncServerTimeFromHeaders } from '../shared/utils/serverTime';
 import { validatePassword } from '../shared/utils/validation';
 import { clearSessionCaches, purgeUserSessionStorage } from '../shared/utils/sessionCache';
+import { subscribeToForeground } from '../shared/utils/appLifecycle';
 
 interface AvailabilityPayload {
   email?: string;
@@ -711,11 +711,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       void handleDeepLink(url);
     });
 
-    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState !== 'active') {
-        return;
-      }
-
+    const unsubscribeForeground = subscribeToForeground(() => {
       const now = Date.now();
       if (now - lastForegroundRefreshAtRef.current < 5 * 60 * 1000) {
         return;
@@ -762,7 +758,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       mounted = false;
       linkSubscription.remove();
-      appStateSubscription.remove();
+      unsubscribeForeground();
       subscription.unsubscribe();
     };
   }, []);

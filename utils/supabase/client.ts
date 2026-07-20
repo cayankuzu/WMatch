@@ -8,16 +8,35 @@ import { projectId, publicAnonKey } from './info';
 export const SUPABASE_URL = `https://${projectId}.supabase.co`;
 
 const NETWORK_RETRY_DELAYS_MS = [500, 1200, 2500];
-const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10000;
 const RETRIABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const IS_TEST_RUNTIME = process.env.NODE_ENV === 'test';
 const SECURE_STORE_OPTIONS = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
   keychainService: 'wmatch.auth',
 } satisfies SecureStore.SecureStoreOptions;
 
-function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function wait(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener('abort', handleAbort);
+      resolve();
+    }, ms);
+    const handleAbort = () => {
+      clearTimeout(timeoutId);
+      const error = new Error('Request aborted.');
+      error.name = 'AbortError';
+      reject(error);
+    };
+
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+
+    signal?.addEventListener('abort', handleAbort, { once: true });
+  });
 }
 
 function getRequestMethod(init?: RequestInit) {
@@ -127,7 +146,7 @@ export async function fetchWithRetry(input: RequestInfo | URL, init?: RequestIni
         return response;
       }
 
-      await wait(getRetryDelay(attempt, response));
+      await wait(getRetryDelay(attempt, response), callerSignal ?? undefined);
     } catch (error) {
       lastError = error;
 
@@ -140,7 +159,7 @@ export async function fetchWithRetry(input: RequestInfo | URL, init?: RequestIni
         throw error;
       }
 
-      await wait(getRetryDelay(attempt));
+      await wait(getRetryDelay(attempt), callerSignal ?? undefined);
     } finally {
       clearTimeout(timeoutId);
       callerSignal?.removeEventListener('abort', abortFromCaller);
@@ -206,7 +225,7 @@ export const supabase = createClient(SUPABASE_URL, publicAnonKey, {
   auth: {
     storage: secureAuthStorage,
     persistSession: true,
-    autoRefreshToken: true,
+    autoRefreshToken: !IS_TEST_RUNTIME,
     detectSessionInUrl: false,
     flowType: 'pkce',
   },

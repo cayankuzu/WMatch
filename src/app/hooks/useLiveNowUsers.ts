@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState } from 'react-native';
 
-import { supabase } from '../../../utils/supabase/client';
 import { useLocalization } from '../../context/LocalizationContext';
 import { getLiveNowUsers, type LiveNowResponse } from '../../services/api';
 import type { ApiUser } from '../../shared/types';
 import { LIVE_NOW_PAGE_SIZE } from '../../shared/constants';
+import { isAppActive } from '../../shared/utils/appLifecycle';
+import { subscribeToUserEvent } from '../../services/userEventBus';
 
 const REFRESH_DEDUPE_MS = 5_000;
 const EVENT_DEBOUNCE_MS = 350;
@@ -31,6 +31,7 @@ export default function useLiveNowUsers(userId: string | null, isFocused: boolea
   const [pageInfo, setPageInfo] = useState(EMPTY_PAGE_INFO);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [realtimeSubscribed, setRealtimeSubscribed] = useState(false);
   const inFlightRef = useRef<Promise<void> | null>(null);
   const sequenceRef = useRef(0);
   const scopeRef = useRef<string | null>(userId);
@@ -64,8 +65,18 @@ export default function useLiveNowUsers(userId: string | null, isFocused: boolea
     }
 
     const append = Boolean(options.append);
-    if (inFlightRef.current) {
-      return inFlightRef.current;
+    const currentFlight = inFlightRef.current;
+
+    if (currentFlight) {
+      await currentFlight;
+
+      if (!options.force) {
+        return;
+      }
+
+      if (inFlightRef.current && inFlightRef.current !== currentFlight) {
+        return inFlightRef.current;
+      }
     }
 
     if (!append && !options.force) {
@@ -83,6 +94,7 @@ export default function useLiveNowUsers(userId: string | null, isFocused: boolea
         const response = await getLiveNowUsers({
           cursor: append ? pageInfoRef.current.nextCursor : null,
           limit: LIVE_NOW_PAGE_SIZE,
+          force: options.force,
         });
 
         if (scopeRef.current !== requestScope || sequenceRef.current !== requestSequence) {
@@ -128,25 +140,26 @@ export default function useLiveNowUsers(userId: string | null, isFocused: boolea
     }
 
     void load();
+    if (realtimeSubscribed) {
+      return;
+    }
+
     const intervalId = setInterval(() => {
-      if (AppState.currentState === 'active') {
+      if (isAppActive()) {
         void load();
       }
     }, FALLBACK_POLL_INTERVAL_MS);
 
     return () => clearInterval(intervalId);
-  }, [isFocused, load, userId]);
+  }, [isFocused, load, realtimeSubscribed, userId]);
 
   useEffect(() => {
     if (!userId || !isFocused) {
       return;
     }
 
-    const channel = supabase.channel(`user-events:${userId}`, {
-      config: { private: true },
-    });
     const scheduleRefresh = () => {
-      if (AppState.currentState !== 'active') {
+      if (!isAppActive()) {
         return;
       }
 
@@ -160,15 +173,22 @@ export default function useLiveNowUsers(userId: string | null, isFocused: boolea
       }, EVENT_DEBOUNCE_MS);
     };
 
-    channel.on('broadcast', { event: 'discovery_changed' }, scheduleRefresh);
-    channel.subscribe();
+    const unsubscribeUserEvent = subscribeToUserEvent(userId, 'discovery_changed', scheduleRefresh, (status) => {
+      if (status === 'SUBSCRIBED') {
+        setRealtimeSubscribed(true);
+        void load();
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+        setRealtimeSubscribed(false);
+      }
+    });
 
     return () => {
+      setRealtimeSubscribed(false);
       if (eventTimeoutRef.current) {
         clearTimeout(eventTimeoutRef.current);
         eventTimeoutRef.current = null;
       }
-      void supabase.removeChannel(channel);
+      unsubscribeUserEvent();
     };
   }, [isFocused, load, userId]);
 

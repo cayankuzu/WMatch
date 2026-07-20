@@ -1,6 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AppState } from 'react-native';
 
 import { API_BASE, fetchWithRetry, getAuthHeaders } from '../../utils/supabase/client';
 import {
@@ -12,32 +11,39 @@ import {
 } from '../services/tmdb';
 import type { MediaRef, MediaType } from '../shared/types';
 import { getServerNowIsoString, getServerNowMs, syncServerTimeFromHeaders } from '../shared/utils/serverTime';
+import { subscribeToForeground } from '../shared/utils/appLifecycle';
 import { telemetry } from '../services/telemetry';
 import { useAuth } from './AuthContext';
 
-interface AppContextType {
+interface WatchSessionContextType {
   currentlyWatching: Movie | null;
   activeWatching: Movie | null;
   currentlyWatchingUpdatedAt: string | null;
   watchingState: 'idle' | 'active' | 'paused';
-  favorites: Movie[];
-  watched: Movie[];
-  libraryLoading: boolean;
-  libraryError: string | null;
   watchingExpiredNotice: string | null;
   setCurrentlyWatching: (movie: Movie) => void;
   pauseCurrentlyWatching: () => void;
   resumeCurrentlyWatching: () => void;
+  dismissWatchingExpiredNotice: () => void;
+}
+
+interface LibraryContextType {
+  favorites: Movie[];
+  watched: Movie[];
+  libraryLoading: boolean;
+  libraryError: string | null;
   addToFavorites: (movie: Movie) => void;
   removeFromFavorites: (movie: Movie | number) => void;
   isFavorite: (movie: Movie | number) => boolean;
   addToWatched: (movie: Movie) => void;
   removeFromWatched: (movie: Movie | number) => void;
   isWatched: (movie: Movie | number) => boolean;
-  dismissWatchingExpiredNotice: () => void;
 }
 
-const AppContext = createContext<AppContextType | undefined>(undefined);
+type AppContextType = WatchSessionContextType & LibraryContextType;
+
+const WatchSessionContext = createContext<WatchSessionContextType | undefined>(undefined);
+const LibraryContext = createContext<LibraryContextType | undefined>(undefined);
 const WATCH_SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
 const PAUSED_WATCHING_STORAGE_PREFIX = 'wmatch:paused-watching:';
 const MOVIE_SYNC_OUTBOX_PREFIX = 'wmatch:movie-sync-outbox:';
@@ -114,7 +120,7 @@ const ensureMovieInList = (movies: Movie[], movie: Movie | null) => {
     return movies;
   }
 
-  return [...movies, movie];
+  return [movie, ...movies];
 };
 
 const getMovieInputKey = (movie: Movie | number) => (
@@ -424,22 +430,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return false;
       }
 
+      const requestBody: Record<string, unknown> = {
+        favoriteMovies: payload.favoriteMedia.map((item) => item.id),
+        favoriteMedia: payload.favoriteMedia,
+        watchedMovies: payload.watchedMedia.map((item) => item.id),
+        watchedMedia: payload.watchedMedia,
+      };
+
+      if (payload.watchingAction) {
+        requestBody.currentlyWatching = payload.watchingId;
+        requestBody.currentlyWatchingMediaType = payload.watchingMediaType;
+        requestBody.currentlyWatchingAction = payload.watchingAction;
+        requestBody.currentlyWatchingVersion = watchingVersionRef.current;
+      }
+
       const response = await fetchWithRetry(`${API_BASE}/profile`, {
         method: 'PUT',
         headers: {
           ...headers,
           'Idempotency-Key': payload.idempotencyKey,
         },
-        body: JSON.stringify({
-          favoriteMovies: payload.favoriteMedia.map((item) => item.id),
-          favoriteMedia: payload.favoriteMedia,
-          watchedMovies: payload.watchedMedia.map((item) => item.id),
-          watchedMedia: payload.watchedMedia,
-          currentlyWatching: payload.watchingId,
-          currentlyWatchingMediaType: payload.watchingMediaType,
-          currentlyWatchingAction: payload.watchingAction,
-          currentlyWatchingVersion: payload.watchingAction ? watchingVersionRef.current : null,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (activeUserIdRef.current !== expectedUserId) {
@@ -450,6 +461,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const responsePayload = await response.json().catch(() => ({})) as {
         profile?: { currentlyWatchingVersion?: number | null };
         conflict?: Record<string, unknown> & { version?: number | null };
+        error?: unknown;
       };
 
       if (!response.ok) {
@@ -467,7 +479,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           return true;
         }
 
-        throw new Error(`Movie sync failed with status ${response.status}`);
+        const responseError =
+          typeof responsePayload.error === 'string' && responsePayload.error.trim()
+            ? responsePayload.error.trim()
+            : null;
+        throw new Error(
+          responseError
+            ? `Movie sync failed with status ${response.status}: ${responseError}`
+            : `Movie sync failed with status ${response.status}`,
+        );
       }
 
       const nextWatchingVersion = responsePayload.profile?.currentlyWatchingVersion;
@@ -479,7 +499,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       return true;
     } catch (error) {
-      console.error('Movie sync error:', error);
+      telemetry.captureException(error, { scope: 'movie_sync' });
+      console.warn('Movie sync retry scheduled:', error);
       return false;
     }
   };
@@ -723,15 +744,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     void flushMovieSyncOutbox();
 
-    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') {
-        void flushMovieSyncOutbox();
-      }
-    });
+    const unsubscribeForeground = subscribeToForeground(() => void flushMovieSyncOutbox());
 
-    return () => {
-      appStateSubscription.remove();
-    };
+    return unsubscribeForeground;
   }, [user?.id]);
 
   useEffect(() => {
@@ -782,18 +797,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     scheduleExpiration();
 
-    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') {
-        scheduleExpiration();
-      }
-    });
+    const unsubscribeForeground = subscribeToForeground(scheduleExpiration);
 
     return () => {
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
 
-      appStateSubscription.remove();
+      unsubscribeForeground();
     };
   }, [activeWatching ? getMovieKey(activeWatching) : null, currentlyWatchingUpdatedAt, favorites, watched, user?.id]);
 
@@ -888,7 +899,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return current;
       }
 
-      const next = [...current, movie];
+      const next = [movie, ...current];
       persistLibrarySnapshot(next, watched);
       scheduleDatabaseSync(
         moviesToRefs(next),
@@ -920,7 +931,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return current;
       }
 
-      const next = [...current, movie];
+      const next = [movie, ...current];
       persistLibrarySnapshot(favorites, next);
       scheduleDatabaseSync(
         moviesToRefs(favorites),
@@ -946,26 +957,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   };
 
-  const value = useMemo<AppContextType>(
+  const watchSessionValue = useMemo<WatchSessionContextType>(
     () => ({
       currentlyWatching,
       activeWatching,
       currentlyWatchingUpdatedAt,
       watchingState,
-      favorites,
-      watched,
-      libraryLoading,
-      libraryError,
       watchingExpiredNotice,
       setCurrentlyWatching,
       pauseCurrentlyWatching,
       resumeCurrentlyWatching,
-      addToFavorites,
-      removeFromFavorites,
-      isFavorite: (movie) => hasMovieInput(favorites, movie),
-      addToWatched,
-      removeFromWatched,
-      isWatched: (movie) => hasMovieInput(watched, movie),
       dismissWatchingExpiredNotice: () => setWatchingExpiredNotice(null),
     }),
     [
@@ -973,8 +974,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       currentlyWatching,
       currentlyWatchingUpdatedAt,
       favorites,
-      libraryError,
-      libraryLoading,
       pausedWatching,
       refreshUser,
       user?.id,
@@ -983,16 +982,56 @@ export function AppProvider({ children }: { children: ReactNode }) {
       watchingState,
     ],
   );
+  const libraryValue = useMemo<LibraryContextType>(
+    () => ({
+      favorites,
+      watched,
+      libraryLoading,
+      libraryError,
+      addToFavorites,
+      removeFromFavorites,
+      isFavorite: (movie) => hasMovieInput(favorites, movie),
+      addToWatched,
+      removeFromWatched,
+      isWatched: (movie) => hasMovieInput(watched, movie),
+    }),
+    [
+      activeWatching,
+      favorites,
+      libraryError,
+      libraryLoading,
+      user?.id,
+      watched,
+    ],
+  );
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  return (
+    <WatchSessionContext.Provider value={watchSessionValue}>
+      <LibraryContext.Provider value={libraryValue}>{children}</LibraryContext.Provider>
+    </WatchSessionContext.Provider>
+  );
 }
 
-export function useApp() {
-  const context = useContext(AppContext);
+export function useWatchSession() {
+  const context = useContext(WatchSessionContext);
 
   if (!context) {
-    throw new Error('useApp must be used inside AppProvider');
+    throw new Error('useWatchSession must be used inside AppProvider');
   }
 
   return context;
+}
+
+export function useLibrary() {
+  const context = useContext(LibraryContext);
+
+  if (!context) {
+    throw new Error('useLibrary must be used inside AppProvider');
+  }
+
+  return context;
+}
+
+export function useApp(): AppContextType {
+  return { ...useWatchSession(), ...useLibrary() };
 }

@@ -5,6 +5,7 @@
   },
   "build": {
     "production": {
+      "environment": "production",
       "android": {
         "credentialsSource": "local",
         "buildType": "app-bundle"
@@ -21,7 +22,10 @@
       },
       "ios": {
         "ascAppId": "6779453259",
-        "appleTeamId": "HBRG8P523Z"
+        "appleTeamId": "HBRG8P523Z",
+        "ascApiKeyPath": ".secrets/AuthKey_DC34BUDLPC.p8",
+        "ascApiKeyId": "DC34BUDLPC",
+        "ascApiKeyIssuerId": "27f87a66-f102-47b0-be3b-9ab8359d393f"
       }
     }
   }
