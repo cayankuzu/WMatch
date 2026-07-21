@@ -17,6 +17,7 @@ const allowedLicenses = new Set([
   'FSL-1.1-MIT',
   'ISC',
   'MIT',
+  'MIT AND OFL-1.1',
   'MIT-0',
   'MPL-2.0',
   'Python-2.0',
