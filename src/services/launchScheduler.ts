@@ -1,4 +1,10 @@
 import { getAppState, subscribeToAppState } from '../shared/utils/appLifecycle';
+import {
+  canRunSpeculativeNetworkWork,
+  getNetworkConcurrencyLimit,
+  subscribeToConnectivity,
+} from './connectivity';
+import { getLaunchTaskConcurrency } from './runtimeProfile';
 
 export type LaunchTaskPriority = 'critical' | 'intent' | 'predictive' | 'idle';
 
@@ -22,11 +28,11 @@ const PRIORITY_WEIGHT: Record<LaunchTaskPriority, number> = {
   predictive: 2,
   idle: 3,
 };
-const MAX_CONCURRENT_TASKS = 2;
 const tasks = new Map<string, ScheduledTask>();
 let activeTasks = 0;
 let nextOrder = 0;
 let unsubscribeAppState: (() => void) | null = null;
+let unsubscribeConnectivity: (() => void) | null = null;
 
 function ensureLifecycleSubscription() {
   if (unsubscribeAppState) {
@@ -38,11 +44,12 @@ function ensureLifecycleSubscription() {
       runNext();
     }
   });
+  unsubscribeConnectivity ??= subscribeToConnectivity(runNext);
 }
 
 function getNextTask() {
   return [...tasks.values()]
-    .filter((task) => !task.started)
+    .filter((task) => !task.started && canRunSpeculativeNetworkWork(task.priority))
     .sort((left, right) => {
       const priorityDifference = PRIORITY_WEIGHT[left.priority] - PRIORITY_WEIGHT[right.priority];
       return priorityDifference || left.order - right.order;
@@ -54,7 +61,9 @@ function runNext() {
     return;
   }
 
-  while (activeTasks < MAX_CONCURRENT_TASKS) {
+  const concurrencyLimit = Math.min(getLaunchTaskConcurrency(), getNetworkConcurrencyLimit());
+
+  while (activeTasks < concurrencyLimit) {
     const task = getNextTask();
 
     if (!task) {

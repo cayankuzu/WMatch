@@ -16,6 +16,17 @@ import {
 } from '../src/shared/utils/compatibility.ts';
 import { BoundedMap } from '../src/shared/utils/boundedMap.ts';
 import { calculateKeyboardInset } from '../src/shared/utils/keyboard.ts';
+import { getFixedGridItemWidth } from '../src/shared/utils/grid.ts';
+import {
+  resolveBottomObstruction,
+  resolveDeviceEdgeInset,
+} from '../src/shared/utils/safeArea.ts';
+import {
+  createOptimisticMessage,
+  mergeServerMessages,
+  replaceOrAppendMessage,
+  sortMessages,
+} from '../src/app/components/chat/chatMessageModel.ts';
 
 describe('keyboard layout utilities', () => {
   it('adds only the keyboard area that Android did not already resize', () => {
@@ -34,6 +45,33 @@ describe('keyboard layout utilities', () => {
     expect(calculateKeyboardInset(900, 500, 300)).toBe(0);
     expect(calculateKeyboardInset(900, 900, 0)).toBe(0);
     expect(calculateKeyboardInset(900, 900, 0, 32)).toBe(0);
+  });
+});
+
+describe('fixed grid layout utilities', () => {
+  it.each([296, 320, 336, 384, 408, 432])(
+    'fits exactly three cards inside a %ipx content width without wrapping',
+    (contentWidth) => {
+      const gap = 8;
+      const itemWidth = getFixedGridItemWidth(contentWidth, 3, gap);
+      const occupiedWidth = itemWidth * 3 + gap * 2;
+
+      expect(occupiedWidth).toBeLessThanOrEqual(contentWidth);
+      expect(contentWidth - occupiedWidth).toBeLessThan(3);
+    },
+  );
+});
+
+describe('safe area layout utilities', () => {
+  it('preserves real cutout and system bar insets while enforcing a small fallback', () => {
+    expect(resolveDeviceEdgeInset(44)).toBe(44);
+    expect(resolveDeviceEdgeInset(0)).toBe(12);
+    expect(resolveDeviceEdgeInset(Number.NaN)).toBe(12);
+  });
+
+  it('keeps content above both the bottom navigation and keyboard', () => {
+    expect(resolveBottomObstruction({ safeBottom: 34, bottomNavHeight: 52, extraGap: 12 })).toBe(98);
+    expect(resolveBottomObstruction({ safeBottom: 34, keyboardHeight: 320, extraGap: 12 })).toBe(332);
   });
 });
 
@@ -121,5 +159,41 @@ describe('bounded cache', () => {
     expect(cache.get('first')).toBe(1);
     expect(cache.get('third')).toBe(3);
     expect(cache.size).toBe(2);
+  });
+});
+
+describe('chat message model', () => {
+  it('keeps the newest message first with a deterministic id tie-breaker', () => {
+    const createdAt = '2026-07-20T12:00:00.000Z';
+    const messages = [
+      createOptimisticMessage({ id: 'a', senderId: 'me', receiverId: 'you', text: 'A', createdAt }),
+      createOptimisticMessage({ id: 'b', senderId: 'me', receiverId: 'you', text: 'B', createdAt }),
+    ];
+
+    expect(sortMessages(messages).map((message) => message.id)).toEqual(['b', 'a']);
+  });
+
+  it('reconciles optimistic messages without duplicating the confirmed server message', () => {
+    const createdAt = '2026-07-20T12:00:00.000Z';
+    const optimistic = createOptimisticMessage({
+      id: 'local-1',
+      senderId: 'me',
+      receiverId: 'you',
+      text: 'Merhaba',
+      createdAt,
+    });
+    const confirmed = {
+      id: 'server-1',
+      sender_id: 'me',
+      receiver_id: 'you',
+      text: 'Merhaba',
+      read: false,
+      created_at: createdAt,
+    };
+
+    const reconciled = replaceOrAppendMessage([optimistic], confirmed, optimistic.id);
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0]).toMatchObject({ id: 'server-1', clientStatus: undefined });
+    expect(mergeServerMessages([confirmed], [optimistic])).toHaveLength(1);
   });
 });

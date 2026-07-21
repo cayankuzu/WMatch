@@ -25,7 +25,7 @@ export default function OptionChips<T extends string>({ options, value, onChange
             accessibilityRole="radio"
             accessibilityLabel={option.label}
             accessibilityState={{ checked: active }}
-            hitSlop={4}
+            hitSlop={6}
             onPress={() => onChange(option.value)}
             style={({ pressed }) => [
               styles.chip,
@@ -48,13 +48,13 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   chip: {
-    minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    minHeight: 36,
+    borderRadius: theme.radius.pill,
     borderWidth: 1,
     borderColor: theme.colors.borderStrong,
     backgroundColor: theme.colors.surface,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -67,9 +67,7 @@ const styles = StyleSheet.create({
   },
   label: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.label.fontSize,
-    lineHeight: theme.typography.roles.label.lineHeight,
-    fontWeight: '800',
+    ...theme.typography.roles.control,
   },
   labelActive: {
     color: theme.colors.primarySoft,

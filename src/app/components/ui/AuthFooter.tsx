@@ -25,13 +25,13 @@ const styles = StyleSheet.create({
   copy: {
     color: theme.colors.textSoft,
     fontSize: theme.typography.caption,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
     letterSpacing: 0,
   },
   powered: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.caption,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
     letterSpacing: 0,
   },
 });

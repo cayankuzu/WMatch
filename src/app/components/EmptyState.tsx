@@ -13,7 +13,7 @@ export default function EmptyState({ icon, title, description }: EmptyStateProps
   return (
     <View style={styles.container}>
       <View style={styles.iconWrap}>
-        <MaterialCommunityIcons name={icon} size={28} color={theme.colors.primarySoft} />
+      <MaterialCommunityIcons name={icon} size={22} color={theme.colors.primarySoft} />
       </View>
       <Text style={styles.title}>{title}</Text>
       {description ? <Text style={styles.description}>{description}</Text> : null}
@@ -25,14 +25,14 @@ const styles = StyleSheet.create({
   container: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 22,
-    paddingVertical: 36,
-    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 24,
+    gap: 6,
   },
   iconWrap: {
-    width: 58,
-    height: 58,
-    borderRadius: 999,
+    width: 44,
+    height: 44,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.alpha.primary12,
@@ -42,14 +42,12 @@ const styles = StyleSheet.create({
   },
   title: {
     color: theme.colors.text,
-    fontSize: 15,
-    fontWeight: '800',
+    ...theme.typography.roles.cardTitle,
     textAlign: 'center',
   },
   description: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
+    ...theme.typography.roles.body,
     textAlign: 'center',
   },
 });

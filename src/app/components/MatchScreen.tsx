@@ -152,6 +152,12 @@ export default function MatchScreen({ onMovieClick, onOpenMessages, onBack }: Ma
         emptyContent={emptyContent}
         banner={usersWithScore.length > 0 ? warning : null}
         reportSource="match_screen"
+        modeTitle={t('match.screen.modeTitle')}
+        modeSubtitle={activeWatching
+          ? t('match.screen.modeSubtitle', {
+              title: activeWatching.title || activeWatching.name || t('movie.detail.untitled'),
+            })
+          : t('match.screen.modeSubtitleMissing')}
       />
     </View>
   );
@@ -167,6 +173,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.background,
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
   },
 });

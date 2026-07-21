@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, type StyleProp, type ViewStyle } from 'react-native';
 
 import { theme } from '../../../shared/theme';
+import { triggerHaptic, type HapticFeedback } from '../../../services/haptics';
 import useReducedMotion from '../../hooks/useReducedMotion';
 
 interface AppIconButtonProps {
@@ -14,6 +15,7 @@ interface AppIconButtonProps {
   size?: 'regular' | 'large';
   variant?: 'ghost' | 'surface' | 'danger';
   style?: StyleProp<ViewStyle>;
+  feedback?: HapticFeedback;
 }
 
 export default function AppIconButton({
@@ -26,6 +28,7 @@ export default function AppIconButton({
   size = 'regular',
   variant = 'ghost',
   style,
+  feedback = 'selection',
 }: AppIconButtonProps) {
   const reduceMotionEnabled = useReducedMotion();
 
@@ -36,7 +39,11 @@ export default function AppIconButton({
       accessibilityHint={accessibilityHint}
       accessibilityState={{ disabled, selected }}
       disabled={disabled}
-      onPress={onPress}
+      hitSlop={4}
+      onPress={() => {
+        triggerHaptic(feedback);
+        onPress();
+      }}
       style={({ pressed }) => [
         styles.base,
         size === 'large' && styles.large,
@@ -61,8 +68,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   large: {
-    minWidth: 56,
-    minHeight: 56,
+    minWidth: 46,
+    minHeight: 46,
   },
   selected: {
     borderColor: theme.colors.borderFocus,
@@ -72,8 +79,8 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceStrong,
   },
   pressedMotion: {
-    opacity: 0.88,
-    transform: [{ scale: 0.96 }],
+    opacity: theme.interaction.pressedOpacity,
+    transform: [{ scale: theme.interaction.iconPressedScale }],
   },
   disabled: {
     backgroundColor: theme.colors.disabledSurface,

@@ -1,10 +1,10 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { FlatList, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { theme } from '../../../shared/theme';
+import AppImage from './AppImage';
 import { useLocalization } from '../../../context/LocalizationContext';
 import AccessibleModal from './AccessibleModal';
 
@@ -47,7 +47,7 @@ export default function ImagePreviewModal({
   return (
     <AccessibleModal visible={visible && resolvedImages.length > 0} transparent animationType="fade" onRequestClose={onClose}>
       <View accessibilityViewIsModal importantForAccessibility="yes" style={styles.backdrop}>
-        <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
+        <SafeAreaView edges={['top', 'right', 'bottom', 'left']} style={styles.safeArea}>
           <View style={styles.header}>
             {resolvedImages.length > 1 ? (
               <Text style={styles.counter}>{currentIndex + 1} / {resolvedImages.length}</Text>
@@ -69,6 +69,10 @@ export default function ImagePreviewModal({
             horizontal
             pagingEnabled
             data={resolvedImages}
+            initialNumToRender={1}
+            maxToRenderPerBatch={2}
+            windowSize={3}
+            removeClippedSubviews
             keyExtractor={(item, index) => `${item}-${index}`}
             showsHorizontalScrollIndicator={false}
             getItemLayout={(_, index) => ({ length: width, offset: width * index, index })}
@@ -80,16 +84,15 @@ export default function ImagePreviewModal({
             onMomentumScrollEnd={(event) => {
               setCurrentIndex(Math.round(event.nativeEvent.contentOffset.x / Math.max(width, 1)));
             }}
-            renderItem={({ item }) => (
+            renderItem={({ item, index }) => (
               <Pressable accessible={false} onPress={onClose} style={[styles.imageWrap, { width }]}>
-                <Image
-                  accessible={false}
-                  cachePolicy="memory-disk"
+                <AppImage
                   contentFit="contain"
+                  priority={index === currentIndex ? 'high' : 'normal'}
                   recyclingKey={item}
-                  source={{ uri: item }}
+                  uri={item}
                   style={styles.image}
-                  transition={120}
+                  transition={theme.motion.fast}
                 />
               </Pressable>
             )}
@@ -112,18 +115,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     paddingTop: 4,
   },
   counter: {
     color: theme.colors.white,
     fontSize: theme.typography.caption,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   closeButton: {
     minWidth: theme.layout.controlMinUnified,
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surfaceStrong,
@@ -132,8 +135,8 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 14,
-    paddingBottom: 18,
+    paddingHorizontal: 10,
+    paddingBottom: 14,
   },
   image: {
     width: '100%',

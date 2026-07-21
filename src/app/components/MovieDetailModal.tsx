@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -8,7 +7,9 @@ import { useApp } from '../../context/AppContext';
 import { useLocalization } from '../../context/LocalizationContext';
 import { tmdbService, type Movie } from '../../services/tmdb';
 import { theme } from '../../shared/theme';
+import { resolveDeviceEdgeInset } from '../../shared/utils/safeArea';
 import ImagePreviewModal from './ui/ImagePreviewModal';
+import AppImage from './ui/AppImage';
 import AppButton from './ui/AppButton';
 import AccessibleModal from './ui/AccessibleModal';
 
@@ -96,8 +97,8 @@ export default function MovieDetailModal({ movie, onClose }: MovieDetailModalPro
     currentlyWatching?.id === activeMovie.id &&
     (currentlyWatching.media_type ?? 'movie') === (activeMovie.media_type ?? 'movie');
   const summaryText = activeMovie.overview?.trim() || null;
-  const topInset = Math.max(insets.top, 0);
-  const bottomInset = Math.max(insets.bottom, 12);
+  const topInset = resolveDeviceEdgeInset(insets.top);
+  const bottomInset = resolveDeviceEdgeInset(insets.bottom);
 
   return (
     <>
@@ -108,7 +109,17 @@ export default function MovieDetailModal({ movie, onClose }: MovieDetailModalPro
         navigationBarTranslucent={false}
         onRequestClose={onClose}
       >
-        <View accessibilityViewIsModal importantForAccessibility="yes" style={styles.container}>
+        <View
+          accessibilityViewIsModal
+          importantForAccessibility="yes"
+          style={[
+            styles.container,
+            {
+              paddingRight: Math.max(0, insets.right),
+              paddingLeft: Math.max(0, insets.left),
+            },
+          ]}
+        >
           <View pointerEvents="none" style={[styles.statusBarGuard, { height: topInset }]} />
           <View style={[styles.closeLayer, { paddingTop: topInset + 10 }]}>
             <Pressable accessibilityRole="button" accessibilityLabel={t('common.close')} onPress={onClose} style={styles.closeButton}>
@@ -122,13 +133,12 @@ export default function MovieDetailModal({ movie, onClose }: MovieDetailModalPro
           >
             <View style={[styles.heroStage, { paddingTop: topInset + 42 }]}>
               <Pressable onPress={() => setShowImagePreview(true)} style={styles.heroCard}>
-                <Image
-                  accessible={false}
-                  cachePolicy="memory-disk"
+                <AppImage
                   contentFit="contain"
-                  source={{ uri: heroImageUri }}
+                  recyclingKey={`${activeMovie.media_type ?? 'movie'}:${activeMovie.id}:detail`}
+                  uri={heroImageUri}
                   style={styles.hero}
-                  transition={120}
+                  transition={theme.motion.fast}
                 />
               </Pressable>
             </View>
@@ -161,7 +171,7 @@ export default function MovieDetailModal({ movie, onClose }: MovieDetailModalPro
                 <AppButton
                   title={
                     watchingActive
-                      ? t('movie.detail.action.activeWatching')
+                      ? t('movie.detail.action.pauseWatching')
                       : watchingPaused
                         ? t('movie.detail.action.resumeWatching')
                         : t('movie.detail.action.watchNow')
@@ -176,12 +186,12 @@ export default function MovieDetailModal({ movie, onClose }: MovieDetailModalPro
                     }
                     onClose();
                   }}
-                  variant={watchingActive ? 'primary' : 'warning'}
+                  variant="primary"
                   leftIcon={
                     <MaterialCommunityIcons
                       name={watchingActive ? 'pause-circle' : 'play'}
                       size={18}
-                      color={watchingActive ? theme.colors.white : theme.colors.black}
+                      color={theme.colors.white}
                     />
                   }
                 />
@@ -189,12 +199,12 @@ export default function MovieDetailModal({ movie, onClose }: MovieDetailModalPro
                 <AppButton
                   title={favoriteActive ? t('movie.detail.action.favorited') : t('movie.detail.action.addFavorite')}
                   onPress={() => (favoriteActive ? removeFromFavorites(activeMovie) : addToFavorites(activeMovie))}
-                  variant={favoriteActive ? 'primary' : 'secondary'}
+                  variant={favoriteActive ? 'tonal' : 'secondary'}
                   leftIcon={
                     <MaterialCommunityIcons
                       name={favoriteActive ? 'heart' : 'heart-outline'}
                       size={16}
-                      color={favoriteActive ? theme.colors.white : theme.colors.text}
+                      color={favoriteActive ? theme.colors.primarySoft : theme.colors.text}
                     />
                   }
                 />
@@ -202,12 +212,12 @@ export default function MovieDetailModal({ movie, onClose }: MovieDetailModalPro
                 <AppButton
                   title={watchedActive ? t('movie.detail.action.watched') : t('movie.detail.action.addWatched')}
                   onPress={() => (watchedActive ? removeFromWatched(activeMovie) : addToWatched(activeMovie))}
-                  variant={watchedActive ? 'primary' : 'secondary'}
+                  variant={watchedActive ? 'tonal' : 'secondary'}
                   leftIcon={
                     <MaterialCommunityIcons
                       name={watchedActive ? 'check-circle' : 'check-circle-outline'}
                       size={16}
-                      color={watchedActive ? theme.colors.white : theme.colors.text}
+                      color={watchedActive ? theme.colors.primarySoft : theme.colors.text}
                     />
                   }
                 />
@@ -259,12 +269,12 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 30,
     alignItems: 'flex-end',
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
   },
   closeButton: {
     minWidth: theme.layout.controlMinUnified,
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.scrim,
     alignItems: 'center',
     justifyContent: 'center',
@@ -273,8 +283,8 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
   },
   heroStage: {
-    paddingHorizontal: 16,
-    paddingBottom: 18,
+    paddingHorizontal: 12,
+    paddingBottom: 14,
     alignItems: 'center',
   },
   heroCard: {
@@ -282,7 +292,7 @@ const styles = StyleSheet.create({
     maxWidth: 240,
     minWidth: 190,
     aspectRatio: 2 / 3,
-    borderRadius: 24,
+    borderRadius: theme.radius.poster,
     overflow: 'hidden',
     backgroundColor: theme.colors.surface,
     shadowColor: theme.colors.black,
@@ -300,25 +310,23 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
     backgroundColor: theme.colors.background,
-    paddingHorizontal: 16,
-    paddingTop: 18,
-    gap: 14,
+    paddingHorizontal: 12,
+    paddingTop: 14,
+    gap: 10,
   },
   title: {
     color: theme.colors.text,
-    fontSize: 23,
-    fontWeight: '900',
+    ...theme.typography.roles.screenTitle,
     letterSpacing: 0,
   },
   metaRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
   },
   metaText: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
   },
   ratingRow: {
     flexDirection: 'row',
@@ -327,45 +335,45 @@ const styles = StyleSheet.create({
   },
   ratingText: {
     color: theme.colors.star,
-    fontSize: 12,
-    fontWeight: '800',
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
   },
   genreWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
   },
   genreChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.surface,
   },
   genreText: {
     color: theme.colors.text,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
   },
   actions: {
-    gap: 10,
+    gap: 8,
   },
   summary: {
-    gap: 8,
+    gap: 6,
   },
   summaryTitle: {
     color: theme.colors.text,
-    fontSize: 14,
-    fontWeight: '800',
+    ...theme.typography.roles.sectionTitle,
   },
   summaryText: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
+    ...theme.typography.roles.body,
   },
   summaryNotice: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
+    ...theme.typography.roles.body,
+    borderRadius: theme.radius.card,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    backgroundColor: theme.colors.surface,
+    padding: theme.spacing.lg,
   },
 });

@@ -2,6 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { theme } from '../../../shared/theme';
+import { triggerHaptic } from '../../../services/haptics';
 
 interface DataWarningBannerProps {
   title: string;
@@ -18,13 +19,20 @@ export default function DataWarningBanner({
 }: DataWarningBannerProps) {
   return (
     <View accessibilityRole="alert" style={styles.container}>
-      <MaterialCommunityIcons name="cloud-alert-outline" size={20} color={theme.colors.warningText} />
+      <MaterialCommunityIcons name="cloud-alert-outline" size={theme.icon.md} color={theme.colors.warningText} />
       <View style={styles.copy}>
         <Text style={styles.title}>{title}</Text>
         {description ? <Text style={styles.description}>{description}</Text> : null}
       </View>
       {actionLabel && onAction ? (
-        <Pressable accessibilityRole="button" onPress={onAction} style={styles.action}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            triggerHaptic('selection');
+            onAction();
+          }}
+          style={({ pressed }) => [styles.action, pressed && styles.actionPressed]}
+        >
           <Text style={styles.actionText}>{actionLabel}</Text>
         </Pressable>
       ) : null}
@@ -36,13 +44,13 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
     borderWidth: 1,
     borderColor: theme.colors.warning,
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.warningSurface,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   copy: {
     flex: 1,
@@ -51,20 +59,20 @@ const styles = StyleSheet.create({
   title: {
     color: theme.colors.warningText,
     fontSize: theme.typography.caption,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   description: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.caption,
     lineHeight: 17,
-    fontWeight: '600',
+    fontFamily: theme.fonts.medium,
   },
   action: {
-    minHeight: 32,
+    minHeight: theme.layout.controlMinUnified,
     borderRadius: theme.radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.warning,
@@ -72,6 +80,10 @@ const styles = StyleSheet.create({
   actionText: {
     color: theme.colors.warningText,
     fontSize: theme.typography.caption,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
+  },
+  actionPressed: {
+    opacity: theme.interaction.pressedOpacity,
+    transform: [{ scale: theme.interaction.pressedScale }],
   },
 });

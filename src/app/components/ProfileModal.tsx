@@ -3,10 +3,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Application from 'expo-application';
 import {
   Alert,
-  KeyboardAvoidingView,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -23,6 +21,7 @@ import { theme } from '../../shared/theme';
 import AppButton from './ui/AppButton';
 import ProfileViewer from './ProfileViewer';
 import AccessibleModal from './ui/AccessibleModal';
+import AppModal from './ui/AppModal';
 
 const REPORT_REASON_OPTIONS = [
   'fake_profile',
@@ -133,7 +132,12 @@ export default function ProfileModal({
         onClose();
       }}
     >
-      <SafeAreaView accessibilityViewIsModal importantForAccessibility="yes" edges={['top']} style={styles.container}>
+      <SafeAreaView
+        accessibilityViewIsModal
+        importantForAccessibility="yes"
+        edges={['top', 'right', 'bottom', 'left']}
+        style={styles.container}
+      >
         {showMenu ? (
           <View style={styles.menu}>
             <Pressable
@@ -147,9 +151,9 @@ export default function ProfileModal({
               <MaterialCommunityIcons
                 name={isBlocked ? 'lock-open-variant-outline' : 'block-helper'}
                 size={16}
-                color={isBlocked ? theme.colors.info : theme.colors.warning}
+                color={isBlocked ? theme.colors.info : theme.colors.dangerText}
               />
-              <Text style={styles.menuText}>
+              <Text style={[styles.menuText, !isBlocked && styles.menuTextDanger]}>
                 {blockBusy
                   ? t('common.waiting')
                   : isBlocked
@@ -165,27 +169,21 @@ export default function ProfileModal({
               }}
               style={styles.menuItem}
             >
-              <MaterialCommunityIcons name="alert-circle-outline" size={16} color={theme.colors.warning} />
-              <Text style={styles.menuText}>{t('profile.menu.report.label')}</Text>
+              <MaterialCommunityIcons name="alert-circle-outline" size={16} color={theme.colors.dangerText} />
+              <Text style={[styles.menuText, styles.menuTextDanger]}>{t('profile.menu.report.label')}</Text>
             </Pressable>
           </View>
         ) : null}
 
-        {showReportForm ? (
-          <View style={styles.reportOverlay}>
-            <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-              style={styles.reportCard}
-            >
-              <ScrollView
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={styles.reportContent}
-                showsVerticalScrollIndicator={false}
-              >
-                <View style={styles.reportHeader}>
-                  <Text style={styles.reportTitle}>{t('profile.report.sheet.title')}</Text>
-                  <Text style={styles.reportSubtitle}>{t('profile.report.sheet.description')}</Text>
-                </View>
+        <AppModal
+          visible={showReportForm}
+          title={t('profile.report.sheet.title')}
+          presentation="sheet"
+          keyboardAware
+          scrollable
+          onClose={closeReportForm}
+        >
+                <Text style={styles.reportSubtitle}>{t('profile.report.sheet.description')}</Text>
 
                 <View style={styles.reasonGrid}>
                   {REPORT_REASON_OPTIONS.map((reason) => {
@@ -230,10 +228,7 @@ export default function ProfileModal({
                   <AppButton title={t('profile.report.submit')} onPress={() => void handleReportSubmit()} loading={reportSubmitting} />
                   <AppButton title={t('common.cancel')} onPress={closeReportForm} variant="secondary" />
                 </View>
-              </ScrollView>
-            </KeyboardAvoidingView>
-          </View>
-        ) : null}
+        </AppModal>
 
         <ProfileViewer
           user={user}
@@ -268,14 +263,17 @@ const styles = StyleSheet.create({
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   menuText: {
     color: theme.colors.text,
-    fontSize: 12,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
+  },
+  menuTextDanger: {
+    color: theme.colors.dangerText,
   },
   reportOverlay: {
     zIndex: 24,
@@ -286,11 +284,11 @@ const styles = StyleSheet.create({
     left: 0,
     backgroundColor: theme.colors.scrim,
     justifyContent: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
   },
   reportCard: {
     maxHeight: '82%',
-    borderRadius: 22,
+    borderRadius: theme.radius.personCard,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
@@ -298,75 +296,74 @@ const styles = StyleSheet.create({
   },
   reportContent: {
     padding: 16,
-    gap: 16,
+    gap: 12,
   },
   reportHeader: {
-    gap: 6,
+    gap: 5,
   },
   reportTitle: {
     color: theme.colors.text,
-    fontSize: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    fontFamily: theme.fonts.extraBold,
   },
   reportSubtitle: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
+    ...theme.typography.roles.body,
   },
   reasonGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
   },
   reasonChip: {
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     backgroundColor: theme.colors.surface,
   },
   reasonChipActive: {
-    borderColor: theme.colors.warningText,
-    backgroundColor: theme.colors.warningSurface,
+    borderColor: theme.colors.dangerText,
+    backgroundColor: theme.colors.dangerSurface,
   },
   reasonChipText: {
     color: theme.colors.textSoft,
-    fontSize: 12,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
   },
   reasonChipTextActive: {
-    color: theme.colors.warningText,
+    color: theme.colors.dangerText,
   },
   detailsSection: {
-    gap: 8,
+    gap: 6,
   },
   detailsLabel: {
     color: theme.colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 12,
+    fontFamily: theme.fonts.bold,
   },
   detailsInput: {
-    minHeight: 148,
+    minHeight: 124,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
     color: theme.colors.text,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 13,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    fontSize: 12,
     lineHeight: 20,
   },
   detailsCounter: {
     color: theme.colors.textSoft,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
     textAlign: 'right',
   },
   reportActions: {
-    gap: 10,
+    gap: 8,
   },
 });

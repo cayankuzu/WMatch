@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -14,8 +14,11 @@ import SearchBar from './SearchBar';
 import DataState from './ui/DataState';
 import DataWarningBanner from './ui/DataWarningBanner';
 import AppRefreshControl from './ui/AppRefreshControl';
+import ScreenHeader from './ui/ScreenHeader';
+import useTabReselect from '../hooks/useTabReselect';
 
 interface WatchScreenProps {
+  userId: string;
   isSearching: boolean;
   searchQuery: string;
   searchResults: Movie[];
@@ -42,6 +45,7 @@ interface WatchScreenProps {
 }
 
 export default function WatchScreen({
+  userId,
   isSearching,
   searchQuery,
   searchResults,
@@ -67,8 +71,14 @@ export default function WatchScreen({
   onLoadMoreTVShows,
 }: WatchScreenProps) {
   const { t } = useLocalization();
+  const scrollRef = useRef<ScrollView | null>(null);
   const hasHomeContent = liveNowMovies.length > 0 || popularMovies.length > 0 || popularTVShows.length > 0;
   const hasActiveSearch = isSearching && searchQuery.trim().length > 0;
+  const scrollToTop = useCallback(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: true });
+  }, []);
+
+  useTabReselect('watch', scrollToTop);
 
   useEffect(() => {
     if (hasHomeContent) {
@@ -86,6 +96,7 @@ export default function WatchScreen({
       style={styles.safeArea}
     >
       <ScrollView
+        ref={scrollRef}
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.content}
@@ -94,6 +105,12 @@ export default function WatchScreen({
         }
       >
         <View style={styles.sections}>
+          <ScreenHeader
+            title={t('watch.screen.title')}
+            subtitle={t('watch.screen.subtitle')}
+            style={styles.header}
+          />
+
           {homeError && hasHomeContent ? (
             <DataWarningBanner
               title={t('data.stale.title')}
@@ -137,6 +154,7 @@ export default function WatchScreen({
           />
 
           <SearchBar
+            userId={userId}
             onSearch={onSearch}
             onFocus={() => onSearchStateChange(true)}
             onBlur={() => onSearchStateChange(false)}
@@ -210,7 +228,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   sections: {
-    gap: 20,
-    paddingTop: 14,
+    gap: theme.layout.sectionGap,
+    paddingTop: 10,
+  },
+  header: {
+    paddingHorizontal: theme.layout.screenGutterCompact,
   },
 });

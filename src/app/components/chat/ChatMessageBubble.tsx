@@ -22,18 +22,18 @@ function MessageStatusIcon({
   canShowReadReceipt,
 }: Pick<ChatMessageBubbleProps, 'message' | 'canShowReadReceipt'>) {
   if (message.clientStatus === 'sending') {
-    return <MaterialCommunityIcons accessible={false} name="clock-outline" size={14} color={theme.colors.textSecondary} />;
+    return <MaterialCommunityIcons accessible={false} name="clock-outline" size={12} color={theme.colors.textSecondary} />;
   }
 
   if (message.clientStatus === 'failed') {
-    return <MaterialCommunityIcons accessible={false} name="alert-circle-outline" size={14} color={theme.colors.dangerText} />;
+    return <MaterialCommunityIcons accessible={false} name="alert-circle-outline" size={12} color={theme.colors.dangerText} />;
   }
 
   if (message.read && canShowReadReceipt) {
-    return <MaterialCommunityIcons accessible={false} name="check" size={17} color={theme.colors.successText} />;
+    return <MaterialCommunityIcons accessible={false} name="check-all" size={14} color={theme.colors.white} />;
   }
 
-  return <MaterialCommunityIcons accessible={false} name="check" size={15} color={theme.colors.white} />;
+  return <MaterialCommunityIcons accessible={false} name="check" size={13} color={theme.colors.white} />;
 }
 
 export default function ChatMessageBubble({
@@ -65,6 +65,7 @@ export default function ChatMessageBubble({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={failedLabel}
+      hitSlop={4}
       onPress={onFailedPress}
       style={styles.retryButton}
     >
@@ -75,11 +76,11 @@ export default function ChatMessageBubble({
 
 const styles = StyleSheet.create({
   bubble: {
-    maxWidth: '78%',
-    borderRadius: 17,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 4,
+    maxWidth: '76%',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    gap: 2,
   },
   bubbleOwn: {
     borderBottomRightRadius: 6,
@@ -91,8 +92,7 @@ const styles = StyleSheet.create({
   },
   messageText: {
     color: theme.colors.white,
-    fontSize: theme.typography.body,
-    lineHeight: 21,
+    ...theme.typography.roles.meta,
   },
   messageTextOther: {
     color: theme.colors.text,
@@ -102,13 +102,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
     alignSelf: 'flex-end',
-    gap: 5,
+    gap: 4,
   },
   messageTime: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    ...theme.typography.roles.micro,
+    fontVariant: ['tabular-nums'],
   },
   messageTimeOwn: {
     color: theme.colors.white,
@@ -117,10 +116,10 @@ const styles = StyleSheet.create({
     color: theme.colors.dangerText,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   retryButton: {
-    minHeight: theme.layout.controlMinUnified,
+    minHeight: 36,
     justifyContent: 'center',
   },
 });

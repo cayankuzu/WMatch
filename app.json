@@ -2,14 +2,14 @@
   "expo": {
     "name": "WMatch",
     "slug": "wmatch",
-    "version": "1.0.43",
+    "version": "1.0.45",
     "icon": "./assets/branding/icon-wm-normalized.png",
     "orientation": "default",
     "userInterfaceStyle": "dark",
     "scheme": "wmatch",
     "ios": {
       "bundleIdentifier": "com.wmatch.app",
-      "buildNumber": "46",
+      "buildNumber": "48",
       "googleServicesFile": "./firebase/GoogleService-Info.plist",
       "supportsTablet": true,
       "associatedDomains": [
@@ -39,7 +39,7 @@
     },
     "android": {
       "package": "com.wmatch.app",
-      "versionCode": 44,
+      "versionCode": 46,
       "googleServicesFile": "./firebase/google-services.json",
       "predictiveBackGestureEnabled": true,
       "adaptiveIcon": {

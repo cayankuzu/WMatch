@@ -50,8 +50,9 @@ export function ChatListSkeleton() {
   );
 }
 
-export function UserGridSkeleton({ count = 6 }: { count?: number }) {
-  const { gridColumns } = useWindowClass();
+export function UserGridSkeleton({ count = 6, columns }: { count?: number; columns?: number }) {
+  const { gridColumns: responsiveGridColumns } = useWindowClass();
+  const gridColumns = columns ?? responsiveGridColumns;
   const cardWidth = `${Math.max(100 / gridColumns - (gridColumns > 1 ? 3 : 0), 0)}%` as const;
 
   return (
@@ -117,21 +118,21 @@ const styles = StyleSheet.create({
   },
   screen: {
     flex: 1,
-    gap: 16,
+    gap: 12,
     paddingHorizontal: SCREEN_SIDE_SPACING,
-    paddingTop: 18,
+    paddingTop: 14,
     paddingBottom: SCREEN_BOTTOM_SPACING,
     backgroundColor: theme.colors.background,
   },
   gridScreen: {
     flex: 1,
     paddingHorizontal: SCREEN_SIDE_SPACING,
-    paddingTop: 18,
+    paddingTop: 14,
     paddingBottom: SCREEN_BOTTOM_SPACING + 82,
     backgroundColor: theme.colors.background,
   },
   header: {
-    gap: 8,
+    gap: 6,
   },
   title: {
     width: 152,
@@ -143,16 +144,16 @@ const styles = StyleSheet.create({
   },
   matchRow: {
     flexDirection: 'row',
-    gap: 12,
+    gap: 10,
   },
   matchItem: {
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
     width: 62,
   },
   matchAvatar: {
-    width: 56,
-    height: 56,
+    width: 46,
+    height: 46,
     borderRadius: 28,
   },
   matchName: {
@@ -160,21 +161,21 @@ const styles = StyleSheet.create({
     height: 10,
   },
   chatRow: {
-    minHeight: 74,
+    minHeight: 62,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
   avatar: {
-    width: 54,
-    height: 54,
+    width: 44,
+    height: 44,
     borderRadius: 27,
   },
   chatText: {
     flex: 1,
-    gap: 9,
+    gap: 7,
   },
   chatTitle: {
     width: '48%',
@@ -192,8 +193,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'space-between',
-    gap: 14,
-    paddingTop: 20,
+    gap: 10,
+    paddingTop: 16,
   },
   userCard: {
     overflow: 'hidden',
@@ -207,7 +208,7 @@ const styles = StyleSheet.create({
     borderRadius: 0,
   },
   userBody: {
-    gap: 8,
+    gap: 6,
     padding: 12,
   },
   userName: {
@@ -237,11 +238,11 @@ const styles = StyleSheet.create({
   },
   deckPhoto: {
     flex: 1,
-    minHeight: 260,
+    minHeight: 220,
     borderRadius: 0,
   },
   deckBody: {
-    gap: 10,
+    gap: 8,
     padding: 18,
   },
   deckName: {
@@ -259,9 +260,9 @@ const styles = StyleSheet.create({
   thread: {
     flex: 1,
     justifyContent: 'flex-end',
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 18,
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 14,
   },
   bubbleRow: {
     flexDirection: 'row',
@@ -271,7 +272,7 @@ const styles = StyleSheet.create({
   },
   bubble: {
     height: 38,
-    borderRadius: 18,
+    borderRadius: theme.radius.card,
   },
   bubbleOther: {
     width: '58%',

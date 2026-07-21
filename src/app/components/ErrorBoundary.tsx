@@ -20,7 +20,7 @@ function ErrorFallback({ onRetry }: { onRetry: () => void }) {
   return (
     <View accessibilityRole="alert" style={styles.container}>
       <View style={styles.iconWrap}>
-        <MaterialCommunityIcons name="alert-circle-outline" size={30} color={theme.colors.primarySoft} />
+        <MaterialCommunityIcons name="alert-circle-outline" size={24} color={theme.colors.primarySoft} />
       </View>
       <Text accessibilityRole="header" style={styles.title}>{t('errorBoundary.title')}</Text>
       <Text style={styles.description}>{t('errorBoundary.description')}</Text>
@@ -70,13 +70,13 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 14,
+    gap: 10,
     padding: 24,
     backgroundColor: theme.colors.background,
   },
   iconWrap: {
-    width: 64,
-    height: 64,
+    width: 52,
+    height: 52,
     borderRadius: 32,
     alignItems: 'center',
     justifyContent: 'center',
@@ -87,7 +87,7 @@ const styles = StyleSheet.create({
   title: {
     color: theme.colors.text,
     fontSize: theme.typography.title,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
     textAlign: 'center',
   },
   description: {
@@ -101,7 +101,7 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.md,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 18,
+    paddingHorizontal: 14,
     backgroundColor: theme.colors.primary,
   },
   buttonPressed: {
@@ -110,6 +110,6 @@ const styles = StyleSheet.create({
   buttonText: {
     color: theme.colors.white,
     fontSize: theme.typography.body,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
 });

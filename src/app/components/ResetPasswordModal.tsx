@@ -51,7 +51,7 @@ export default function ResetPasswordModal({ onClose }: ResetPasswordModalProps)
             <View style={[styles.iconWrap, sent && styles.iconWrapSuccess]}>
               <MaterialCommunityIcons
                 name={sent ? 'check-circle-outline' : 'email-outline'}
-                size={28}
+                size={22}
                 color={sent ? theme.colors.successText : theme.colors.primarySoft}
               />
             </View>
@@ -84,42 +84,42 @@ const styles = StyleSheet.create({
   card: {
     width: '100%',
     maxWidth: 420,
-    borderRadius: 22,
+    borderRadius: theme.radius.personCard,
     backgroundColor: theme.colors.backgroundElevated,
     borderWidth: 1,
     borderColor: theme.colors.border,
     overflow: 'hidden',
   },
   header: {
-    minHeight: 54,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
   title: {
     color: theme.colors.text,
     fontSize: theme.typography.section,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   closeButton: {
     minWidth: theme.layout.controlMinUnified,
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surface,
   },
   body: {
     padding: 16,
-    gap: 12,
+    gap: 10,
   },
   iconWrap: {
-    width: 58,
-    height: 58,
-    borderRadius: 999,
+    width: 48,
+    height: 48,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'center',
@@ -130,14 +130,13 @@ const styles = StyleSheet.create({
   },
   description: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
+    ...theme.typography.roles.body,
     textAlign: 'center',
   },
   error: {
     color: theme.colors.dangerText,
     fontSize: 12,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
     textAlign: 'center',
   },
 });

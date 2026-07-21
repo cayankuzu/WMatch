@@ -1,5 +1,4 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { useLocalization } from '../../context/LocalizationContext';
@@ -8,6 +7,7 @@ import { getLocalizedUserGenderLabel } from '../../shared/i18n/helpers';
 import type { ApiUser } from '../../shared/types';
 import { theme } from '../../shared/theme';
 import { getCompatibilityStyle } from '../../shared/theme/compatibility';
+import AppImage from './ui/AppImage';
 
 interface UserMiniCardProps {
   user: ApiUser;
@@ -18,6 +18,7 @@ interface UserMiniCardProps {
   disabled?: boolean;
   style?: StyleProp<ViewStyle>;
   onPress: () => void;
+  layout?: 'portrait' | 'landscape';
 }
 
 export default function UserMiniCard({
@@ -29,6 +30,7 @@ export default function UserMiniCard({
   disabled = false,
   style,
   onPress,
+  layout = 'portrait',
 }: UserMiniCardProps) {
   const { t } = useLocalization();
   const photo = user.photos.find((item) => item.trim().length > 0) ?? null;
@@ -43,19 +45,25 @@ export default function UserMiniCard({
     <Pressable
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.card, style, disabled && styles.cardDisabled, pressed && !disabled && styles.cardPressed]}
+      style={({ pressed }) => [
+        styles.card,
+        layout === 'landscape' && styles.cardLandscape,
+        style,
+        disabled && styles.cardDisabled,
+        pressed && !disabled && styles.cardPressed,
+      ]}
     >
-      <View style={styles.photoWrap}>
+      <View style={[styles.photoWrap, layout === 'landscape' && styles.photoWrapLandscape]}>
         {photo ? (
           <View style={styles.photo}>
-            <Image
-              cachePolicy="memory-disk"
+            <AppImage
+              blurRadius={concealed ? 22 : 0}
               contentFit="cover"
               enforceEarlyResizing
+              fallbackIcon="account-outline"
               priority="normal"
               recyclingKey={`profile-mini:${user.id}:${photo}`}
-            source={{ uri: photo }}
-            blurRadius={concealed ? 22 : 0}
+              uri={photo}
               style={styles.photoImage}
               transition={80}
             />
@@ -64,16 +72,15 @@ export default function UserMiniCard({
         ) : (
           <View style={[styles.photo, styles.placeholder]}>
             <View style={styles.placeholderIconWrap}>
-              <MaterialCommunityIcons name="account-outline" size={34} color={theme.colors.primarySoft} />
+              <MaterialCommunityIcons name="account-outline" size={26} color={theme.colors.primarySoft} />
             </View>
           </View>
         )}
 
-        {score != null ? (
+        {score != null && !concealed ? (
           <View
             style={[
               styles.scoreBadge,
-              concealed && styles.scoreBadgeConcealed,
               {
                 backgroundColor: scoreStyle.bg,
                 borderColor: scoreStyle.borderColor,
@@ -85,7 +92,7 @@ export default function UserMiniCard({
         ) : null}
       </View>
 
-      <View style={[styles.body, concealed && styles.bodyConcealed]}>
+      <View style={[styles.body, layout === 'landscape' && styles.bodyLandscape, concealed && styles.bodyConcealed]}>
         <View style={styles.identityRow}>
           {concealed ? <View style={styles.nameMask} /> : (
             <Text numberOfLines={1} style={styles.name}>
@@ -145,15 +152,19 @@ const styles = StyleSheet.create({
   card: {
     flex: 1,
     minWidth: 0,
-    borderRadius: 0,
+    borderRadius: theme.radius.personCard,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
   },
+  cardLandscape: {
+    minHeight: 132,
+    flexDirection: 'row',
+  },
   cardPressed: {
-    opacity: 0.92,
-    transform: [{ scale: 0.986 }],
+    opacity: theme.interaction.pressedOpacity,
+    transform: [{ scale: theme.interaction.pressedScale }],
   },
   cardDisabled: {
     opacity: 0.98,
@@ -162,6 +173,10 @@ const styles = StyleSheet.create({
     position: 'relative',
     aspectRatio: 0.78,
     backgroundColor: theme.colors.surface,
+  },
+  photoWrapLandscape: {
+    width: 104,
+    flexShrink: 0,
   },
   photo: {
     flex: 1,
@@ -183,38 +198,40 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
   },
   placeholderIconWrap: {
-    width: 72,
-    height: 72,
-    borderRadius: 999,
+    width: 46,
+    height: 46,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySurface,
   },
   scoreBadge: {
     position: 'absolute',
-    top: 8,
-    right: 8,
-    minWidth: 52,
-    borderRadius: 999,
+    top: 6,
+    right: 6,
+    minWidth: 44,
+    borderRadius: theme.radius.pill,
     borderWidth: 1,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
     alignItems: 'center',
     justifyContent: 'center',
   },
   scoreText: {
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '900',
-  },
-  scoreBadgeConcealed: {
-    opacity: 0.42,
+    fontFamily: theme.fonts.extraBold,
   },
   body: {
-    gap: 5,
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 11,
+    gap: 3,
+    paddingHorizontal: 8,
+    paddingTop: 7,
+    paddingBottom: 8,
+  },
+  bodyLandscape: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
   },
   bodyConcealed: {
     opacity: 0.46,
@@ -227,65 +244,57 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
-    gap: 6,
+    gap: 4,
   },
   name: {
     color: theme.colors.text,
-    fontSize: 14,
-    fontWeight: '800',
+    ...theme.typography.roles.cardTitle,
   },
   nameMask: {
     width: '62%',
     height: 14,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.alpha.white16,
   },
   ageChip: {
-    minWidth: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    minWidth: 26,
+    minHeight: 24,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.surfaceStrong,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
   ageText: {
     color: theme.colors.text,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    ...theme.typography.roles.meta,
   },
   genderChip: {
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.surfaceStrong,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
   genderText: {
     color: theme.colors.text,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    ...theme.typography.roles.meta,
   },
   username: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
   },
   usernameMask: {
     width: '58%',
     height: 10,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.alpha.white12,
   },
   bio: {
     color: theme.colors.textSoft,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '600',
+    ...theme.typography.roles.meta,
   },
   bioMaskStack: {
     gap: 6,
@@ -294,13 +303,13 @@ const styles = StyleSheet.create({
   bioMaskLong: {
     width: '100%',
     height: 10,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.alpha.white12,
   },
   bioMaskShort: {
     width: '74%',
     height: 10,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.alpha.white08,
   },
   concealedOverlay: {
@@ -314,20 +323,20 @@ const styles = StyleSheet.create({
     backgroundColor: theme.alpha.background12,
   },
   concealedBadge: {
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     borderWidth: 1,
     borderColor: theme.alpha.brand22,
     backgroundColor: theme.alpha.background92,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    gap: 4,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
   },
   concealedBadgeText: {
     color: theme.colors.white,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
 });

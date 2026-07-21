@@ -13,7 +13,6 @@ import { theme } from '../../shared/theme';
 import type { SwipeQuotaKind } from '../../shared/types';
 import { formatRemainingTime } from '../../shared/utils/discovery';
 import { resolveDeviceEdgeInset } from '../../shared/utils/safeArea';
-import useWindowClass from '../hooks/useWindowClass';
 
 interface SwipeQuotaBarProps {
   remainingLikes: number;
@@ -38,14 +37,11 @@ export default function SwipeQuotaBar({
 }: SwipeQuotaBarProps) {
   const { t } = useLocalization();
   const insets = useSafeAreaInsets();
-  const layout = useWindowClass();
   const safeBottomInset = respectSafeArea ? resolveDeviceEdgeInset(insets.bottom) : 0;
-  const compactLayout = layout.widthClass === 'xCompact' || layout.fontScale >= 1.3;
   const activeSet = useMemo(
     () => new Set<SwipeQuotaKind>(activeKinds ?? ['like', 'dislike', 'undo']),
     [activeKinds],
   );
-
   return (
     <View
       pointerEvents="none"
@@ -54,36 +50,35 @@ export default function SwipeQuotaBar({
       <View
         accessible
         accessibilityLabel={`${t('quota.like')} ${remainingLikes}/${DAILY_LIKE_SWIPE_LIMIT}. ${t('quota.dislike')} ${remainingDislikes}/${DAILY_DISLIKE_SWIPE_LIMIT}. ${t('quota.undo')} ${remainingUndos}/${DAILY_UNDO_LIMIT}. ${t('quota.refresh')} ${formatRemainingTime(remainingMs)}.`}
-        style={[styles.card, compactLayout && styles.cardCompact]}
+        style={styles.card}
       >
         <QuotaPill
           active={activeSet.has('like')}
-          icon="arrow-right-thin"
-          iconColor={theme.colors.success}
+          icon="heart"
+          iconColor={theme.colors.primarySoft}
           label={t('quota.like')}
           value={loading ? '--' : `${remainingLikes}/${DAILY_LIKE_SWIPE_LIMIT}`}
+          primary
         />
-        <QuotaPill
-          active={activeSet.has('dislike')}
-          icon="arrow-left-thin"
-          iconColor={theme.colors.dangerText}
-          label={t('quota.dislike')}
-          value={loading ? '--' : `${remainingDislikes}/${DAILY_DISLIKE_SWIPE_LIMIT}`}
-        />
-        <QuotaPill
-          active={activeSet.has('undo')}
-          icon="arrow-down-thin"
-          iconColor={theme.colors.primarySoft}
-          label={t('quota.undo')}
-          value={loading ? '--' : `${remainingUndos}/${DAILY_UNDO_LIMIT}`}
-        />
-        <QuotaPill
-          icon="timer-outline"
-          iconColor={theme.colors.warning}
-          label={t('quota.refresh')}
-          value={loading ? '--:--:--' : formatRemainingTime(remainingMs)}
-          align="right"
-        />
+
+        <View style={styles.secondaryQuotas}>
+          <CompactQuota
+            active={activeSet.has('dislike')}
+            icon="close"
+            value={loading ? '--' : `${remainingDislikes}`}
+          />
+          <CompactQuota
+            active={activeSet.has('undo')}
+            icon="undo-variant"
+            value={loading ? '--' : `${remainingUndos}`}
+          />
+          <CompactQuota
+            active
+            icon="timer-outline"
+            value={loading ? '--:--' : formatRemainingTime(remainingMs)}
+            timer
+          />
+        </View>
       </View>
     </View>
   );
@@ -96,6 +91,7 @@ function QuotaPill({
   iconColor,
   label,
   value,
+  primary = false,
 }: {
   active?: boolean;
   align?: 'left' | 'right';
@@ -103,11 +99,12 @@ function QuotaPill({
   iconColor: string;
   label: string;
   value: string;
+  primary?: boolean;
 }) {
   const resolvedIconColor = active ? iconColor : theme.colors.textSoft;
 
   return (
-    <View style={[styles.pill, !active && styles.pillMuted, align === 'right' && styles.pillRight]}>
+    <View style={[styles.pill, primary && styles.pillPrimary, !active && styles.pillMuted, align === 'right' && styles.pillRight]}>
       <View style={[styles.labelRow, align === 'right' && styles.labelRowRight]}>
         <MaterialCommunityIcons accessible={false} name={icon} size={14} color={resolvedIconColor} />
         <Text style={[styles.pillLabel, !active && styles.pillTextMuted]}>{label}</Text>
@@ -117,35 +114,58 @@ function QuotaPill({
   );
 }
 
+function CompactQuota({
+  active,
+  icon,
+  value,
+  timer = false,
+}: {
+  active: boolean;
+  icon: keyof typeof MaterialCommunityIcons.glyphMap;
+  value: string;
+  timer?: boolean;
+}) {
+  return (
+    <View style={[styles.compactQuota, !active && styles.pillMuted]}>
+      <MaterialCommunityIcons
+        accessible={false}
+        name={icon}
+        size={14}
+        color={active ? theme.colors.textMuted : theme.colors.textSoft}
+      />
+      <Text style={[styles.compactQuotaValue, timer && styles.timerValue, !active && styles.pillTextMuted]}>{value}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   shell: {
     position: 'absolute',
-    left: 12,
-    right: 12,
+    left: 8,
+    right: 8,
     zIndex: 30,
     elevation: 30,
   },
   card: {
-    minHeight: 52,
-    borderRadius: 16,
+    minHeight: 44,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.glass,
     flexDirection: 'row',
     flexWrap: 'nowrap',
     alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  cardCompact: {
-    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
   },
   pill: {
-    flexGrow: 1,
-    flexBasis: '22%',
     minWidth: 72,
-    gap: 4,
+    gap: 2,
+  },
+  pillPrimary: {
+    flexGrow: 1,
   },
   pillRight: {
     alignItems: 'flex-end',
@@ -166,13 +186,34 @@ const styles = StyleSheet.create({
   },
   pillLabel: {
     color: theme.colors.textSoft,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    ...theme.typography.roles.micro,
   },
   pillValue: {
     color: theme.colors.white,
-    fontSize: 12,
-    fontWeight: '900',
+    ...theme.typography.roles.cardTitle,
+    fontVariant: ['tabular-nums'],
+  },
+  secondaryQuotas: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 5,
+  },
+  compactQuota: {
+    minHeight: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.surface,
+    paddingHorizontal: 6,
+  },
+  compactQuotaValue: {
+    color: theme.colors.textMuted,
+    ...theme.typography.roles.micro,
+    fontVariant: ['tabular-nums'],
+  },
+  timerValue: {
+    color: theme.colors.warningText,
   },
 });

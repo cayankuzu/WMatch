@@ -23,6 +23,16 @@ interface AppTextProps extends Omit<TextProps, 'style'> {
   style?: StyleProp<TextStyle>;
 }
 
+function getFontFamily(weight?: TextStyle['fontWeight']) {
+  const numericWeight = typeof weight === 'string' ? Number.parseInt(weight, 10) : weight;
+
+  if (numericWeight && numericWeight >= 800) return theme.fonts.extraBold;
+  if (numericWeight && numericWeight >= 700) return theme.fonts.bold;
+  if (numericWeight && numericWeight >= 600) return theme.fonts.semibold;
+  if (numericWeight && numericWeight >= 500) return theme.fonts.medium;
+  return undefined;
+}
+
 const toneStyles: Record<TextTone, TextStyle> = {
   primary: { color: theme.colors.textPrimary },
   secondary: { color: theme.colors.textSecondary },
@@ -52,7 +62,7 @@ export default function AppText({
       style={[
         theme.typography.roles[variant],
         toneStyles[tone],
-        weight ? { fontWeight: weight } : null,
+        weight ? { fontFamily: getFontFamily(weight) } : null,
         align ? { textAlign: align } : null,
         style,
       ]}

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import {
@@ -32,6 +32,10 @@ import AppButton from './ui/AppButton';
 import AppTextField from './ui/AppTextField';
 import OptionChips from './ui/OptionChips';
 import SortablePhotoGrid from './ui/SortablePhotoGrid';
+import {
+  isProfilePhotoUploadCancelled,
+  type ProfilePhotoUploadProgress,
+} from '../../services/storage';
 
 interface EditProfileModalProps {
   onClose: () => void;
@@ -63,7 +67,7 @@ interface EditProfileModalProps {
     username: string;
     bio: string;
     letterboxd: string;
-  }) => Promise<void> | void;
+  }, onUploadProgress?: (progress: ProfilePhotoUploadProgress) => void, signal?: AbortSignal) => Promise<void> | void;
 }
 
 export default function EditProfileModal({
@@ -89,6 +93,8 @@ export default function EditProfileModal({
   const [bio, setBio] = useState(currentBio);
   const [letterboxd, setLetterboxd] = useState(currentLetterboxd);
   const [saving, setSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<ProfilePhotoUploadProgress | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const genderOptions = useMemo(
     () =>
       PUBLIC_USER_GENDERS.map((item) => ({
@@ -197,6 +203,9 @@ export default function EditProfileModal({
     }
 
     setSaving(true);
+    setUploadProgress(null);
+    const uploadController = new AbortController();
+    uploadAbortRef.current = uploadController;
 
     try {
       if (normalizedUsername !== currentUsername.trim()) {
@@ -214,24 +223,42 @@ export default function EditProfileModal({
         }
       }
 
-      await onSave({
-        photos,
-        name: normalizedName,
-        age: parsedAge,
-        gender,
-        username: normalizedUsername,
-        bio: normalizedBio,
-        letterboxd: normalizedLetterboxd,
-      });
+      await onSave(
+        {
+          photos,
+          name: normalizedName,
+          age: parsedAge,
+          gender,
+          username: normalizedUsername,
+          bio: normalizedBio,
+          letterboxd: normalizedLetterboxd,
+        },
+        setUploadProgress,
+        uploadController.signal,
+      );
       onClose();
     } catch (error) {
-      Alert.alert(
-        t('profile.edit.error.saveFailedTitle'),
-        error instanceof Error ? error.message : t('common.retry'),
-      );
+      if (!isProfilePhotoUploadCancelled(error)) {
+        Alert.alert(
+          t('profile.edit.error.saveFailedTitle'),
+          error instanceof Error ? error.message : t('common.retry'),
+        );
+      }
     } finally {
+      if (uploadAbortRef.current === uploadController) {
+        uploadAbortRef.current = null;
+      }
       setSaving(false);
     }
+  };
+
+  const handleClose = () => {
+    if (saving) {
+      uploadAbortRef.current?.abort();
+      return;
+    }
+
+    onClose();
   };
 
   const handleAgeChange = (value: string) => {
@@ -247,14 +274,19 @@ export default function EditProfileModal({
   };
 
   return (
-    <AccessibleModal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView accessibilityViewIsModal importantForAccessibility="yes" edges={['top', 'bottom']} style={styles.container}>
+    <AccessibleModal visible animationType="slide" onRequestClose={handleClose}>
+      <SafeAreaView
+        accessibilityViewIsModal
+        importantForAccessibility="yes"
+        edges={['top', 'right', 'bottom', 'left']}
+        style={styles.container}
+      >
         <View style={styles.header}>
-          <Pressable accessibilityRole="button" accessibilityLabel={t('common.back')} onPress={onClose} style={styles.iconButton}>
+          <Pressable accessibilityRole="button" accessibilityLabel={t('common.back')} onPress={handleClose} style={styles.iconButton}>
             <MaterialCommunityIcons name="chevron-left" size={22} color={theme.colors.text} />
           </Pressable>
           <Text style={styles.title}>{t('profile.edit.title')}</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel={t('common.close')} onPress={onClose} style={styles.iconButton}>
+          <Pressable accessibilityRole="button" accessibilityLabel={t('common.close')} onPress={handleClose} style={styles.iconButton}>
             <MaterialCommunityIcons name="close" size={20} color={theme.colors.textMuted} />
           </Pressable>
         </View>
@@ -339,7 +371,35 @@ export default function EditProfileModal({
         </ScrollView>
 
         <View style={styles.footer}>
-          <AppButton title={t('common.save')} onPress={() => void handleSave()} loading={saving} />
+          {uploadProgress ? (
+            <View style={styles.progressGroup}>
+              <Text style={styles.progressLabel}>
+                {t('profile.edit.uploadProgress', { progress: Math.round(uploadProgress.progress * 100) })}
+              </Text>
+              <View
+                accessibilityLabel={t('profile.edit.uploadProgress', { progress: Math.round(uploadProgress.progress * 100) })}
+                accessibilityRole="progressbar"
+                accessibilityValue={{ min: 0, max: 100, now: Math.round(uploadProgress.progress * 100) }}
+                style={styles.progressShell}
+              >
+                <View style={[styles.progressFill, { width: `${Math.round(uploadProgress.progress * 100)}%` }]} />
+              </View>
+            </View>
+          ) : null}
+          <AppButton
+            title={t('common.save')}
+            loadingTitle={t('common.saving')}
+            onPress={() => void handleSave()}
+            loading={saving}
+          />
+          {saving ? (
+            <AppButton
+              feedback="warning"
+              title={t('common.cancel')}
+              variant="ghost"
+              onPress={() => uploadAbortRef.current?.abort()}
+            />
+          ) : null}
         </View>
       </SafeAreaView>
     </AccessibleModal>
@@ -352,11 +412,11 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.background,
   },
   header: {
-    minHeight: 54,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
@@ -371,14 +431,14 @@ const styles = StyleSheet.create({
   title: {
     color: theme.colors.text,
     fontSize: theme.typography.section,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   content: {
     padding: 14,
-    gap: 16,
+    gap: 12,
   },
   section: {
-    gap: 12,
+    gap: 10,
   },
   sectionHeader: {
     flexDirection: 'row',
@@ -388,12 +448,12 @@ const styles = StyleSheet.create({
   sectionTitle: {
     color: theme.colors.text,
     fontSize: theme.typography.section,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   sectionMeta: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.caption,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   helper: {
     color: theme.colors.textMuted,
@@ -401,17 +461,16 @@ const styles = StyleSheet.create({
     lineHeight: 17,
   },
   inlineSection: {
-    gap: 8,
+    gap: 6,
   },
   inlineLabel: {
     color: theme.colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    ...theme.typography.roles.control,
   },
   count: {
     color: theme.colors.textSoft,
     fontSize: theme.typography.caption,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
     textAlign: 'right',
     marginTop: -8,
   },
@@ -420,5 +479,26 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
+    gap: theme.spacing.sm,
+  },
+  progressShell: {
+    height: 5,
+    borderRadius: theme.radius.pill,
+    overflow: 'hidden',
+    backgroundColor: theme.colors.surfaceStrong,
+  },
+  progressGroup: {
+    gap: theme.spacing.xs,
+  },
+  progressLabel: {
+    color: theme.colors.textMuted,
+    fontSize: theme.typography.roles.meta.fontSize,
+    lineHeight: theme.typography.roles.meta.lineHeight,
+    fontFamily: theme.fonts.semibold,
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.primarySoft,
   },
 });

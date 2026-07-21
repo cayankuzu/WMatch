@@ -1,9 +1,10 @@
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { useEffect, useState } from 'react';
 
 import { useLocalization } from '../../context/LocalizationContext';
 import Screen from './ui/Screen';
 import { theme } from '../../shared/theme';
+import DelayedActivityIndicator from './ui/DelayedActivityIndicator';
 
 interface LoadingScreenProps {
   message?: string;
@@ -26,7 +27,7 @@ export default function LoadingScreen({ message }: LoadingScreenProps) {
   return (
     <Screen contentContainerStyle={styles.container}>
       <View accessibilityLiveRegion="polite" style={styles.card}>
-        <ActivityIndicator color={theme.colors.primarySoft} size="large" />
+        <DelayedActivityIndicator active color={theme.colors.primarySoft} size="large" />
         <Text style={styles.text}>{message ?? t('common.loading')}</Text>
         {elapsedMs >= 5000 ? <Text style={styles.delayText}>{t('app.loading.slow')}</Text> : null}
         {elapsedMs >= 12000 ? <Text style={styles.delayText}>{t('app.loading.retryHint')}</Text> : null}
@@ -40,24 +41,24 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 18,
+    paddingHorizontal: 14,
   },
   card: {
     minWidth: 190,
-    borderRadius: 22,
+    borderRadius: theme.radius.modal,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 22,
-    gap: 12,
+    gap: 10,
   },
   text: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '600',
+    fontFamily: theme.fonts.medium,
     textAlign: 'center',
   },
   delayText: {
@@ -65,7 +66,7 @@ const styles = StyleSheet.create({
     color: theme.colors.textSoft,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '600',
+    fontFamily: theme.fonts.medium,
     textAlign: 'center',
   },
 });

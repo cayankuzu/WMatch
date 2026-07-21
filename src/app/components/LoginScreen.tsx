@@ -7,7 +7,7 @@ import { theme } from '../../shared/theme';
 import AppButton from './ui/AppButton';
 import AppTextField from './ui/AppTextField';
 import AuthFooter from './ui/AuthFooter';
-import AuthLegalConsent from './ui/AuthLegalConsent';
+import AuthLegalNotice from './ui/AuthLegalNotice';
 import AuthWordmark from './ui/AuthWordmark';
 import Screen from './ui/Screen';
 
@@ -28,8 +28,6 @@ export default function LoginScreen({
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [acceptedLegal, setAcceptedLegal] = useState(false);
-  const isUnlocked = acceptedLegal;
 
   const handleSubmit = async () => {
     if (loading) {
@@ -63,15 +61,7 @@ export default function LoginScreen({
         </View>
 
         <View style={styles.formCard}>
-          <AuthLegalConsent
-            checked={acceptedLegal}
-            onToggle={() => setAcceptedLegal((current) => !current)}
-          />
-
-          <View
-            pointerEvents={isUnlocked ? 'auto' : 'none'}
-            style={[styles.lockedSection, !isUnlocked && styles.lockedSectionDisabled]}
-          >
+          <View style={styles.formFields}>
             <AppTextField
               label={t('common.email')}
               value={email}
@@ -81,14 +71,12 @@ export default function LoginScreen({
               textContentType="emailAddress"
               returnKeyType="next"
               placeholder="ornek@email.com"
-              editable={isUnlocked}
               leftIcon={<MaterialCommunityIcons name="email-outline" size={17} color={theme.colors.textSoft} />}
             />
             <AppTextField
               label={t('common.password')}
               value={password}
               onChangeText={setPassword}
-              editable={isUnlocked}
               secureTextEntry={!showPassword}
               autoComplete="current-password"
               textContentType="password"
@@ -103,12 +91,12 @@ export default function LoginScreen({
                   color={theme.colors.textSoft}
                 />
               }
-              onRightIconPress={isUnlocked ? () => setShowPassword((current) => !current) : undefined}
+              onRightIconPress={() => setShowPassword((current) => !current)}
             />
 
             {error ? <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text> : null}
 
-            <Pressable accessibilityRole="button" disabled={!isUnlocked} onPress={onForgotPassword} style={styles.forgotButton}>
+            <Pressable accessibilityRole="button" onPress={onForgotPassword} style={styles.forgotButton}>
               <Text style={styles.forgotText}>{t('auth.login.forgotPassword')}</Text>
             </Pressable>
 
@@ -116,14 +104,16 @@ export default function LoginScreen({
               title={t('auth.login.submit')}
               onPress={handleSubmit}
               loading={loading}
-              disabled={!isUnlocked || !email.trim() || !password}
+              disabled={!email.trim() || !password}
             />
 
-            <Pressable accessibilityRole="button" disabled={!isUnlocked} onPress={onSignUp} style={styles.footerAction}>
+            <Pressable accessibilityRole="button" onPress={onSignUp} style={styles.footerAction}>
               <Text style={styles.footerText}>
                 {t('auth.login.signUpPrompt')} <Text style={styles.footerHighlight}>{t('auth.login.signUpCta')}</Text>
               </Text>
             </Pressable>
+
+            <AuthLegalNotice />
           </View>
         </View>
       </View>
@@ -136,53 +126,53 @@ export default function LoginScreen({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 10,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 8,
     justifyContent: 'space-between',
   },
   stack: {
-    gap: 18,
-    marginTop: 46,
+    gap: 14,
+    marginTop: 16,
   },
   hero: {
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   formCard: {
-    borderRadius: 22,
+    borderRadius: theme.radius.card,
     backgroundColor: theme.alpha.panel92,
     borderWidth: 1,
     borderColor: theme.colors.border,
     padding: 15,
-    gap: 12,
+    gap: 10,
   },
-  lockedSection: {
-    gap: 12,
-  },
-  lockedSectionDisabled: {
-    opacity: 0.46,
+  formFields: {
+    gap: 10,
   },
   error: {
     color: theme.colors.dangerText,
-    fontSize: theme.typography.body,
-    fontWeight: '700',
+    ...theme.typography.roles.body,
+    fontFamily: theme.fonts.semibold,
   },
   forgotButton: {
+    minHeight: theme.layout.controlMinUnified,
     alignSelf: 'flex-end',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.xs,
   },
   forgotText: {
     color: theme.colors.primarySoft,
-    fontSize: theme.typography.body,
-    fontWeight: '700',
+    ...theme.typography.roles.control,
   },
   footerAction: {
+    minHeight: theme.layout.controlMinUnified,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   footerText: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.body,
-    fontWeight: '600',
+    ...theme.typography.roles.body,
   },
   footerHighlight: {
     color: theme.colors.primarySoft,

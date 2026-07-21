@@ -1,6 +1,15 @@
 import { Image } from 'expo-image';
 
-import { getAppState, subscribeToAppState } from './appLifecycle';
+import { getAppState, subscribeToAppState, subscribeToMemoryWarning } from './appLifecycle';
+import {
+  canRunSpeculativeNetworkWork,
+  getNetworkConcurrencyLimit,
+  subscribeToConnectivity,
+} from '../../services/connectivity';
+import {
+  getMediaPrefetchConcurrency,
+  getMediaQueueLimit,
+} from '../../services/runtimeProfile';
 
 export type MediaPrefetchPriority = 'critical' | 'intent' | 'predictive' | 'idle';
 
@@ -19,13 +28,13 @@ const PRIORITY_WEIGHT: Record<MediaPrefetchPriority, number> = {
   predictive: 2,
   idle: 3,
 };
-const MAX_CONCURRENT_PREFETCHES = 3;
-const MAX_QUEUED_PREFETCHES = 48;
 const jobs = new Map<string, MediaPrefetchJob>();
 const flights = new Map<string, Promise<boolean>>();
 let activePrefetches = 0;
 let nextOrder = 0;
 let unsubscribeAppState: (() => void) | null = null;
+let unsubscribeConnectivity: (() => void) | null = null;
+let unsubscribeMemoryWarning: (() => void) | null = null;
 
 function ensureLifecycleSubscription() {
   if (unsubscribeAppState) {
@@ -37,17 +46,25 @@ function ensureLifecycleSubscription() {
       runNext();
     }
   });
+  unsubscribeConnectivity ??= subscribeToConnectivity(runNext);
+  unsubscribeMemoryWarning ??= subscribeToMemoryWarning(() => {
+    cancelSpeculativeMediaPrefetches();
+    void Image.clearMemoryCache().catch(() => undefined);
+  });
 }
 
 function getNextJob() {
-  return [...jobs.values()].sort((left, right) => {
-    const priorityDifference = PRIORITY_WEIGHT[left.priority] - PRIORITY_WEIGHT[right.priority];
-    return priorityDifference || left.order - right.order;
-  })[0];
+  return [...jobs.values()]
+    .filter((job) => canRunSpeculativeNetworkWork(job.priority))
+    .sort((left, right) => {
+      const priorityDifference = PRIORITY_WEIGHT[left.priority] - PRIORITY_WEIGHT[right.priority];
+      return priorityDifference || left.order - right.order;
+    })[0];
 }
 
 function trimQueue() {
-  if (jobs.size <= MAX_QUEUED_PREFETCHES) {
+  const queueLimit = getMediaQueueLimit();
+  if (jobs.size <= queueLimit) {
     return;
   }
 
@@ -56,7 +73,7 @@ function trimQueue() {
       const priorityDifference = PRIORITY_WEIGHT[right.priority] - PRIORITY_WEIGHT[left.priority];
       return priorityDifference || right.order - left.order;
     })
-    .slice(0, jobs.size - MAX_QUEUED_PREFETCHES);
+    .slice(0, jobs.size - queueLimit);
 
   overflow.forEach((job) => {
     jobs.delete(job.uri);
@@ -70,7 +87,9 @@ function runNext() {
     return;
   }
 
-  while (activePrefetches < MAX_CONCURRENT_PREFETCHES) {
+  const concurrencyLimit = Math.min(getMediaPrefetchConcurrency(), getNetworkConcurrencyLimit());
+
+  while (activePrefetches < concurrencyLimit) {
     const job = getNextJob();
 
     if (!job) {
@@ -135,6 +154,16 @@ export function scheduleMediaPrefetch(
 export function cancelQueuedMediaPrefetches(scope: string) {
   jobs.forEach((job, uri) => {
     if (job.scope === scope) {
+      jobs.delete(uri);
+      flights.delete(uri);
+      job.resolve(false);
+    }
+  });
+}
+
+export function cancelSpeculativeMediaPrefetches() {
+  jobs.forEach((job, uri) => {
+    if (job.priority === 'predictive' || job.priority === 'idle') {
       jobs.delete(uri);
       flights.delete(uri);
       job.resolve(false);

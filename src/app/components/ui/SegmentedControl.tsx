@@ -1,6 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { theme } from '../../../shared/theme';
+import { triggerHaptic } from '../../../services/haptics';
 
 interface SegmentedOption<T extends string> {
   label: string;
@@ -33,8 +34,19 @@ export default function SegmentedControl<T extends string>({
             accessibilityRole="tab"
             accessibilityLabel={option.label}
             accessibilityState={{ selected: active }}
-            onPress={() => onChange(option.value)}
-            style={[styles.option, compact && styles.optionCompact, active && styles.optionActive]}
+            hitSlop={4}
+            onPress={() => {
+              if (!active) {
+                triggerHaptic('selection');
+                onChange(option.value);
+              }
+            }}
+            style={({ pressed }) => [
+              styles.option,
+              compact && styles.optionCompact,
+              active && styles.optionActive,
+              pressed && !active && styles.optionPressed,
+            ]}
           >
             <Text style={[styles.label, compact && styles.labelCompact, active && styles.labelActive]}>
               {option.label}
@@ -65,24 +77,25 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
   },
   optionCompact: {
-    minHeight: theme.layout.controlMinUnified,
-    paddingHorizontal: 10,
+    minHeight: 36,
+    paddingHorizontal: 8,
   },
   optionActive: {
     backgroundColor: theme.colors.primary,
     borderColor: 'transparent',
   },
+  optionPressed: {
+    opacity: theme.interaction.pressedOpacity,
+    backgroundColor: theme.colors.surfaceMuted,
+  },
   label: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.label.fontSize,
-    lineHeight: theme.typography.roles.label.lineHeight,
-    fontWeight: '600',
+    ...theme.typography.roles.control,
     textAlign: 'center',
   },
   labelCompact: {
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
   },
   labelActive: {
     color: theme.colors.white,

@@ -2,9 +2,11 @@ import type { ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { theme } from '../../../shared/theme';
+import { triggerHaptic, type HapticFeedback } from '../../../services/haptics';
+import useDelayedBusy from '../../hooks/useDelayedBusy';
 import useReducedMotion from '../../hooks/useReducedMotion';
 
-type Variant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'warning';
+type Variant = 'primary' | 'secondary' | 'tonal' | 'ghost' | 'danger' | 'warning';
 
 interface AppButtonProps {
   title: string;
@@ -16,6 +18,7 @@ interface AppButtonProps {
   size?: 'regular' | 'large';
   leftIcon?: ReactNode;
   rightIcon?: ReactNode;
+  feedback?: HapticFeedback;
 }
 
 export default function AppButton({
@@ -28,15 +31,22 @@ export default function AppButton({
   size = 'regular',
   leftIcon,
   rightIcon,
+  feedback,
 }: AppButtonProps) {
   const reduceMotionEnabled = useReducedMotion();
+  const showSpinner = useDelayedBusy(loading);
   const isDisabled = disabled || loading;
   const visibleTitle = loading ? loadingTitle ?? title : title;
+  const resolvedFeedback = feedback ?? (variant === 'ghost' ? 'none' : 'selection');
 
   return (
     <Pressable
       disabled={isDisabled}
-      onPress={onPress}
+      hitSlop={4}
+      onPress={() => {
+        triggerHaptic(resolvedFeedback);
+        onPress();
+      }}
       accessibilityRole="button"
       accessibilityLabel={title}
       accessibilityState={{ disabled: isDisabled, busy: loading }}
@@ -49,14 +59,12 @@ export default function AppButton({
       ]}
     >
       <View style={styles.content}>
-        {loading ? (
+        {showSpinner ? (
           <ActivityIndicator
             color={variant === 'warning' ? theme.colors.black : labelStyles[variant].color}
             size="small"
           />
-        ) : (
-          leftIcon
-        )}
+        ) : loading ? null : leftIcon}
         <Text style={[styles.label, labelStyles[variant], isDisabled && styles.disabledLabel]}>
           {visibleTitle}
         </Text>
@@ -69,14 +77,14 @@ export default function AppButton({
 const styles = StyleSheet.create({
   base: {
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.control,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.sm,
   },
   large: {
-    minHeight: 54,
+    minHeight: 46,
   },
   content: {
     flexDirection: 'row',
@@ -86,9 +94,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   label: {
-    fontSize: theme.typography.body,
-    lineHeight: 20,
-    fontWeight: '700',
+    ...theme.typography.roles.control,
     textAlign: 'center',
     flexShrink: 1,
   },
@@ -96,8 +102,8 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surfaceStrong,
   },
   pressedMotion: {
-    opacity: 0.88,
-    transform: [{ scale: 0.985 }],
+    opacity: theme.interaction.pressedOpacity,
+    transform: [{ scale: theme.interaction.pressedScale }],
   },
   disabled: {
     backgroundColor: theme.colors.disabledSurface,
@@ -117,6 +123,11 @@ const variantStyles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
+  tonal: {
+    backgroundColor: theme.colors.primarySurface,
+    borderWidth: 1,
+    borderColor: theme.alpha.brand26,
+  },
   ghost: {
     backgroundColor: 'transparent',
   },
@@ -134,6 +145,9 @@ const labelStyles = StyleSheet.create({
   },
   secondary: {
     color: theme.colors.text,
+  },
+  tonal: {
+    color: theme.colors.primarySoft,
   },
   ghost: {
     color: theme.colors.text,

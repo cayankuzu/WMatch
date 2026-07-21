@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import {
   ActivityIndicator,
   Alert,
@@ -15,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalization } from '../../context/LocalizationContext';
 import { getBlockedUsers, unblockUser, type ApiUser } from '../../services/api';
 import { theme } from '../../shared/theme';
+import AppImage from './ui/AppImage';
 import AppButton from './ui/AppButton';
 import AccessibleModal from './ui/AccessibleModal';
 
@@ -27,14 +27,13 @@ function Avatar({ user }: { user: ApiUser }) {
 
   if (photo) {
     return (
-      <Image
-        accessible={false}
-        cachePolicy="memory-disk"
+      <AppImage
         contentFit="cover"
+        fallbackIcon="account-outline"
         recyclingKey={photo}
-        source={{ uri: photo }}
+        uri={photo}
         style={styles.avatar}
-        transition={120}
+        transition={theme.motion.fast}
       />
     );
   }
@@ -101,7 +100,7 @@ export default function BlockedUsersModal({ onClose }: BlockedUsersModalProps) {
     <AccessibleModal transparent visible animationType="slide" onRequestClose={onClose}>
       <View accessibilityViewIsModal importantForAccessibility="yes" style={styles.backdrop}>
         <Pressable accessible={false} onPress={onClose} style={StyleSheet.absoluteFill} />
-        <SafeAreaView edges={['bottom']} style={styles.sheet}>
+        <SafeAreaView edges={['right', 'bottom', 'left']} style={styles.sheet}>
           <View style={styles.header}>
             <Text style={styles.title}>{t('blocked.title')}</Text>
             <Pressable accessibilityRole="button" accessibilityLabel={t('common.close')} onPress={onClose} style={styles.closeButton}>
@@ -117,7 +116,7 @@ export default function BlockedUsersModal({ onClose }: BlockedUsersModalProps) {
           ) : loadError ? (
             <View style={styles.empty}>
               <View style={styles.iconWrap}>
-                <MaterialCommunityIcons name="alert-circle-outline" size={28} color={theme.colors.dangerText} />
+                <MaterialCommunityIcons name="alert-circle-outline" size={22} color={theme.colors.dangerText} />
               </View>
               <Text style={styles.emptyTitle}>{t('data.error.title')}</Text>
               <Text style={styles.emptyText}>{loadError}</Text>
@@ -126,7 +125,7 @@ export default function BlockedUsersModal({ onClose }: BlockedUsersModalProps) {
           ) : users.length === 0 ? (
             <View style={styles.empty}>
               <View style={styles.iconWrap}>
-                <MaterialCommunityIcons name="account-check-outline" size={28} color={theme.colors.textMuted} />
+                <MaterialCommunityIcons name="account-check-outline" size={22} color={theme.colors.textMuted} />
               </View>
               <Text style={styles.emptyTitle}>{t('blocked.empty.title')}</Text>
               <Text style={styles.emptyText}>{t('blocked.empty.description')}</Text>
@@ -179,29 +178,29 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.scrim,
   },
   sheet: {
-    minHeight: 280,
+    minHeight: 230,
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
     backgroundColor: theme.colors.backgroundElevated,
   },
   header: {
-    minHeight: 56,
+    minHeight: 46,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
   title: {
     color: theme.colors.text,
     fontSize: theme.typography.section,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   closeButton: {
     minWidth: theme.layout.controlMinUnified,
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surface,
@@ -210,23 +209,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 34,
-    gap: 10,
+    gap: 8,
   },
   loadingText: {
     color: theme.colors.textMuted,
     fontSize: 12,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   empty: {
     alignItems: 'center',
-    paddingHorizontal: 22,
+    paddingHorizontal: 16,
     paddingVertical: 34,
-    gap: 8,
+    gap: 6,
   },
   iconWrap: {
-    width: 58,
-    height: 58,
-    borderRadius: 999,
+    width: 48,
+    height: 48,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surface,
@@ -234,34 +233,32 @@ const styles = StyleSheet.create({
   },
   emptyTitle: {
     color: theme.colors.text,
-    fontSize: 15,
-    fontWeight: '900',
+    ...theme.typography.roles.cardTitle,
   },
   emptyText: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
+    ...theme.typography.roles.body,
     textAlign: 'center',
   },
   list: {
     padding: 16,
-    gap: 10,
+    gap: 8,
   },
   row: {
-    minHeight: 68,
-    borderRadius: 18,
+    minHeight: 48,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
   },
   avatar: {
     width: 48,
     height: 48,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
   },
   avatarFallback: {
     alignItems: 'center',
@@ -274,19 +271,19 @@ const styles = StyleSheet.create({
   },
   name: {
     color: theme.colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 12,
+    fontFamily: theme.fonts.bold,
   },
   username: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   actionButton: {
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
-    paddingHorizontal: 14,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 10,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySurface,
@@ -298,6 +295,6 @@ const styles = StyleSheet.create({
     color: theme.colors.primarySoft,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
 });

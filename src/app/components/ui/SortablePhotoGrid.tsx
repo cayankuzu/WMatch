@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import {
   Alert,
   LayoutAnimation,
@@ -14,6 +13,7 @@ import {
 import { useLocalization } from '../../../context/LocalizationContext';
 import { theme } from '../../../shared/theme';
 import useReducedMotion from '../../hooks/useReducedMotion';
+import AppImage from './AppImage';
 
 const isNewArchitectureEnabled = Boolean(
   (globalThis as { nativeFabricUIManager?: unknown; __turboModuleProxy?: unknown }).nativeFabricUIManager ??
@@ -193,11 +193,11 @@ export default function SortablePhotoGrid({
                     { width: tileWidth, height: tileHeight },
                   ]}
                 >
-                  <Image
-                    cachePolicy="memory-disk"
+                  <AppImage
                     contentFit="cover"
+                    fallbackIcon="account-outline"
                     recyclingKey={photo}
-                    source={{ uri: photo }}
+                    uri={photo}
                     style={styles.photo}
                   />
 
@@ -248,18 +248,18 @@ export default function SortablePhotoGrid({
 
 const styles = StyleSheet.create({
   wrapper: {
-    gap: 10,
+    gap: 8,
   },
   instructionCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: theme.alpha.brand24,
     backgroundColor: theme.colors.primarySurface,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
   },
   instructionCardActive: {
     borderColor: theme.colors.primary,
@@ -269,7 +269,7 @@ const styles = StyleSheet.create({
     flex: 1,
     color: theme.colors.textMuted,
     fontSize: theme.typography.caption,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
     lineHeight: 15,
   },
   instructionTextActive: {
@@ -281,7 +281,7 @@ const styles = StyleSheet.create({
     gap: GRID_GAP,
   },
   photoFrame: {
-    borderRadius: 18,
+    borderRadius: theme.radius.card,
     overflow: 'hidden',
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
@@ -313,7 +313,7 @@ const styles = StyleSheet.create({
     gap: 4,
     borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.scrim,
-    paddingHorizontal: 7,
+    paddingHorizontal: 6,
     paddingVertical: 4,
   },
   tapHintSelected: {
@@ -323,7 +323,7 @@ const styles = StyleSheet.create({
     color: theme.colors.white,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   coverLabel: {
     position: 'absolute',
@@ -334,8 +334,8 @@ const styles = StyleSheet.create({
     color: theme.colors.white,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '900',
-    paddingHorizontal: 7,
+    fontFamily: theme.fonts.extraBold,
+    paddingHorizontal: 6,
     paddingVertical: 4,
   },
   removeButton: {
@@ -350,19 +350,19 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.scrim,
   },
   addCard: {
-    borderRadius: 18,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderStyle: 'dashed',
     borderColor: theme.colors.borderStrong,
     backgroundColor: theme.colors.surfaceMuted,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 5,
   },
   addText: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.caption,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
     textAlign: 'center',
   },
 });

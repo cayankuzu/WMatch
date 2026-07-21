@@ -4,7 +4,7 @@ import {
   StyleSheet,
   View,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../context/AuthContext';
 import { useLocalization } from '../../context/LocalizationContext';
@@ -12,6 +12,7 @@ import { type ApiUser } from '../../services/api';
 import type { Movie } from '../../services/tmdb';
 import type { SwipeQuotaKind, SwipeQuotaState } from '../../shared/types';
 import { theme } from '../../shared/theme';
+import { triggerHaptic } from '../../services/haptics';
 import useSwipeQuota from '../hooks/useSwipeQuota';
 import MatchSuccessModal from './MatchSuccessModal';
 import ProfileViewer from './ProfileViewer';
@@ -58,6 +59,8 @@ interface SwipeModalProps {
   banner?: ReactNode;
   reportSource?: string;
   onUserRemoved?: (user: ApiUser) => void;
+  modeTitle?: string;
+  modeSubtitle?: string;
 }
 
 interface SwipeHistoryEntry {
@@ -132,10 +135,11 @@ export default function SwipeModal({
   banner,
   reportSource = 'swipe_modal',
   onUserRemoved,
+  modeTitle,
+  modeSubtitle,
 }: SwipeModalProps) {
   const { user: currentUser } = useAuth();
   const { t } = useLocalization();
-  const insets = useSafeAreaInsets();
   const quota = useSwipeQuota(currentUser?.id);
   const feedbackPopup = useTransientPopup(1500);
   const [queue, setQueue] = useState(() => users.slice(startIndex));
@@ -155,7 +159,7 @@ export default function SwipeModal({
   const dismissedInstantMatchActionIdsRef = useRef(new Set<string>());
   const instantMatchUserIdSet = useMemo(() => new Set(instantMatchUserIds), [instantMatchUserIds]);
   const isInline = presentation === 'inline';
-  const bottomInset = isInline ? 84 : 84 + insets.bottom;
+  const bottomInset = 84;
   const activeBackHandler = isInline ? onBack : onClose;
   const sourceQueue = useMemo(() => users.slice(startIndex), [startIndex, users]);
 
@@ -263,6 +267,7 @@ export default function SwipeModal({
 
     interactionLockedRef.current = true;
     setInteractionLocked(true);
+    triggerHaptic('selection');
     setShowMenu(false);
     feedbackPopup.showPopup(t('swipe.feedback.refreshing'));
 
@@ -371,6 +376,7 @@ export default function SwipeModal({
         const normalizedResult = normalizeSwipeResult(actionResult);
 
         if (!normalizedResult.success) {
+          triggerHaptic('error');
           if (predictedInstantMatch) {
             setActiveInstantMatchActionId(null);
             setMatchedUser(null);
@@ -449,6 +455,7 @@ export default function SwipeModal({
           resolveHistoryAction(historyEntry);
         }
       } catch {
+        triggerHaptic('error');
         if (predictedInstantMatch) {
           setActiveInstantMatchActionId(null);
           setMatchedUser(null);
@@ -525,6 +532,7 @@ export default function SwipeModal({
       }
 
       restoreCardFromHistory(lastAction);
+      triggerHaptic('selection');
 
       if (lastAction.direction === 'right' && normalizedUndoResult.quota) {
         quota.applyServerState(normalizedUndoResult.quota);
@@ -538,6 +546,7 @@ export default function SwipeModal({
         onRefreshFeed?.();
       }
     } catch {
+      triggerHaptic('error');
       quota.optimisticRestore('undo');
       void quota.refresh();
       Alert.alert(t('swipe.alert.actionFailedTitle'), t('swipe.alert.unavailableDescription'));
@@ -583,6 +592,8 @@ export default function SwipeModal({
             onSecondaryHeaderRightPress={interactionLocked ? undefined : () => setShowMenu((value) => !value)}
             secondaryHeaderRightIcon={interactionLocked ? undefined : 'dots-vertical'}
             bottomInset={bottomInset}
+            headerTitle={modeTitle}
+            headerSubtitle={modeSubtitle}
           />
         ) : finished || history.length > 0 ? (
           <SwipeUndoPlaceholder
@@ -604,7 +615,7 @@ export default function SwipeModal({
           loading={!quota.ready}
           activeKinds={resolvedActiveQuotaKinds}
           bottomOffset={0}
-          respectSafeArea={!isInline}
+          respectSafeArea={false}
         />
 
         <SwipeActionMenuOverlay
@@ -656,7 +667,12 @@ export default function SwipeModal({
 
   return (
     <AccessibleModal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView accessibilityViewIsModal importantForAccessibility="yes" edges={['top']} style={styles.container}>
+      <SafeAreaView
+        accessibilityViewIsModal
+        importantForAccessibility="yes"
+        edges={['top', 'right', 'bottom', 'left']}
+        style={styles.container}
+      >
         {content}
       </SafeAreaView>
     </AccessibleModal>

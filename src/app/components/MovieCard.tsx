@@ -1,6 +1,5 @@
 import { memo } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Movie } from '../../services/tmdb';
@@ -9,6 +8,8 @@ import { tmdbService } from '../../services/tmdb';
 import { telemetry } from '../../services/telemetry';
 import { theme } from '../../shared/theme';
 import ViewerCount from './ViewerCount';
+import AppImage from './ui/AppImage';
+import { useLocalization } from '../../context/LocalizationContext';
 
 interface MovieCardProps {
   movie: Movie;
@@ -17,12 +18,14 @@ interface MovieCardProps {
   showViewers?: boolean;
   viewerCount?: number;
   viewerProfiles?: ViewerPreview[];
+  imagePriority?: 'low' | 'normal' | 'high';
+  width?: number;
 }
 
 const sizeMap = {
-  small: { width: 98, posterHeight: 146 },
-  medium: { width: 124, posterHeight: 184 },
-  large: { width: 154, posterHeight: 228 },
+  small: { width: 88, posterHeight: 131 },
+  medium: { width: 112, posterHeight: 167 },
+  large: { width: 140, posterHeight: 209 },
 };
 let firstMediaDisplayed = false;
 
@@ -42,15 +45,20 @@ function MovieCard({
   showViewers = false,
   viewerCount = 0,
   viewerProfiles = [],
+  imagePriority = 'normal',
+  width,
 }: MovieCardProps) {
-  const title = movie.title || movie.name || 'İsimsiz içerik';
+  const { t } = useLocalization();
+  const title = movie.title || movie.name || t('movie.detail.untitled');
   const year = movie.release_date?.slice(0, 4) || movie.first_air_date?.slice(0, 4);
   const rating = movie.vote_average ? movie.vote_average.toFixed(1) : null;
   const dimensions = sizeMap[size];
+  const resolvedWidth = width ?? dimensions.width;
+  const resolvedPosterHeight = width ? Math.round(width * 1.49) : dimensions.posterHeight;
   const posterSize = size === 'large' ? 'w500' : 'w200';
   const posterUri = tmdbService.getPosterUrl(movie.poster_path, posterSize);
-  const mediaType = movie.media_type === 'tv' ? 'Dizi' : 'Film';
-  const accessibilityParts = [title, mediaType, year, rating ? `${rating} puan` : null].filter(Boolean);
+  const mediaType = movie.media_type === 'tv' ? t('movie.detail.media.series') : t('movie.detail.media.movie');
+  const accessibilityParts = [title, mediaType, year, rating].filter(Boolean);
 
   return (
     <Pressable
@@ -66,18 +74,20 @@ function MovieCard({
           priority: 'intent',
         })
       }
-      style={[styles.wrapper, { width: dimensions.width }]}
+      style={({ pressed }) => [
+        styles.wrapper,
+        { width: resolvedWidth },
+        pressed && styles.wrapperPressed,
+      ]}
     >
-      <Image
-        accessible={false}
-        cachePolicy="memory-disk"
+      <AppImage
         contentFit="cover"
         onDisplay={markFirstMediaDisplay}
-        priority="normal"
+        priority={imagePriority}
         recyclingKey={`${movie.media_type ?? 'movie'}:${movie.id}`}
-        source={{ uri: posterUri }}
-        style={[styles.poster, { height: dimensions.posterHeight }]}
-        transition={120}
+        uri={posterUri}
+        style={[styles.poster, { height: resolvedPosterHeight }]}
+        transition={theme.motion.fast}
       />
       <View style={styles.meta}>
         <Text numberOfLines={2} style={styles.title}>
@@ -104,32 +114,33 @@ export default memo(MovieCard);
 
 const styles = StyleSheet.create({
   wrapper: {
-    gap: 7,
+    gap: 5,
+  },
+  wrapperPressed: {
+    opacity: theme.interaction.pressedOpacity,
+    transform: [{ scale: theme.interaction.pressedScale }],
   },
   poster: {
     width: '100%',
-    borderRadius: 16,
+    borderRadius: theme.radius.poster,
     backgroundColor: theme.colors.surface,
   },
   meta: {
-    gap: 4,
+    gap: 3,
   },
   title: {
     color: theme.colors.text,
-    fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 16,
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
   },
   details: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   detailText: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '600',
+    ...theme.typography.roles.micro,
   },
   rating: {
     flexDirection: 'row',
@@ -138,8 +149,6 @@ const styles = StyleSheet.create({
   },
   ratingText: {
     color: theme.colors.star,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    ...theme.typography.roles.micro,
   },
 });

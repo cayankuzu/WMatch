@@ -70,7 +70,7 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 8,
+    gap: 6,
   },
   checkboxButton: {
     minWidth: theme.layout.controlMinUnified,
@@ -84,11 +84,11 @@ const styles = StyleSheet.create({
     color: theme.colors.textMuted,
     fontSize: theme.typography.body,
     lineHeight: 21,
-    fontWeight: '600',
+    fontFamily: theme.fonts.medium,
   },
   link: {
     color: theme.colors.primarySoft,
     textDecorationLine: 'underline',
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
 });

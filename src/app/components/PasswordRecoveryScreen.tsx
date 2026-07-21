@@ -59,7 +59,7 @@ export default function PasswordRecoveryScreen({
       <View style={styles.content}>
         <View style={styles.card}>
           <View style={styles.iconCircle}>
-            <MaterialCommunityIcons name="lock-reset" size={24} color={theme.colors.primarySoft} />
+            <MaterialCommunityIcons name="lock-reset" size={20} color={theme.colors.primarySoft} />
           </View>
           <Text style={styles.title}>{t('auth.recovery.title')}</Text>
           <Text style={styles.subtitle}>{t('auth.recovery.subtitle')}</Text>
@@ -114,9 +114,9 @@ export default function PasswordRecoveryScreen({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 10,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 8,
     justifyContent: 'space-between',
   },
   content: {
@@ -124,16 +124,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   card: {
-    borderRadius: 22,
+    borderRadius: theme.radius.personCard,
     backgroundColor: theme.alpha.panel92,
     borderWidth: 1,
     borderColor: theme.colors.border,
     padding: 16,
-    gap: 12,
+    gap: 10,
   },
   iconCircle: {
-    width: 56,
-    height: 56,
+    width: 46,
+    height: 46,
     borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.primarySurface,
     alignItems: 'center',
@@ -143,7 +143,7 @@ const styles = StyleSheet.create({
   title: {
     color: theme.colors.text,
     fontSize: theme.typography.title,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
     textAlign: 'center',
   },
   subtitle: {
@@ -155,6 +155,6 @@ const styles = StyleSheet.create({
   error: {
     color: theme.colors.dangerText,
     fontSize: theme.typography.body,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
 });

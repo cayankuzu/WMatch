@@ -8,9 +8,54 @@ const PUBLIC_URL_PREFIX = `${SUPABASE_URL}/storage/v1/object/public/${PROFILE_PH
 const SIGNED_URL_PREFIX = `${SUPABASE_URL}/storage/v1/object/sign/${PROFILE_PHOTOS_BUCKET}/`;
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const MAX_UPLOAD_CONCURRENCY = 2;
+const MAX_UPLOAD_ATTEMPTS = 3;
 const PROFILE_PHOTO_RESIZE_WIDTH = 1200;
 const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const BASE64_LOOKUP = new Uint8Array(256);
+
+export interface ProfilePhotoUploadProgress {
+  completed: number;
+  total: number;
+  progress: number;
+  phase: 'preparing' | 'uploading' | 'finalizing';
+}
+
+export class ProfilePhotoUploadCancelledError extends Error {
+  constructor() {
+    super('Profil fotoğrafı yükleme işlemi iptal edildi.');
+    this.name = 'ProfilePhotoUploadCancelledError';
+  }
+}
+
+export function isProfilePhotoUploadCancelled(error: unknown) {
+  return error instanceof ProfilePhotoUploadCancelledError;
+}
+
+function throwIfUploadCancelled(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new ProfilePhotoUploadCancelledError();
+  }
+}
+
+function waitForUploadRetry(delayMs: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new ProfilePhotoUploadCancelledError());
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', handleAbort);
+      resolve();
+    }, delayMs);
+    const handleAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', handleAbort);
+      reject(new ProfilePhotoUploadCancelledError());
+    };
+    signal?.addEventListener('abort', handleAbort, { once: true });
+  });
+}
 
 for (let index = 0; index < BASE64_CHARS.length; index += 1) {
   BASE64_LOOKUP[BASE64_CHARS.charCodeAt(index)] = index;
@@ -187,7 +232,9 @@ async function normalizeLocalPhotoUri(uri: string) {
   return normalized.uri;
 }
 
-async function getUploadPayload(photo: string) {
+async function getUploadPayload(photo: string, signal?: AbortSignal) {
+  throwIfUploadCancelled(signal);
+
   if (isDataUri(photo)) {
     const parsed = parseDataUri(photo);
     if (!parsed) {
@@ -210,7 +257,8 @@ async function getUploadPayload(photo: string) {
   }
 
   const uploadUri = isLocalPhotoUri(photo) ? await normalizeLocalPhotoUri(photo) : photo;
-  const response = await fetch(uploadUri);
+  throwIfUploadCancelled(signal);
+  const response = await fetch(uploadUri, { signal });
 
   if (!response.ok) {
     throw new Error('Profil fotoğrafı cihazdan okunamadı. Fotoğrafı tekrar seçmeni öneririz.');
@@ -230,17 +278,42 @@ async function getUploadPayload(photo: string) {
   };
 }
 
-async function uploadProfilePhoto(userId: string, photo: string, index: number) {
-  const payload = await getUploadPayload(photo);
+async function uploadProfilePhoto(
+  userId: string,
+  photo: string,
+  index: number,
+  signal?: AbortSignal,
+) {
+  const payload = await getUploadPayload(photo, signal);
   const path = createStoragePath(userId, index, payload.extension);
+  let lastError: unknown;
 
-  const { error } = await supabase.storage.from(PROFILE_PHOTOS_BUCKET).upload(path, payload.bytes, {
-    contentType: payload.contentType,
-    upsert: false,
-  });
+  for (let attempt = 0; attempt < MAX_UPLOAD_ATTEMPTS; attempt += 1) {
+    throwIfUploadCancelled(signal);
+    const { error } = await supabase.storage.from(PROFILE_PHOTOS_BUCKET).upload(path, payload.bytes, {
+      contentType: payload.contentType,
+      upsert: false,
+    });
 
-  if (error) {
-    throw mapStorageError(error);
+    if (!error) {
+      lastError = null;
+      break;
+    }
+
+    lastError = error;
+    if (attempt < MAX_UPLOAD_ATTEMPTS - 1) {
+      const jitterMs = Math.round(Math.random() * 120);
+      await waitForUploadRetry(320 * (2 ** attempt) + jitterMs, signal);
+    }
+  }
+
+  if (lastError) {
+    throw mapStorageError(lastError);
+  }
+
+  if (signal?.aborted) {
+    await deleteManagedPhotosByPaths([path]);
+    throw new ProfilePhotoUploadCancelledError();
   }
 
   const { data } = supabase.storage.from(PROFILE_PHOTOS_BUCKET).getPublicUrl(path);
@@ -288,19 +361,32 @@ export async function persistProfilePhotos({
   photos,
   previousPhotos = [],
   cleanupRemoved = true,
+  onProgress,
+  signal,
 }: {
   userId: string;
   photos: string[];
   previousPhotos?: string[];
   cleanupRemoved?: boolean;
+  onProgress?: (progress: ProfilePhotoUploadProgress) => void;
+  signal?: AbortSignal;
 }) {
+  throwIfUploadCancelled(signal);
   const normalizedPhotos = photos.map((photo) => photo.trim()).filter((photo) => photo.length > 0);
   const nextPhotos = new Array<string>(normalizedPhotos.length);
+  const uploadedPhotos: string[] = [];
+  const uploadTotal = normalizedPhotos.filter((photo) => !isRemotePhotoUrl(photo)).length;
+  let uploadCompleted = 0;
   let cursor = 0;
+  let firstError: unknown;
+
+  if (uploadTotal > 0) {
+    onProgress?.({ completed: 0, total: uploadTotal, progress: 0, phase: 'preparing' });
+  }
 
   await Promise.all(
     Array.from({ length: Math.min(MAX_UPLOAD_CONCURRENCY, normalizedPhotos.length) }, async () => {
-      while (cursor < normalizedPhotos.length) {
+      while (cursor < normalizedPhotos.length && !firstError) {
         const index = cursor;
         cursor += 1;
         const photo = normalizedPhotos[index];
@@ -310,10 +396,41 @@ export async function persistProfilePhotos({
           continue;
         }
 
-        nextPhotos[index] = await uploadProfilePhoto(userId, photo, index);
+        try {
+          nextPhotos[index] = await uploadProfilePhoto(userId, photo, index, signal);
+          uploadedPhotos.push(nextPhotos[index]);
+          uploadCompleted += 1;
+          onProgress?.({
+            completed: uploadCompleted,
+            total: uploadTotal,
+            progress: uploadCompleted / uploadTotal,
+            phase: 'uploading',
+          });
+        } catch (error) {
+          firstError ??= error;
+        }
       }
     }),
   );
+
+  try {
+    if (firstError) {
+      throw firstError;
+    }
+    throwIfUploadCancelled(signal);
+  } catch (error) {
+    await cleanupManagedProfilePhotos(uploadedPhotos);
+    throw error;
+  }
+
+  if (uploadTotal > 0) {
+    onProgress?.({
+      completed: uploadTotal,
+      total: uploadTotal,
+      progress: 1,
+      phase: 'finalizing',
+    });
+  }
 
   if (cleanupRemoved) {
     await deleteRemovedManagedPhotos(previousPhotos, nextPhotos);

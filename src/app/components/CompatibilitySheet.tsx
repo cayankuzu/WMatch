@@ -55,7 +55,7 @@ export default function CompatibilitySheet({
       <View accessibilityViewIsModal importantForAccessibility="yes" style={styles.backdrop}>
         <Pressable accessible={false} onPress={onClose} style={StyleSheet.absoluteFill} />
 
-        <SafeAreaView edges={['bottom']} style={styles.sheet}>
+        <SafeAreaView edges={['right', 'bottom', 'left']} style={styles.sheet}>
           <View style={styles.handle} />
 
           <Pressable accessibilityRole="button" accessibilityLabel={t('common.close')} onPress={onClose} style={styles.closeButton}>
@@ -138,12 +138,12 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 26,
     borderTopRightRadius: 26,
     backgroundColor: theme.colors.backgroundElevated,
-    paddingTop: 10,
+    paddingTop: 8,
   },
   handle: {
     width: 42,
     height: 4,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignSelf: 'center',
     backgroundColor: theme.colors.borderStrong,
     marginBottom: 8,
@@ -154,57 +154,57 @@ const styles = StyleSheet.create({
     right: 16,
     minWidth: theme.layout.controlMinUnified,
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
   },
   header: {
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    gap: 6,
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    gap: 5,
   },
   kicker: {
     color: theme.colors.textMuted,
     fontSize: 12,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   scoreRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
   },
   progressTrack: {
     flex: 1,
     height: 7,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     overflow: 'hidden',
     backgroundColor: theme.colors.surfaceStrong,
   },
   progressFill: {
     height: '100%',
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
   },
   score: {
-    fontSize: 24,
-    fontWeight: '900',
+    fontSize: 20,
+    fontFamily: theme.fonts.extraBold,
   },
   controls: {
-    paddingHorizontal: 16,
-    gap: 8,
+    paddingHorizontal: 12,
+    gap: 6,
   },
   content: {
     padding: 16,
-    paddingBottom: 22,
+    paddingBottom: 16,
   },
   grid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
   },
   empty: {
     color: theme.colors.textMuted,
-    fontSize: 12,
+    ...theme.typography.roles.body,
     textAlign: 'center',
-    paddingVertical: 28,
+    paddingVertical: 20,
   },
 });

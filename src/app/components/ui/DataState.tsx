@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { theme } from '../../../shared/theme';
 import AppButton from './AppButton';
 import AppText from './AppText';
+import DelayedActivityIndicator from './DelayedActivityIndicator';
 
 export type DataVisualState =
   | 'initial-loading'
@@ -60,18 +61,18 @@ export default function DataState({
     >
       <View style={styles.iconShell}>
         {isLoading ? (
-          <ActivityIndicator color={theme.colors.accentText} />
+          <DelayedActivityIndicator active color={theme.colors.accentText} />
         ) : (
           <MaterialCommunityIcons
             accessible={false}
             name={resolvedIcon}
-            size={24}
+            size={theme.icon.lg}
             color={state.includes('error') ? theme.colors.dangerText : theme.colors.accentText}
           />
         )}
       </View>
       {title ? (
-        <AppText align="center" variant="sectionTitle" weight="900">
+        <AppText align="center" variant="sectionTitle" weight="800">
           {title}
         </AppText>
       ) : null}
@@ -89,15 +90,15 @@ export default function DataState({
 
 const styles = StyleSheet.create({
   container: {
-    minHeight: 180,
+    minHeight: 120,
     alignItems: 'center',
     justifyContent: 'center',
     gap: theme.spacing.md,
     padding: theme.spacing.xl,
   },
   iconShell: {
-    width: 56,
-    height: 56,
+    width: 44,
+    height: 44,
     borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',

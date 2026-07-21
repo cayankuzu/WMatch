@@ -1,21 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useLocalization } from '../../context/LocalizationContext';
 import type { Movie } from '../../services/tmdb';
 import { tmdbService } from '../../services/tmdb';
 import { SCREEN_SIDE_SPACING } from '../../shared/constants';
 import { theme } from '../../shared/theme';
-import { resolveDeviceEdgeInset } from '../../shared/utils/safeArea';
 import { getServerNowMs } from '../../shared/utils/serverTime';
+import { triggerHaptic } from '../../services/haptics';
+import AppImage from './ui/AppImage';
 
 const WATCH_SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
 
 interface CurrentMovieBarProps {
   movie: Movie | null;
+  showEmptyState?: boolean;
   isActive: boolean;
   watchingUpdatedAt?: string | null;
   onMovieClick?: () => void;
@@ -34,6 +34,7 @@ function formatDuration(ms: number) {
 
 export default function CurrentMovieBar({
   movie,
+  showEmptyState = true,
   isActive,
   watchingUpdatedAt = null,
   onMovieClick,
@@ -41,9 +42,7 @@ export default function CurrentMovieBar({
   onResumeWatching,
 }: CurrentMovieBarProps) {
   const { t } = useLocalization();
-  const insets = useSafeAreaInsets();
   const [tick, setTick] = useState(getServerNowMs());
-  const safeTopInset = resolveDeviceEdgeInset(insets.top);
 
   useEffect(() => {
     const intervalId = setInterval(() => {
@@ -67,9 +66,13 @@ export default function CurrentMovieBar({
     return Math.max(0, startedAt + WATCH_SESSION_DURATION_MS - tick);
   }, [isActive, tick, watchingUpdatedAt]);
 
+  if (!movie && !showEmptyState) {
+    return null;
+  }
+
   if (!movie) {
     return (
-      <View style={[styles.safeArea, { paddingTop: safeTopInset }]}>
+      <View style={styles.safeArea}>
         <View style={styles.emptyState}>
           <View style={styles.emptyIcon}>
             <MaterialCommunityIcons name="movie-open-outline" size={16} color={theme.colors.primarySoft} />
@@ -89,17 +92,20 @@ export default function CurrentMovieBar({
   const countdownLabel = isActive ? formatDuration(remainingWatchMs) : t('watch.current.paused');
 
   return (
-    <View style={[styles.safeArea, { paddingTop: safeTopInset }]}>
+    <View style={styles.safeArea}>
       <View style={styles.container}>
-        <Pressable accessible={false} onPress={onMovieClick} style={styles.posterButton}>
-          <Image
-            accessible={false}
-            cachePolicy="memory-disk"
+        <Pressable
+          accessible={false}
+          onPress={onMovieClick}
+          style={({ pressed }) => [styles.posterButton, pressed && styles.pressed]}
+        >
+          <AppImage
             contentFit="cover"
+            priority="high"
             recyclingKey={`${movie.media_type ?? 'movie'}:${movie.id}`}
-            source={{ uri: tmdbService.getPosterUrl(movie.poster_path, 'w200') }}
+            uri={tmdbService.getPosterUrl(movie.poster_path, 'w200')}
             style={styles.poster}
-            transition={120}
+            transition={theme.motion.fast}
           />
         </Pressable>
 
@@ -115,7 +121,7 @@ export default function CurrentMovieBar({
             <Text style={styles.statusLabel}>{isActive ? t('watch.current.active') : t('watch.current.paused')}</Text>
           </View>
 
-          <Text numberOfLines={2} style={styles.title}>
+          <Text numberOfLines={1} style={styles.title}>
             {title}
           </Text>
 
@@ -131,7 +137,7 @@ export default function CurrentMovieBar({
               <MaterialCommunityIcons
                 name={isActive ? 'timer-outline' : 'pause-circle-outline'}
                 size={12}
-                color={isActive ? theme.colors.primarySoft : theme.colors.warning}
+                color={isActive ? theme.colors.primarySoft : theme.colors.textMuted}
               />
               <Text style={[styles.timerText, !isActive && styles.timerTextPaused]}>{countdownLabel}</Text>
             </View>
@@ -143,11 +149,18 @@ export default function CurrentMovieBar({
           accessibilityLabel={isActive ? t('watch.current.pause') : t('watch.current.resume')}
           accessibilityState={{ disabled: !(isActive ? onPauseWatching : onResumeWatching) }}
           disabled={!(isActive ? onPauseWatching : onResumeWatching)}
-          onPress={isActive ? onPauseWatching : onResumeWatching}
-          style={[styles.action, !isActive && styles.resumeAction]}
+          onPress={() => {
+            triggerHaptic('selection');
+            (isActive ? onPauseWatching : onResumeWatching)?.();
+          }}
+          style={({ pressed }) => [
+            styles.action,
+            !isActive && styles.resumeAction,
+            pressed && styles.pressed,
+          ]}
         >
           <MaterialCommunityIcons
-            name={isActive ? 'stop-circle-outline' : 'play-circle-outline'}
+            name={isActive ? 'pause-circle-outline' : 'play-circle-outline'}
             size={15}
             color={theme.colors.white}
           />
@@ -165,24 +178,25 @@ const styles = StyleSheet.create({
     borderBottomColor: theme.colors.border,
   },
   container: {
+    minHeight: 50,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
+    paddingHorizontal: SCREEN_SIDE_SPACING,
+    paddingVertical: 6,
+  },
+  emptyState: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     paddingHorizontal: SCREEN_SIDE_SPACING,
     paddingVertical: 8,
   },
-  emptyState: {
-    minHeight: 72,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: SCREEN_SIDE_SPACING,
-    paddingVertical: 12,
-  },
   emptyIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 999,
+    width: 30,
+    height: 30,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySurface,
@@ -193,23 +207,21 @@ const styles = StyleSheet.create({
   },
   emptyTitle: {
     color: theme.colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    ...theme.typography.roles.cardTitle,
   },
   emptyDescription: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
+    ...theme.typography.roles.meta,
   },
   posterButton: {
-    borderRadius: 14,
+    borderRadius: theme.radius.control,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
   poster: {
-    width: 58,
-    height: 78,
+    width: 36,
+    height: 48,
     backgroundColor: theme.colors.surface,
   },
   info: {
@@ -224,36 +236,30 @@ const styles = StyleSheet.create({
   statusDot: {
     width: 7,
     height: 7,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.primarySoft,
   },
   statusDotPaused: {
-    backgroundColor: theme.colors.warning,
+    backgroundColor: theme.colors.textSoft,
   },
   statusLabel: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.micro.fontSize,
-    lineHeight: theme.typography.roles.micro.lineHeight,
-    fontWeight: '800',
+    ...theme.typography.roles.micro,
     textTransform: 'uppercase',
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.typography.roles.label.fontSize,
-    lineHeight: theme.typography.roles.label.lineHeight,
-    fontWeight: '800',
+    ...theme.typography.roles.cardTitle,
   },
   meta: {
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
-    gap: 7,
+    gap: 5,
   },
   metaText: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
   },
   ratingRow: {
     flexDirection: 'row',
@@ -262,49 +268,48 @@ const styles = StyleSheet.create({
   },
   ratingText: {
     color: theme.colors.star,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    ...theme.typography.roles.meta,
   },
   timerChip: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
   },
   timerChipPaused: {
-    backgroundColor: theme.colors.warningSurface,
+    backgroundColor: theme.colors.surfaceMuted,
   },
   timerText: {
     color: theme.colors.primarySoft,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    ...theme.typography.roles.micro,
+    fontVariant: ['tabular-nums'],
   },
   timerTextPaused: {
-    color: theme.colors.warning,
+    color: theme.colors.textMuted,
   },
   action: {
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    backgroundColor: theme.colors.primarySoft,
+    borderRadius: theme.radius.control,
+    paddingHorizontal: 10,
+    backgroundColor: theme.colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
   },
   resumeAction: {
-    backgroundColor: theme.colors.warning,
+    backgroundColor: theme.colors.primary,
   },
   actionLabel: {
     color: theme.colors.white,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '900',
+    ...theme.typography.roles.micro,
+  },
+  pressed: {
+    opacity: theme.interaction.pressedOpacity,
+    transform: [{ scale: theme.interaction.pressedScale }],
   },
 });

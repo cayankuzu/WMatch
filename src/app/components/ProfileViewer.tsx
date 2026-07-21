@@ -32,6 +32,8 @@ interface ProfileViewerProps {
   refreshing?: boolean;
   onRefresh?: () => void;
   bottomInset?: number;
+  headerTitle?: string;
+  headerSubtitle?: string;
 }
 
 export default function ProfileViewer({
@@ -52,6 +54,8 @@ export default function ProfileViewer({
   refreshing = false,
   onRefresh,
   bottomInset = 0,
+  headerTitle,
+  headerSubtitle,
 }: ProfileViewerProps) {
   const { t } = useLocalization();
   const { user: currentUser } = useAuth();
@@ -308,6 +312,8 @@ export default function ProfileViewer({
         onSwipeLeft={onSwipeLeft}
         onSwipeRight={onSwipeRight}
         bottomInset={bottomInset}
+        headerTitle={headerTitle}
+        headerSubtitle={headerSubtitle}
       />
 
       {compatibility ? (
@@ -338,19 +344,19 @@ export default function ProfileViewer({
 
 const styles = StyleSheet.create({
   beforeCompatibilitySections: {
-    gap: 10,
+    gap: 8,
   },
   mediaFailureCard: {
     minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
     borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.danger,
     backgroundColor: theme.colors.dangerSurface,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   mediaFailureCopy: {
     flex: 1,
@@ -358,12 +364,12 @@ const styles = StyleSheet.create({
   mediaFailureTitle: {
     color: theme.colors.dangerText,
     fontSize: theme.typography.caption,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   mediaFailureAction: {
     color: theme.colors.text,
     fontSize: theme.typography.caption,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   matchContextCard: {
     borderRadius: theme.radius.lg,
@@ -371,40 +377,40 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
     padding: 14,
-    gap: 10,
+    gap: 8,
   },
   matchContextHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 8,
   },
   matchContextLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   matchContextMeta: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
   },
   matchContextLabel: {
     color: theme.colors.text,
     fontSize: theme.typography.body,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   matchContextScore: {
-    fontSize: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    fontFamily: theme.fonts.extraBold,
   },
   matchContextBody: {
-    gap: 8,
+    gap: 6,
   },
   matchContextSummary: {
     color: theme.colors.text,
     fontSize: theme.typography.caption,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
     lineHeight: 18,
   },
   matchContextHint: {
@@ -414,11 +420,11 @@ const styles = StyleSheet.create({
   },
   matchContextTrack: {
     height: 8,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     overflow: 'hidden',
   },
   matchContextFill: {
     height: '100%',
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
   },
 });

@@ -5,6 +5,7 @@ import {
   Alert,
   Linking,
   Pressable,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -142,7 +143,7 @@ export default function SettingsModal({
     <AccessibleModal transparent visible animationType="slide" onRequestClose={handleClose}>
       <View accessibilityViewIsModal importantForAccessibility="yes" style={styles.backdrop}>
         <Pressable accessible={false} onPress={handleClose} style={StyleSheet.absoluteFill} />
-        <SafeAreaView edges={['bottom']} style={styles.sheet}>
+        <SafeAreaView edges={['right', 'bottom', 'left']} style={styles.sheet}>
           <View style={styles.handle} />
           <View style={styles.header}>
             <View style={styles.headerSide}>
@@ -163,60 +164,39 @@ export default function SettingsModal({
           </View>
 
           {activeScreen === 'root' ? (
-            <View style={styles.list}>
-              <SettingRow
-                icon="account-edit-outline"
-                title={t('settings.row.editProfile.title')}
-                description={t('settings.row.editProfile.description')}
-                onPress={onEditProfile}
-              />
-              <SettingRow
-                icon="tune-variant"
-                title={t('settings.row.filters.title')}
-                description={t('settings.row.filters.description')}
-                onPress={() => {
-                  handleClose();
-                  onOpenFilters();
-                }}
-              />
-              <SettingRow
-                icon="account-cog-outline"
-                title={t('settings.row.profile.title')}
-                description={t('settings.row.profile.description')}
-                onPress={() => setActiveScreen('profile')}
-              />
-              <SettingRow
-                icon="key-outline"
-                title={t('settings.row.password.title')}
-                description={t('settings.row.password.description')}
-                onPress={() => setShowResetPassword(true)}
-              />
-              <SettingRow
-                icon="block-helper"
-                title={t('settings.row.blocked.title')}
-                description={t('settings.row.blocked.description')}
-                onPress={() => setShowBlockedUsers(true)}
-              />
-              <SettingRow
-                icon="information-outline"
-                title={t('settings.row.about.title')}
-                description={t('settings.row.about.description')}
-                onPress={() => setShowAboutCredits(true)}
-              />
-              <SettingRow
-                icon="logout"
-                title={t('settings.row.logout.title')}
-                description={t('settings.row.logout.description')}
-                onPress={confirmLogout}
-              />
-              <SettingRow
-                icon="trash-can-outline"
-                title={t('settings.row.delete.title')}
-                description={t('settings.row.delete.description')}
-                danger
-                onPress={confirmDelete}
-              />
-            </View>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.list}>
+              <View style={styles.group}>
+                <Text style={styles.groupTitle}>{t('settings.group.profile')}</Text>
+                <SettingRow icon="account-edit-outline" title={t('settings.row.editProfile.title')} description={t('settings.row.editProfile.description')} onPress={onEditProfile} />
+                <SettingRow icon="account-cog-outline" title={t('settings.row.profile.title')} description={t('settings.row.profile.description')} onPress={() => setActiveScreen('profile')} />
+              </View>
+
+              <View style={styles.group}>
+                <Text style={styles.groupTitle}>{t('settings.group.discovery')}</Text>
+                <SettingRow
+                  icon="tune-variant"
+                  title={t('settings.row.filters.title')}
+                  description={t('settings.row.filters.description')}
+                  onPress={() => {
+                    handleClose();
+                    onOpenFilters();
+                  }}
+                />
+              </View>
+
+              <View style={styles.group}>
+                <Text style={styles.groupTitle}>{t('settings.group.privacy')}</Text>
+                <SettingRow icon="key-outline" title={t('settings.row.password.title')} description={t('settings.row.password.description')} onPress={() => setShowResetPassword(true)} />
+                <SettingRow icon="block-helper" title={t('settings.row.blocked.title')} description={t('settings.row.blocked.description')} onPress={() => setShowBlockedUsers(true)} />
+                <SettingRow icon="information-outline" title={t('settings.row.about.title')} description={t('settings.row.about.description')} onPress={() => setShowAboutCredits(true)} />
+              </View>
+
+              <View style={[styles.group, styles.accountGroup]}>
+                <Text style={styles.groupTitle}>{t('settings.group.account')}</Text>
+                <SettingRow icon="logout" title={t('settings.row.logout.title')} description={t('settings.row.logout.description')} onPress={confirmLogout} />
+                <SettingRow icon="trash-can-outline" title={t('settings.row.delete.title')} description={t('settings.row.delete.description')} danger onPress={confirmDelete} />
+              </View>
+            </ScrollView>
           ) : (
             <View style={styles.profilePanel}>
               <View style={styles.profileCard}>
@@ -377,25 +357,26 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.scrim,
   },
   sheet: {
-    borderTopLeftRadius: 26,
-    borderTopRightRadius: 26,
+    maxHeight: '92%',
+    borderTopLeftRadius: theme.radius.modal,
+    borderTopRightRadius: theme.radius.modal,
     backgroundColor: theme.colors.backgroundElevated,
-    paddingTop: 10,
+    paddingTop: 8,
   },
   handle: {
     width: 42,
     height: 4,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignSelf: 'center',
     backgroundColor: theme.colors.borderStrong,
     marginBottom: 8,
   },
   header: {
-    minHeight: 52,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
@@ -407,30 +388,44 @@ const styles = StyleSheet.create({
   headerButton: {
     minWidth: theme.layout.controlMinUnified,
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surface,
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.typography.section,
-    fontWeight: '900',
+    ...theme.typography.roles.sectionTitle,
   },
   list: {
     padding: 14,
-    gap: 8,
+    gap: 14,
+  },
+  group: {
+    gap: 6,
+  },
+  accountGroup: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.borderSubtle,
+    paddingTop: 12,
+  },
+  groupTitle: {
+    color: theme.colors.textSoft,
+    ...theme.typography.roles.micro,
+    paddingHorizontal: 4,
+    letterSpacing: 0.7,
+    textTransform: 'uppercase',
   },
   row: {
-    minHeight: 60,
+    minHeight: 50,
     borderRadius: 16,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.border,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 12,
+    gap: 8,
+    paddingHorizontal: 10,
   },
   rowPressed: {
     opacity: 0.85,
@@ -438,7 +433,7 @@ const styles = StyleSheet.create({
   iconWrap: {
     width: 38,
     height: 38,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySurface,
@@ -452,23 +447,20 @@ const styles = StyleSheet.create({
   },
   rowTitle: {
     color: theme.colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    ...theme.typography.roles.cardTitle,
   },
   rowTitleDanger: {
     color: theme.colors.dangerText,
   },
   rowDescription: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '600',
+    ...theme.typography.roles.meta,
   },
   profilePanel: {
     padding: 14,
   },
   profileCard: {
-    borderRadius: 18,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
@@ -477,12 +469,12 @@ const styles = StyleSheet.create({
   profileRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
   },
   profileIconWrap: {
     width: 40,
     height: 40,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySurface,
@@ -493,8 +485,8 @@ const styles = StyleSheet.create({
   },
   profileTitle: {
     color: theme.colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 12,
+    fontFamily: theme.fonts.bold,
   },
   profileDescription: {
     color: theme.colors.textMuted,
@@ -502,27 +494,27 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.roles.meta.lineHeight,
   },
   aboutContent: {
-    gap: 16,
+    gap: 12,
   },
   aboutSection: {
-    gap: 10,
+    gap: 8,
   },
   aboutSectionDivider: {
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
-    paddingTop: 16,
+    paddingTop: 12,
   },
   aboutHeading: {
     color: theme.colors.text,
     fontSize: theme.typography.roles.label.fontSize,
     lineHeight: theme.typography.roles.label.lineHeight,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   aboutText: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.roles.body.fontSize,
     lineHeight: theme.typography.roles.body.lineHeight,
-    fontWeight: '600',
+    fontFamily: theme.fonts.medium,
   },
   aboutLinkRow: {
     minHeight: theme.layout.controlMinUnified,
@@ -533,19 +525,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
-    paddingHorizontal: 12,
+    gap: 10,
+    paddingHorizontal: 10,
   },
   aboutLinkText: {
     flex: 1,
     color: theme.colors.primarySoft,
     fontSize: theme.typography.roles.label.fontSize,
     lineHeight: theme.typography.roles.label.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   divider: {
     height: 1,
     backgroundColor: theme.colors.border,
-    marginVertical: 14,
+    marginVertical: 10,
   },
 });

@@ -1,14 +1,16 @@
 import { useEffect } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { BackHandler, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useLocalization } from '../../context/LocalizationContext';
 import { MATCH_LIKE_REWARD_BONUS } from '../../shared/constants';
 import type { ApiUser } from '../../shared/types';
 import { theme } from '../../shared/theme';
+import { triggerHaptic } from '../../services/haptics';
+import AppImage from './ui/AppImage';
+import AccessibleModal from './ui/AccessibleModal';
 
 interface MatchSuccessModalProps {
   visible: boolean;
@@ -26,17 +28,17 @@ function MatchAvatar({ user, offset }: { user: ApiUser; offset: number }) {
   return (
     <View style={[styles.avatarWrap, { marginLeft: offset }]}>
       {photo ? (
-        <Image
-          cachePolicy="memory-disk"
+        <AppImage
           contentFit="cover"
+          fallbackIcon="account-outline"
           recyclingKey={photo}
-          source={{ uri: photo }}
+          uri={photo}
           style={styles.avatar}
-          transition={120}
+          transition={theme.motion.fast}
         />
       ) : (
         <View style={[styles.avatar, styles.avatarFallback]}>
-          <MaterialCommunityIcons name="account-outline" size={30} color={theme.colors.primarySoft} />
+          <MaterialCommunityIcons name="account-outline" size={24} color={theme.colors.primarySoft} />
         </View>
       )}
     </View>
@@ -55,26 +57,20 @@ export default function MatchSuccessModal({
   const { t } = useLocalization();
 
   useEffect(() => {
-    if (!visible) {
-      return undefined;
+    if (visible) {
+      triggerHaptic('success');
     }
-
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      onClose();
-      return true;
-    });
-
-    return () => subscription.remove();
-  }, [onClose, visible]);
+  }, [visible]);
 
   if (!visible || !user || !currentUser) {
     return null;
   }
 
   return (
-    <View style={styles.backdrop}>
-      <Pressable onPress={onClose} style={StyleSheet.absoluteFill} />
-      <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
+    <AccessibleModal transparent visible animationType="fade" onRequestClose={onClose}>
+      <View style={styles.backdrop}>
+        <Pressable accessibilityRole="button" accessibilityLabel={t('common.close')} onPress={onClose} style={StyleSheet.absoluteFill} />
+        <SafeAreaView edges={['top', 'right', 'bottom', 'left']} style={styles.safeArea}>
         <LinearGradient
           colors={theme.gradients.matchSuccess}
           start={{ x: 0, y: 0 }}
@@ -113,7 +109,10 @@ export default function MatchSuccessModal({
           </View>
 
           <View style={styles.buttonRow}>
-            <Pressable onPress={onClose} style={[styles.button, styles.secondaryButton]}>
+            <Pressable
+              onPress={onClose}
+              style={({ pressed }) => [styles.button, styles.secondaryButton, pressed && styles.buttonPressed]}
+            >
               <Text style={styles.secondaryButtonText}>{t('match.modal.continue')}</Text>
             </Pressable>
             {onOpenMessages ? (
@@ -122,15 +121,16 @@ export default function MatchSuccessModal({
                   onClose();
                   onOpenMessages();
                 }}
-                style={[styles.button, styles.primaryButton]}
+                style={({ pressed }) => [styles.button, styles.primaryButton, pressed && styles.buttonPressed]}
               >
                 <Text style={styles.primaryButtonText}>{t('match.modal.messages')}</Text>
               </Pressable>
             ) : null}
           </View>
         </LinearGradient>
-      </SafeAreaView>
-    </View>
+        </SafeAreaView>
+      </View>
+    </AccessibleModal>
   );
 }
 
@@ -145,45 +145,45 @@ const styles = StyleSheet.create({
     elevation: 1000,
     backgroundColor: theme.alpha.matchScrim,
     justifyContent: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
   },
   safeArea: {
     justifyContent: 'center',
   },
   card: {
-    borderRadius: 30,
+    borderRadius: theme.radius.modal,
     borderWidth: 1,
     borderColor: theme.alpha.white12,
-    paddingHorizontal: 22,
-    paddingVertical: 26,
-    gap: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 20,
+    gap: 16,
     overflow: 'hidden',
   },
   badge: {
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    gap: 5,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     backgroundColor: theme.alpha.white14,
   },
   badgeText: {
     color: theme.colors.white,
     fontSize: 12,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   avatars: {
-    minHeight: 112,
+    minHeight: 92,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarWrap: {
-    width: 96,
-    height: 96,
-    borderRadius: 999,
+    width: 80,
+    height: 80,
+    borderRadius: theme.radius.pill,
     borderWidth: 3,
     borderColor: theme.alpha.white22,
     overflow: 'hidden',
@@ -203,7 +203,7 @@ const styles = StyleSheet.create({
     zIndex: 2,
     width: 44,
     height: 44,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySoft,
@@ -212,43 +212,41 @@ const styles = StyleSheet.create({
   },
   copy: {
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   title: {
     color: theme.colors.white,
-    fontSize: 30,
-    fontWeight: '900',
+    ...theme.typography.roles.display,
   },
   subtitle: {
     color: theme.alpha.white82,
-    fontSize: 13,
-    lineHeight: 20,
+    ...theme.typography.roles.body,
     textAlign: 'center',
   },
   scoreCard: {
     borderRadius: 20,
-    paddingHorizontal: 18,
-    paddingVertical: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     backgroundColor: theme.alpha.white10,
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
   },
   scoreLabel: {
     color: theme.alpha.white72,
     fontSize: 12,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   scoreValue: {
     color: theme.colors.white,
-    fontSize: 28,
-    fontWeight: '900',
+    fontSize: 24,
+    fontFamily: theme.fonts.extraBold,
   },
   rewardCard: {
     flexDirection: 'row',
-    gap: 10,
-    borderRadius: 18,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    gap: 8,
+    borderRadius: theme.radius.card,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     backgroundColor: theme.alpha.white08,
     borderWidth: 1,
     borderColor: theme.alpha.white12,
@@ -259,23 +257,22 @@ const styles = StyleSheet.create({
   },
   rewardTitle: {
     color: theme.colors.white,
-    fontSize: 13,
-    fontWeight: '900',
+    fontSize: 12,
+    fontFamily: theme.fonts.extraBold,
   },
   rewardDescription: {
     color: theme.alpha.white76,
-    fontSize: 12,
-    lineHeight: 18,
+    ...theme.typography.roles.body,
   },
   buttonRow: {
-    gap: 10,
+    gap: 8,
   },
   button: {
     minHeight: 48,
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
   },
   primaryButton: {
     backgroundColor: theme.colors.white,
@@ -287,12 +284,16 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: theme.colors.black,
-    fontSize: 13,
-    fontWeight: '900',
+    fontSize: 12,
+    fontFamily: theme.fonts.extraBold,
   },
   secondaryButtonText: {
     color: theme.colors.white,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 12,
+    fontFamily: theme.fonts.bold,
+  },
+  buttonPressed: {
+    opacity: theme.interaction.pressedOpacity,
+    transform: [{ scale: theme.interaction.pressedScale }],
   },
 });

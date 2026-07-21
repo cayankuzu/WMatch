@@ -45,13 +45,13 @@ const styles = StyleSheet.create({
     color: theme.colors.successText,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   dots: {
     minWidth: 14,
     color: theme.colors.successText,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
 });

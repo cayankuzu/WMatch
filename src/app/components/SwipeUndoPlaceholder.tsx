@@ -130,12 +130,12 @@ export default function SwipeUndoPlaceholder({
               },
             ]}
           >
-            <MaterialCommunityIcons name="undo-variant" size={34} color={theme.colors.white} />
+            <MaterialCommunityIcons name="undo-variant" size={28} color={theme.colors.white} />
             <Text style={styles.undoCueText}>{t('common.back')}</Text>
           </Animated.View>
 
           <View style={styles.downArrow}>
-            <MaterialCommunityIcons name="arrow-down-thin-circle-outline" size={44} color={theme.colors.white} />
+            <MaterialCommunityIcons name="arrow-down-thin-circle-outline" size={36} color={theme.colors.white} />
           </View>
 
           <View accessible={false} pointerEvents="none" style={[styles.sideButton, styles.sideButtonLeft]}>
@@ -188,19 +188,19 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-start',
     paddingHorizontal: SCREEN_SIDE_SPACING,
-    paddingTop: 12,
+    paddingTop: 10,
   },
   swipeTopBar: {
     marginBottom: 10,
-    minHeight: 52,
-    borderRadius: 18,
+    minHeight: 44,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.glass,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
   },
   swipeTopBarSpacer: {
     width: theme.layout.controlMinUnified,
@@ -209,7 +209,7 @@ const styles = StyleSheet.create({
   swipeTopBarButton: {
     minWidth: theme.layout.controlMinUnified,
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surface,
@@ -219,7 +219,7 @@ const styles = StyleSheet.create({
   card: {
     flex: 1,
     minHeight: 0,
-    borderRadius: 26,
+    borderRadius: theme.radius.modal,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
@@ -227,7 +227,7 @@ const styles = StyleSheet.create({
   },
   hero: {
     flex: 1,
-    minHeight: 260,
+    minHeight: 220,
     maxHeight: 350,
     backgroundColor: theme.colors.surface,
     justifyContent: 'space-between',
@@ -235,12 +235,12 @@ const styles = StyleSheet.create({
   },
   photoProgress: {
     flexDirection: 'row',
-    gap: 6,
+    gap: 5,
   },
   photoProgressItem: {
     flex: 1,
     height: 4,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.alpha.white22,
   },
   photoProgressItemActive: {
@@ -250,25 +250,25 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    borderRadius: 999,
+    gap: 5,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.scrim,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
   },
   emptyBadgeText: {
     color: theme.colors.white,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   undoCue: {
     position: 'absolute',
     top: 110,
     alignSelf: 'center',
-    width: 92,
-    height: 92,
-    borderRadius: 999,
+    width: 76,
+    height: 76,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
@@ -279,7 +279,7 @@ const styles = StyleSheet.create({
   undoCueText: {
     color: theme.colors.white,
     fontSize: 12,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   downArrow: {
     flex: 1,
@@ -291,7 +291,7 @@ const styles = StyleSheet.create({
     top: '46%',
     minWidth: theme.layout.controlMinUnified,
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.scrim,
@@ -306,40 +306,40 @@ const styles = StyleSheet.create({
   },
   body: {
     flexShrink: 1,
-    gap: 12,
-    paddingHorizontal: 18,
-    paddingTop: 18,
-    paddingBottom: 20,
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 16,
   },
   title: {
     color: theme.colors.text,
-    fontSize: 20,
-    fontWeight: '900',
+    fontSize: 18,
+    fontFamily: theme.fonts.extraBold,
   },
   description: {
     color: theme.colors.textMuted,
-    fontSize: 13,
+    fontSize: 12,
     lineHeight: 20,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   metaRow: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
   },
   metaPill: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
     borderRadius: 14,
     backgroundColor: theme.colors.surface,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   metaText: {
     color: theme.colors.text,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
 });

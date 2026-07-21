@@ -78,7 +78,9 @@ export default function Screen({
           styles.safeArea,
           {
             paddingTop: safeTopInset,
+            paddingRight: Math.max(0, insets.right),
             paddingBottom: safeBottomInset,
+            paddingLeft: Math.max(0, insets.left),
           },
         ]}
       >

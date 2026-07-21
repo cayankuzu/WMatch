@@ -13,9 +13,9 @@ export default function AuthWordmark({
   const isSplash = variant === 'splash';
   const { width, height } = useWindowDimensions();
   const logoAspectRatio = 120 / 196;
-  const targetWidth = Math.min(width - 48, isSplash ? 120 : 88);
+  const targetWidth = Math.min(width - 40, isSplash ? 100 : 74);
   const targetHeight = targetWidth / logoAspectRatio;
-  const maxLogoHeight = isSplash ? height * 0.32 : height * 0.24;
+  const maxLogoHeight = isSplash ? height * 0.26 : height * 0.2;
   const logoHeight = Math.min(targetHeight, maxLogoHeight);
   const logoWidth = logoHeight * logoAspectRatio;
 
@@ -46,17 +46,17 @@ const styles = StyleSheet.create({
   },
   wordmark: {
     color: theme.colors.text,
-    fontSize: 28,
-    fontWeight: '900',
+    fontSize: 24,
+    fontFamily: theme.fonts.extraBold,
     letterSpacing: 0,
   },
   wordmarkSplash: {
-    fontSize: 34,
+    fontSize: 28,
   },
   tagline: {
     color: theme.colors.textSoft,
     fontSize: theme.typography.body,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
     letterSpacing: 0,
   },
   taglineSplash: {

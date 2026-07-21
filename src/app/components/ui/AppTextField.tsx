@@ -147,6 +147,7 @@ export default function AppTextField({
             accessibilityLabel={rightIconAccessibilityLabel ?? label}
             accessibilityState={{ disabled: !editable }}
             disabled={!editable}
+            hitSlop={4}
             onPress={onRightIconPress}
             style={styles.rightIcon}
           >
@@ -169,7 +170,7 @@ export default function AppTextField({
 
 const styles = StyleSheet.create({
   wrapper: {
-    gap: 6,
+    gap: 4,
   },
   field: {
     minHeight: theme.layout.controlMinUnified,
@@ -179,8 +180,8 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    gap: 8,
+    paddingHorizontal: 10,
+    gap: 6,
   },
   fieldWithLabel: {
     position: 'relative',
@@ -197,7 +198,7 @@ const styles = StyleSheet.create({
   },
   multilineField: {
     alignItems: 'flex-start',
-    paddingVertical: 9,
+    paddingVertical: 6,
   },
   fieldDisabled: {
     backgroundColor: theme.colors.disabledSurface,
@@ -208,24 +209,24 @@ const styles = StyleSheet.create({
   },
   floatingLabel: {
     position: 'absolute',
-    left: 12,
-    right: 12,
+    left: 10,
+    right: 10,
     zIndex: 1,
     color: theme.colors.textSoft,
-    fontWeight: '800',
+    fontFamily: theme.fonts.semibold,
   },
   floatingLabelWithLeftIcon: {
-    left: 48,
+    left: 42,
   },
   floatingLabelRaised: {
     top: 5,
-    fontSize: theme.typography.caption,
-    lineHeight: 14,
+    fontSize: theme.typography.roles.micro.fontSize,
+    lineHeight: theme.typography.roles.micro.lineHeight,
   },
   floatingLabelResting: {
-    top: 15,
-    fontSize: theme.typography.body,
-    lineHeight: 20,
+    top: 11,
+    fontSize: theme.typography.roles.body.fontSize,
+    lineHeight: theme.typography.roles.body.lineHeight,
   },
   floatingLabelFocused: {
     color: theme.colors.primarySoft,
@@ -239,16 +240,15 @@ const styles = StyleSheet.create({
   input: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: theme.typography.body,
-    lineHeight: 20,
-    paddingVertical: 10,
+    ...theme.typography.roles.body,
+    paddingVertical: 7,
   },
   inputWithLabel: {
-    paddingTop: 17,
-    paddingBottom: 5,
+    paddingTop: 15,
+    paddingBottom: 3,
   },
   multilineInput: {
-    minHeight: 86,
+    minHeight: 64,
     textAlignVertical: 'top',
   },
   inputDisabled: {
@@ -256,14 +256,12 @@ const styles = StyleSheet.create({
   },
   hint: {
     color: theme.colors.textSoft,
-    fontSize: theme.typography.caption,
-    lineHeight: 17,
+    ...theme.typography.roles.meta,
   },
   errorText: {
     color: theme.colors.dangerText,
-    fontSize: theme.typography.caption,
-    fontWeight: '700',
-    lineHeight: 17,
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
   },
   rightIcon: {
     minWidth: theme.layout.controlMinUnified,

@@ -98,14 +98,18 @@ describe('production guardrails', () => {
   it('keeps recent tabs mounted in normal layout flow with a strict memory bound', () => {
     const appSource = read('src/app/App.tsx');
     const navSource = read('src/app/components/BottomNav.tsx');
+    const sceneSource = read('src/app/components/ui/TabScene.tsx');
+    const runtimeSource = read('src/services/runtimeProfile.ts');
 
     expect(appSource).toContain('const renderTab = (tab: AppTab) =>');
     expect(appSource).toContain('<View style={styles.content}>');
     expect(appSource).toContain('renderedResidentTabs.map((tab) =>');
-    expect(appSource).toContain('MAX_RESIDENT_TABS = 3');
+    expect(appSource).toContain('MAX_RESIDENT_TABS = getResidentTabLimit()');
+    expect(runtimeSource).toContain("runtimeProfile.tier === 'constrained' ? 2");
     expect(appSource).toContain('TAB_RENDER_ORDER.filter((tab) => residentTabs.includes(tab))');
-    expect(appSource).toContain('collapsable={false}');
-    expect(appSource).toContain("display: 'none'");
+    expect(appSource).toContain('<TabScene');
+    expect(sceneSource).toContain('collapsable={false}');
+    expect(sceneSource).toContain("pointerEvents={active ? 'auto' : 'none'}");
     expect(appSource).not.toContain('screenLayer');
     expect(appSource).not.toContain("position: 'absolute'");
     expect(appSource).not.toContain('zIndex: 0');
@@ -574,8 +578,9 @@ describe('production guardrails', () => {
 
   it('opens chat threads on the latest message without auto-loading older pages', () => {
     const source = read('src/app/components/ChatModal.tsx');
+    const modelSource = read('src/app/components/chat/chatMessageModel.ts');
 
-    expect(source).toContain('new Date(right.created_at).getTime() - new Date(left.created_at).getTime()');
+    expect(modelSource).toContain('new Date(right.created_at).getTime() - new Date(left.created_at).getTime()');
     expect(source).toContain('inverted');
     expect(source).toContain('userScrolledMessagesRef');
     expect(source).toContain('scrollToOffset({ offset: 0, animated })');
@@ -699,18 +704,25 @@ describe('production guardrails', () => {
     expect(appSource).toContain("tab === 'match' || tab === 'compatibility'");
   });
 
-  it('uses window-class grid columns instead of fixed two-column user grids', () => {
+  it('keeps profile libraries and like lists on the requested three-column grid', () => {
     const compatibilitySource = read('src/app/components/CompatibilityScreen.tsx');
     const likesSource = read('src/app/components/LikesScreen.tsx');
+    const profileSource = read('src/app/components/ProfileCard.tsx');
     const cardSource = read('src/app/components/UserMiniCard.tsx');
     const skeletonSource = read('src/app/components/ui/Skeleton.tsx');
 
-    expect(likesSource).toContain('const gridColumns = layout.gridColumns');
+    expect(likesSource).toContain('const LIKES_GRID_COLUMNS = 3');
     expect(likesSource).toContain('numColumns={gridColumns}');
+    expect(likesSource).toContain('getFixedGridItemWidth');
+    expect(likesSource).toContain('style={gridItemStyle}');
+    expect(profileSource).toContain('const profileGridColumns = 3');
+    expect(profileSource).toContain('onLayout={handleProfileGridLayout}');
+    expect(profileSource).toContain('getFixedGridItemWidth');
+    expect(profileSource).toContain('width={profileMovieWidth}');
     expect(compatibilitySource).not.toContain('numColumns={2}');
     expect(likesSource).not.toContain('numColumns={2}');
     expect(cardSource).not.toContain("width: '46.8%'");
-    expect(skeletonSource).toContain('useWindowClass');
+    expect(skeletonSource).toContain('columns?: number');
   });
 
   it('supports profile image galleries without changing movie previews', () => {
@@ -837,16 +849,17 @@ describe('production guardrails', () => {
 
   it('keeps a bounded LRU of visited tabs while only the focused scene is interactive', () => {
     const source = read('src/app/App.tsx');
+    const sceneSource = read('src/app/components/ui/TabScene.tsx');
     const liveNowSource = read('src/app/hooks/useLiveNowUsers.ts');
 
     expect(source).toContain('residentTabs');
-    expect(source).toContain('MAX_RESIDENT_TABS = 3');
+    expect(source).toContain('MAX_RESIDENT_TABS = getResidentTabLimit()');
     expect(source).toContain('const renderTab = (tab: AppTab) =>');
     expect(source).toContain('switch (tab)');
     expect(source).toContain("case 'watch':");
     expect(source).toContain("case 'profile':");
-    expect(source).toContain("display: 'none'");
-    expect(source).toContain("pointerEvents={isVisible ? 'auto' : 'none'}");
+    expect(source).toContain('<TabScene');
+    expect(sceneSource).toContain("pointerEvents={active ? 'auto' : 'none'}");
     expect(liveNowSource).toContain('if (!userId || !isFocused)');
   });
 
@@ -914,7 +927,8 @@ describe('production guardrails', () => {
     expect(source).toContain("preloadDiscoveryData('watch', user.id)");
     expect(source).toContain('preloadSwipeQuota(user.id)');
     expect(appSource).toContain('useAppDataWarmup(user, activeTab)');
-    expect(schedulerSource).toContain('MAX_CONCURRENT_TASKS = 2');
+    expect(schedulerSource).toContain('getLaunchTaskConcurrency()');
+    expect(schedulerSource).toContain('getNetworkConcurrencyLimit()');
     expect(schedulerSource).toContain("critical: 0");
     expect(schedulerSource).toContain("intent: 1");
     expect(usageSource).toContain('MAX_HISTORY_LENGTH = 3');
@@ -936,8 +950,8 @@ describe('production guardrails', () => {
     for (const file of sourceFiles) {
       expect(read(file)).not.toContain('AppState.addEventListener');
     }
-    expect(mediaQueueSource).toContain('MAX_CONCURRENT_PREFETCHES = 3');
-    expect(mediaQueueSource).toContain('MAX_QUEUED_PREFETCHES = 48');
+    expect(mediaQueueSource).toContain('getMediaPrefetchConcurrency()');
+    expect(mediaQueueSource).toContain('getMediaQueueLimit()');
     expect(mediaQueueSource).toContain('critical: 0');
     expect(mediaQueueSource).toContain('intent: 1');
     expect(mediaQueueSource).toContain('predictive: 2');
@@ -947,13 +961,15 @@ describe('production guardrails', () => {
 
   it('keeps the primary profile gesture and imagery off the JS-heavy legacy path', () => {
     const profileCardSource = read('src/app/components/ProfileCard.tsx');
+    const imageSource = read('src/app/components/ui/AppImage.tsx');
     const rootSource = read('App.tsx');
 
     expect(rootSource).toContain('GestureHandlerRootView');
     expect(profileCardSource).toContain('Gesture.Pan()');
     expect(profileCardSource).toContain('useAnimatedStyle');
     expect(profileCardSource).toContain('runOnJS(commitSwipeDown)');
-    expect(profileCardSource).toContain("cachePolicy=\"memory-disk\"");
+    expect(profileCardSource).toContain("import AppImage from './ui/AppImage'");
+    expect(imageSource).toContain('cachePolicy="memory-disk"');
     expect(profileCardSource).not.toContain('PanResponder');
     expect(profileCardSource).not.toContain('ImageBackground');
   });
@@ -981,11 +997,12 @@ describe('production guardrails', () => {
     expect(appSource).toContain('renderedResidentTabs.map((tab) =>');
     expect(appSource).toContain("preloadTabData(user, tab, 'intent')");
     expect(appSource).toContain('preloadTabModule(tab)');
-    expect(appSource).toContain("telemetry.track('navigation.tab_committed'");
+    expect(appSource).toContain("telemetry.recordDuration(");
+    expect(appSource).toContain("'navigation.tab_committed'");
     expect(appSource).toContain("tab === 'chat'");
     expect(appSource).toContain('<ChatListSkeleton />');
     expect(appSource).toContain('<SwipeDeckSkeleton />');
-    expect(navSource).toContain('onPressIn={() => onTabIntent?.(item.id)}');
+    expect(navSource).toContain('onIntent={() => onTabIntent?.(item.id)}');
     expect(navSource).toContain('export default memo(BottomNav)');
   });
 
@@ -1014,7 +1031,7 @@ describe('production guardrails', () => {
     expect(discoverySource).toContain('preloadLikesSlice(userId, force)');
     expect(quotaSource).toContain('SWIPE_QUOTA_REVALIDATE_AFTER_MS = 30_000');
     expect(quotaSource).toContain('refreshState(userId, false)');
-    expect(mediaQueueSource).toContain('MAX_CONCURRENT_PREFETCHES = 3');
+    expect(mediaQueueSource).toContain('getMediaPrefetchConcurrency()');
     expect(mediaQueueSource).toContain('const flights = new Map');
   });
 
@@ -1209,20 +1226,44 @@ describe('production guardrails', () => {
   });
 
   it('keeps the UI hardening primitives wired to semantic tokens', () => {
+    const rootSource = read('App.tsx');
+    const appSource = read('src/app/App.tsx');
     const themeSource = read('src/shared/theme/index.ts');
     const screenSource = read('src/app/components/ui/Screen.tsx');
+    const currentMovieSource = read('src/app/components/CurrentMovieBar.tsx');
+    const bottomNavSource = read('src/app/components/BottomNav.tsx');
+    const profileModalSource = read('src/app/components/ProfileModal.tsx');
+    const swipeModalSource = read('src/app/components/SwipeModal.tsx');
     const buttonSource = read('src/app/components/ui/AppButton.tsx');
     const textFieldSource = read('src/app/components/ui/AppTextField.tsx');
+    const chatBubbleSource = read('src/app/components/chat/ChatMessageBubble.tsx');
+    const chatModalSource = read('src/app/components/ChatModal.tsx');
 
-    expect(themeSource).toContain('controlMinUnified: 48');
+    expect(themeSource).toContain('controlMinUnified: 40');
+    expect(themeSource).toContain("body: { fontFamily: 'Inter_400Regular', fontSize: 13");
+    expect(themeSource).toContain("control: { fontFamily: 'Inter_600SemiBold', fontSize: 12");
     expect(themeSource).toContain('dangerText');
     expect(themeSource).toContain('contentMaxNarrow');
     expect(screenSource).toContain('useWindowClass');
     expect(screenSource).toContain("keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}");
+    expect(rootSource).toContain('initialMetrics={initialWindowMetrics}');
+    expect(appSource).toContain('paddingTop: resolveDeviceEdgeInset(insets.top)');
+    expect(appSource).toContain('paddingRight: Math.max(0, insets.right)');
+    expect(currentMovieSource).not.toContain('useSafeAreaInsets');
+    expect(bottomNavSource).toContain('paddingBottom: safeBottomInset');
+    expect(profileModalSource).toContain("edges={['top', 'right', 'bottom', 'left']}");
+    expect(swipeModalSource).toContain("edges={['top', 'right', 'bottom', 'left']}");
     expect(buttonSource).toContain('useReducedMotion');
+    expect(buttonSource).toContain('hitSlop={4}');
     expect(buttonSource).toContain('disabledSurface');
     expect(buttonSource).not.toMatch(/disabled:\s*{\s*opacity/s);
     expect(textFieldSource).toContain('fieldFocused');
     expect(textFieldSource).toContain('accessibilityLabelledBy');
+    expect(chatBubbleSource).toContain("maxWidth: '76%'");
+    expect(chatBubbleSource).toContain('paddingHorizontal: 8');
+    expect(chatBubbleSource).toContain('paddingVertical: 5');
+    expect(chatBubbleSource).toContain('...theme.typography.roles.meta');
+    expect(chatModalSource).toContain('minHeight: 36');
+    expect(chatModalSource).toContain('hitSlop={6}');
   });
 });

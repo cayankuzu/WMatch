@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
@@ -18,7 +17,10 @@ import {
   Text,
   useWindowDimensions,
   View,
+  type LayoutChangeEvent,
 } from 'react-native';
+import type { ScrollView as ScrollViewInstance } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useLocalization } from '../../context/LocalizationContext';
 import { PROFILE_CARD_BOTTOM_SPACING, SCREEN_SIDE_SPACING } from '../../shared/constants';
@@ -27,12 +29,18 @@ import { getLocalizedMediaFilterLabel, getLocalizedUserGenderLabel } from '../..
 import { theme } from '../../shared/theme';
 import { getCompatibilityStyle } from '../../shared/theme/compatibility';
 import { type UserGender } from '../../shared/utils/discovery';
+import { getFixedGridItemWidth } from '../../shared/utils/grid';
 import type { Movie } from '../../services/tmdb';
 import MovieCard from './MovieCard';
 import ImagePreviewModal from './ui/ImagePreviewModal';
+import AppImage from './ui/AppImage';
 import SegmentedControl from './ui/SegmentedControl';
+import OptionChips from './ui/OptionChips';
 import DataState from './ui/DataState';
 import AppRefreshControl from './ui/AppRefreshControl';
+import useTabReselect from '../hooks/useTabReselect';
+import SwipeActionRail from './SwipeActionRail';
+import ProfileTopBar from './ProfileTopBar';
 
 export interface ProfileCardUser {
   id?: string;
@@ -75,6 +83,9 @@ interface ProfileCardProps {
   refreshing?: boolean;
   onRefresh?: () => void;
   bottomInset?: number;
+  headerTitle?: string;
+  headerSubtitle?: string;
+  onEditProfile?: () => void;
 }
 
 const SWIPE_THRESHOLD = 110;
@@ -106,9 +117,13 @@ export default function ProfileCard({
   refreshing = false,
   onRefresh,
   bottomInset = 0,
+  headerTitle,
+  headerSubtitle,
+  onEditProfile,
 }: ProfileCardProps) {
   const { t } = useLocalization();
-  const { width: viewportWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
   const [selectedTab, setSelectedTab] = useState<'favorites' | 'watched'>('favorites');
   const [contentFilter, setContentFilter] = useState<'all' | 'movie' | 'tv'>('all');
@@ -119,25 +134,51 @@ export default function ProfileCard({
   const gestureStartY = useSharedValue(0);
   const scrollOffset = useSharedValue(0);
   const photoListRef = useRef<FlatList<string> | null>(null);
+  const contentScrollRef = useRef<ScrollViewInstance | null>(null);
+  const [profileGridWidth, setProfileGridWidth] = useState(0);
 
   const photos = user.photos.filter((photo) => photo.trim().length > 0);
   const resolvedPhotoNavigationMode = photoNavigationMode ?? (swipeable ? 'buttons' : 'swipe');
-  const photoPageWidth = Math.max(1, viewportWidth - SCREEN_SIDE_SPACING * 2);
+  const usableViewportWidth = Math.max(1, viewportWidth - insets.left - insets.right);
+  const photoPageWidth = Math.min(520, Math.max(1, usableViewportWidth - 32));
+  const heroHeight = Math.min(photoPageWidth / 0.86, viewportHeight * 0.54, 500);
+  const profileContentWidth = Math.max(
+    1,
+    Math.min(usableViewportWidth, theme.layout.contentMaxReading) - SCREEN_SIDE_SPACING * 2,
+  );
+  const profileGridColumns = 3;
+  const profileMovieWidth = getFixedGridItemWidth(
+    profileGridWidth || profileContentWidth,
+    profileGridColumns,
+    theme.layout.cardGap,
+  );
   const activePhoto = photos[currentPhotoIndex] ?? photos[0] ?? null;
   const showAge = user.showAgeOnProfile !== false && Boolean(user.age);
   const showGender = user.showGenderOnProfile !== false && Boolean(user.gender) && user.gender !== 'other';
   const normalizedLetterboxd = user.letterboxd?.trim() ?? '';
   const letterboxdProfileUrl = getLetterboxdProfileUrl(normalizedLetterboxd);
   const hasLetterboxd = letterboxdProfileUrl != null;
-  const resolvedHeaderRightLabel = headerRightIcon === 'dots-vertical' ? t('a11y.profileMenu') : t('a11y.profileAction');
-  const secondaryHeaderRightLabel = secondaryHeaderRightIcon === 'flag-outline' ? t('a11y.reportProfile') : t('a11y.secondaryProfileAction');
   const letterboxdDisplayText = getLetterboxdDisplayText(letterboxdProfileUrl, t('profile.card.letterboxdMissing'));
   const compatibilityStyle = getCompatibilityStyle(compatibilityScore ?? 0);
   const genderLabel = showGender && user.gender ? getLocalizedUserGenderLabel(t, user.gender) : null;
   const resolvedHeaderRightPress = onHeaderRightPress ?? (swipeable ? onRefresh : undefined);
   const resolvedHeaderRightIcon = headerRightIcon ?? (swipeable && onRefresh ? 'reload' : undefined);
-  const showHeaderBar = Boolean(onHeaderBack || resolvedHeaderRightPress || onSecondaryHeaderRightPress);
+  const showHeaderBar = Boolean(headerTitle || onHeaderBack || resolvedHeaderRightPress || onSecondaryHeaderRightPress);
   const canSwipeDown = Boolean(onSwipeDown);
+  const scrollToTop = useCallback(() => {
+    if (isOwnProfile) {
+      contentScrollRef.current?.scrollTo({ y: 0, animated: true });
+    }
+  }, [isOwnProfile]);
+  const handleProfileGridLayout = useCallback((event: LayoutChangeEvent) => {
+    const nextWidth = event.nativeEvent.layout.width;
+
+    setProfileGridWidth((currentWidth) =>
+      Math.abs(currentWidth - nextWidth) < 0.5 ? currentWidth : nextWidth,
+    );
+  }, []);
+
+  useTabReselect('profile', scrollToTop);
 
   useEffect(() => {
     setCurrentPhotoIndex(0);
@@ -344,36 +385,19 @@ export default function ProfileCard({
     <GestureDetector gesture={panGesture}>
     <Animated.View style={[styles.animatedShell, cardAnimatedStyle]}>
       {showHeaderBar ? (
-        <View style={styles.swipeTopBar}>
-          {onHeaderBack ? (
-            <Pressable accessibilityRole="button" accessibilityLabel={t('common.back')} onPress={onHeaderBack} style={styles.swipeTopBarButton}>
-              <MaterialCommunityIcons name="arrow-left" size={20} color={theme.colors.primarySoft} />
-            </Pressable>
-          ) : (
-            <View style={styles.swipeTopBarSpacer} />
-          )}
-
-          <View style={styles.swipeTopBarActions}>
-            {resolvedHeaderRightPress && resolvedHeaderRightIcon ? (
-              <Pressable accessibilityRole="button" accessibilityLabel={resolvedHeaderRightLabel} onPress={resolvedHeaderRightPress} style={styles.swipeTopBarButton}>
-                <MaterialCommunityIcons name={resolvedHeaderRightIcon} size={18} color={theme.colors.primarySoft} />
-              </Pressable>
-            ) : null}
-
-            {onSecondaryHeaderRightPress && secondaryHeaderRightIcon ? (
-              <Pressable accessibilityRole="button" accessibilityLabel={secondaryHeaderRightLabel} onPress={onSecondaryHeaderRightPress} style={styles.swipeTopBarButton}>
-                <MaterialCommunityIcons name={secondaryHeaderRightIcon} size={18} color={theme.colors.primarySoft} />
-              </Pressable>
-            ) : null}
-
-            {!resolvedHeaderRightPress && !onSecondaryHeaderRightPress ? (
-              <View style={styles.swipeTopBarSpacer} />
-            ) : null}
-          </View>
-        </View>
+        <ProfileTopBar
+          title={headerTitle}
+          subtitle={headerSubtitle}
+          onBack={onHeaderBack}
+          primaryIcon={resolvedHeaderRightIcon}
+          onPrimaryPress={resolvedHeaderRightPress}
+          secondaryIcon={secondaryHeaderRightIcon}
+          onSecondaryPress={onSecondaryHeaderRightPress}
+        />
       ) : null}
 
       <Animated.ScrollView
+        ref={contentScrollRef}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: PROFILE_CARD_BOTTOM_SPACING + bottomInset }}
         bounces={!swipeable || Boolean(onSwipeDown)}
@@ -391,7 +415,7 @@ export default function ProfileCard({
       >
         <View style={[styles.heroWrap, showHeaderBar && styles.heroWrapWithToolbar]}>
           {activePhoto ? (
-            <View style={styles.heroCarousel}>
+            <View style={[styles.heroCarousel, { width: photoPageWidth, height: heroHeight }]}>
               <FlatList
                 ref={photoListRef}
                 horizontal
@@ -416,14 +440,14 @@ export default function ProfileCard({
                   setCurrentPhotoIndex(Math.min(Math.max(nextIndex, 0), photos.length - 1));
                 }}
                 renderItem={({ item, index }) => (
-                  <View style={[styles.hero, { width: photoPageWidth }]}>
-                    <Image
-                      cachePolicy="memory-disk"
+                  <View style={[styles.hero, { width: photoPageWidth, height: heroHeight }]}>
+                    <AppImage
                       contentFit="cover"
                       enforceEarlyResizing
+                      fallbackIcon="account-outline"
                       priority={index === currentPhotoIndex ? 'high' : 'normal'}
                       recyclingKey={`profile-hero:${user.id ?? user.username}:${index}`}
-                      source={{ uri: item }}
+                      uri={item}
                       style={styles.heroImage}
                       transition={90}
                     />
@@ -436,14 +460,14 @@ export default function ProfileCard({
               {swipeable ? (
                 <>
                   <Animated.View pointerEvents="none" style={[styles.swipeCue, styles.swipeCueLeft, leftCueStyle]}>
-                    <MaterialCommunityIcons name="close" size={38} color={theme.colors.white} />
+                    <MaterialCommunityIcons name="close" size={30} color={theme.colors.white} />
                   </Animated.View>
                   <Animated.View pointerEvents="none" style={[styles.swipeCue, styles.swipeCueRight, rightCueStyle]}>
-                    <MaterialCommunityIcons name="heart" size={38} color={theme.colors.white} />
+                    <MaterialCommunityIcons name="heart" size={30} color={theme.colors.white} />
                   </Animated.View>
                   {onSwipeDown ? (
                     <Animated.View pointerEvents="none" style={[styles.swipeCue, styles.swipeCueDown, downCueStyle]}>
-                      <MaterialCommunityIcons name="undo-variant" size={34} color={theme.colors.white} />
+                      <MaterialCommunityIcons name="undo-variant" size={28} color={theme.colors.white} />
                       <Text style={styles.swipeCueText}>{t('common.back')}</Text>
                     </Animated.View>
                   ) : null}
@@ -478,9 +502,9 @@ export default function ProfileCard({
               ) : null}
             </View>
           ) : (
-            <View style={[styles.hero, styles.heroPlaceholder]}>
+            <View style={[styles.hero, styles.heroPlaceholder, { width: photoPageWidth, height: heroHeight }]}>
               <View style={styles.placeholderIconWrap}>
-                <MaterialCommunityIcons name="account-outline" size={44} color={theme.colors.primarySoft} />
+                <MaterialCommunityIcons name="account-outline" size={36} color={theme.colors.primarySoft} />
               </View>
               <Text style={styles.placeholderTitle}>
                 {isOwnProfile ? t('profile.card.empty.own.title') : t('profile.card.empty.other.title')}
@@ -493,6 +517,17 @@ export default function ProfileCard({
             </View>
           )}
         </View>
+
+        {swipeable ? (
+          <SwipeActionRail
+            allowReject={allowSwipeLeft}
+            allowLike={allowSwipeRight}
+            canUndo={Boolean(onSwipeDown)}
+            onReject={onSwipeLeft}
+            onLike={onSwipeRight}
+            onUndo={onSwipeDown}
+          />
+        ) : null}
 
         <View style={styles.body}>
           <View style={styles.identityCard}>
@@ -511,7 +546,7 @@ export default function ProfileCard({
             </View>
             <Text style={styles.username}>{user.username}</Text>
 
-            <View style={styles.linkRow}>
+            {hasLetterboxd || isOwnProfile ? <View style={styles.linkRow}>
               <MaterialCommunityIcons
                 name="link-variant"
                 size={14}
@@ -525,11 +560,18 @@ export default function ProfileCard({
                   </Text>
                 </Pressable>
               ) : (
-                <Text numberOfLines={1} style={styles.linkPlaceholder}>
-                  {letterboxdDisplayText}
-                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={!onEditProfile}
+                  onPress={onEditProfile}
+                  style={styles.linkValueWrap}
+                >
+                  <Text numberOfLines={1} style={styles.linkPlaceholder}>
+                    {t('profile.card.letterboxdAdd')}
+                  </Text>
+                </Pressable>
               )}
-            </View>
+            </View> : null}
 
             {user.bio ? <Text style={styles.bio}>{user.bio}</Text> : null}
           </View>
@@ -573,8 +615,7 @@ export default function ProfileCard({
                 ]}
               />
 
-              <SegmentedControl
-                size="compact"
+              <OptionChips
                 value={contentFilter}
                 onChange={setContentFilter}
                 options={[
@@ -589,12 +630,13 @@ export default function ProfileCard({
                   <Text style={styles.emptyText}>{emptyText}</Text>
                 </View>
               ) : (
-                <View style={styles.movieGrid}>
+                <View onLayout={handleProfileGridLayout} style={styles.movieGrid}>
                   {filteredList.map((movie) => (
                     <MovieCard
                       key={`${movie.id}-${movie.media_type ?? 'media'}`}
                       movie={movie}
                       size="small"
+                      width={profileMovieWidth}
                       onClick={() => onMovieClick?.(movie)}
                     />
                   ))}
@@ -625,19 +667,19 @@ const styles = StyleSheet.create({
   heroWrap: {
     paddingHorizontal: SCREEN_SIDE_SPACING,
     paddingTop: 10,
+    alignItems: 'center',
   },
   heroWrapWithToolbar: {
     paddingTop: 6,
   },
   heroCarousel: {
-    height: 510,
+    borderRadius: theme.radius.personCard,
     overflow: 'hidden',
     backgroundColor: theme.colors.surface,
   },
   hero: {
-    height: 510,
     justifyContent: 'flex-end',
-    borderRadius: 0,
+    borderRadius: theme.radius.personCard,
     overflow: 'hidden',
     backgroundColor: theme.colors.surface,
   },
@@ -666,23 +708,21 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
   },
   placeholderIconWrap: {
-    width: 102,
-    height: 102,
-    borderRadius: 999,
+    width: 84,
+    height: 84,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySurface,
   },
   placeholderTitle: {
     color: theme.colors.text,
-    fontSize: 18,
-    fontWeight: '900',
+    ...theme.typography.roles.sectionTitle,
     textAlign: 'center',
   },
   placeholderText: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
+    ...theme.typography.roles.body,
     textAlign: 'center',
   },
   photoProgress: {
@@ -696,7 +736,7 @@ const styles = StyleSheet.create({
   photoProgressItem: {
     flex: 1,
     height: 4,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.alpha.white28,
   },
   photoProgressItemActive: {
@@ -707,7 +747,7 @@ const styles = StyleSheet.create({
     top: '46%',
     minWidth: theme.layout.controlMinUnified,
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.alpha.black52,
@@ -718,45 +758,12 @@ const styles = StyleSheet.create({
   photoButtonRight: {
     right: 14,
   },
-  swipeTopBar: {
-    marginHorizontal: SCREEN_SIDE_SPACING,
-    marginTop: 12,
-    marginBottom: 2,
-    minHeight: 52,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.alpha.elevated96,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-  },
-  swipeTopBarSpacer: {
-    width: theme.layout.controlMinUnified,
-    height: theme.layout.controlMinUnified,
-  },
-  swipeTopBarActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  swipeTopBarButton: {
-    minWidth: theme.layout.controlMinUnified,
-    minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
   swipeCue: {
     position: 'absolute',
     top: 124,
-    width: 74,
-    height: 74,
-    borderRadius: 999,
+    width: 62,
+    height: 62,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 2,
@@ -764,55 +771,57 @@ const styles = StyleSheet.create({
   },
   swipeCueLeft: {
     left: 28,
-    backgroundColor: theme.alpha.brand88,
+    backgroundColor: theme.colors.danger,
   },
   swipeCueRight: {
     right: 28,
-    backgroundColor: theme.alpha.success84,
+    backgroundColor: theme.colors.primary,
   },
   swipeCueDown: {
     top: 114,
-    width: 88,
-    height: 88,
+    width: 72,
+    height: 72,
     gap: 4,
     alignSelf: 'center',
     backgroundColor: theme.alpha.info84,
   },
   swipeCueText: {
     color: theme.colors.white,
-    fontSize: 12,
-    fontWeight: '900',
+    ...theme.typography.roles.micro,
   },
   body: {
+    width: '100%',
+    maxWidth: theme.layout.contentMaxReading,
+    alignSelf: 'center',
     paddingHorizontal: SCREEN_SIDE_SPACING,
-    paddingTop: 18,
-    gap: 14,
+    paddingTop: 12,
+    gap: 10,
   },
   identityCard: {
-    borderRadius: 22,
+    borderRadius: theme.radius.personCard,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
-    padding: 18,
-    gap: 8,
+    padding: 12,
+    gap: 6,
   },
   nameRow: {
     flexDirection: 'row',
     alignItems: 'center',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
   },
   name: {
     color: theme.colors.text,
-    fontSize: 24,
-    fontWeight: '900',
+    ...theme.typography.roles.screenTitle,
     letterSpacing: 0,
   },
   ageChip: {
-    minWidth: theme.layout.controlMinUnified,
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    minWidth: 28,
+    minHeight: 24,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySurface,
@@ -821,14 +830,13 @@ const styles = StyleSheet.create({
   },
   ageText: {
     color: theme.colors.primarySoft,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '900',
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
   },
   genderChip: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surfaceStrong,
@@ -837,14 +845,11 @@ const styles = StyleSheet.create({
   },
   genderText: {
     color: theme.colors.text,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    ...theme.typography.roles.meta,
   },
   username: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
   },
   linkRow: {
     flexDirection: 'row',
@@ -854,8 +859,7 @@ const styles = StyleSheet.create({
   },
   linkLabel: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
     flexShrink: 0,
   },
   linkValueWrap: {
@@ -864,48 +868,44 @@ const styles = StyleSheet.create({
   },
   letterboxd: {
     color: theme.colors.primarySoft,
-    fontSize: 12,
-    fontWeight: '800',
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
     textDecorationLine: 'underline',
     flexShrink: 1,
   },
   linkPlaceholder: {
     flex: 1,
     color: theme.colors.textSoft,
-    fontSize: 12,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
     flexShrink: 1,
   },
   bio: {
     color: theme.colors.text,
-    fontSize: theme.typography.body,
-    lineHeight: 19,
+    ...theme.typography.roles.body,
     marginTop: 3,
   },
   compatibilityCard: {
-    minHeight: 74,
+    minHeight: 56,
     borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
-    paddingHorizontal: 13,
-    paddingVertical: 11,
-    gap: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 6,
   },
   compatibilityHeader: {
     gap: 2,
   },
   compatibilityLabel: {
     color: theme.colors.text,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    ...theme.typography.roles.cardTitle,
   },
   compatibilityHint: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.meta.fontSize,
+    ...theme.typography.roles.meta,
     marginTop: 1,
-    lineHeight: theme.typography.roles.meta.lineHeight,
   },
   compatibilityBarWrap: {
     flexDirection: 'row',
@@ -915,33 +915,33 @@ const styles = StyleSheet.create({
   compatibilityBarTrack: {
     flex: 1,
     height: 7,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     overflow: 'hidden',
   },
   compatibilityBarFill: {
     height: '100%',
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
   },
   compatibilityScore: {
     minWidth: 40,
-    fontSize: 16,
-    fontWeight: '900',
+    ...theme.typography.roles.sectionTitle,
+    fontVariant: ['tabular-nums'],
     textAlign: 'right',
   },
   movieGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10,
+    gap: theme.layout.cardGap,
   },
   empty: {
-    minHeight: 96,
+    minHeight: 68,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 18,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
-    padding: 16,
+    padding: 12,
   },
   emptyText: {
     color: theme.colors.textMuted,

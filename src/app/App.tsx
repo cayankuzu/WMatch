@@ -1,5 +1,6 @@
 import { memo, Suspense, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
 import { Alert, BackHandler, Platform, StyleSheet, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AuthProvider, useAuth } from '../context/AuthContext';
 import { AppProvider, useWatchSession } from '../context/AppContext';
@@ -17,12 +18,18 @@ import {
 } from '../services/notifications';
 import { flushPendingChatMessages } from '../services/chatOutbox';
 import { recordTabUsage } from '../services/tabUsage';
+import { emitTabReselected } from '../services/tabNavigation';
+import { getResidentTabLimit } from '../services/runtimeProfile';
+import { clearTabBadges, useTabBadges } from '../services/tabBadges';
 import type { Movie } from '../services/tmdb';
 import { telemetry } from '../services/telemetry';
 import { DEFAULT_BOTTOM_NAV_HEIGHT } from '../shared/constants';
+import { performanceBudgets } from '../shared/constants/performance';
 import type { AppTab, AuthScreen } from '../shared/types';
 import { theme } from '../shared/theme';
-import { subscribeToForeground } from '../shared/utils/appLifecycle';
+import { subscribeToForeground, subscribeToMemoryWarning } from '../shared/utils/appLifecycle';
+import { resolveDeviceEdgeInset } from '../shared/utils/safeArea';
+import { clearSessionCaches } from '../shared/utils/sessionCache';
 import useTransientPopup from './hooks/useTransientPopup';
 import useAppDataWarmup, { preloadTabData } from './hooks/useAppDataWarmup';
 import useAppPresence from './hooks/useAppPresence';
@@ -39,6 +46,8 @@ import TransientPopup from './components/ui/TransientPopup';
 import VerifyEmailScreen from './components/VerifyEmailScreen';
 import WatchScreen from './components/WatchScreen';
 import ErrorBoundary from './components/ErrorBoundary';
+import ConnectivityBanner from './components/ui/ConnectivityBanner';
+import TabScene from './components/ui/TabScene';
 import { ChatListSkeleton, SwipeDeckSkeleton, UserGridSkeleton } from './components/ui/Skeleton';
 import {
   LazyChatScreen,
@@ -60,7 +69,7 @@ function scheduleIdleWork(work: () => void, timeoutMs = 1200) {
 }
 
 const MemoWatchScreen = memo(WatchScreen);
-const MAX_RESIDENT_TABS = 3;
+const MAX_RESIDENT_TABS = getResidentTabLimit();
 const TAB_RENDER_ORDER: readonly AppTab[] = [
   'watch',
   'match',
@@ -72,6 +81,7 @@ const TAB_RENDER_ORDER: readonly AppTab[] = [
 
 function AppContent() {
   const { t } = useLocalization();
+  const insets = useSafeAreaInsets();
   const {
     user,
     loading: authLoading,
@@ -113,9 +123,15 @@ function AppContent() {
   const pushSettingsPromptedUserIdsRef = useRef(new Set<string>());
   const { message: exitPopupMessage, showPopup: showExitPopup } = useTransientPopup();
   const watchHome = useWatchHomeController(user, activeTab, activeWatching);
+  const tabBadges = useTabBadges();
 
   useAppPresence(user?.id ?? null);
   useAppDataWarmup(user, activeTab);
+  useEffect(() => subscribeToMemoryWarning(() => {
+    setResidentTabs([activeTab]);
+    clearSessionCaches();
+    telemetry.track('app.memory_warning', { activeTab });
+  }), [activeTab]);
   const syncCurrentUserPush = useCallback(
     async (userId: string | null | undefined) => {
       const result = await syncPushNotifications(userId);
@@ -180,10 +196,15 @@ function AppContent() {
       recordTabUsage(user.id, tab);
     }
   }, [activeTab, prepareTab, user]);
+  const handleTabReselect = useCallback((tab: AppTab) => {
+    telemetry.track('navigation.tab_reselected', { tab });
+    emitTabReselected(tab);
+  }, []);
 
   useEffect(() => {
     setActiveTab('watch');
     setResidentTabs(['watch']);
+    clearTabBadges();
   }, [user?.id]);
 
   useEffect(() => {
@@ -191,10 +212,12 @@ function AppContent() {
       return;
     }
 
-    telemetry.track('navigation.tab_committed', {
-      tab: activeTab,
-      durationMs: Date.now() - tabSwitchStartedAtRef.current,
-    });
+    telemetry.recordDuration(
+      'navigation.tab_committed',
+      Date.now() - tabSwitchStartedAtRef.current,
+      performanceBudgets.tabCommitMs,
+      { tab: activeTab },
+    );
     tabSwitchStartedAtRef.current = 0;
   }, [activeTab, renderedTab]);
 
@@ -405,6 +428,7 @@ function AppContent() {
       case 'watch':
         return (
           <MemoWatchScreen
+            userId={user?.id ?? ''}
             isSearching={watchHome.isSearching}
             searchQuery={watchHome.searchQuery}
             searchResults={watchHome.searchResults}
@@ -532,32 +556,39 @@ function AppContent() {
   }
 
   return (
-    <View style={styles.container}>
+    <View
+      style={[
+        styles.container,
+        {
+          paddingTop: resolveDeviceEdgeInset(insets.top),
+          paddingRight: Math.max(0, insets.right),
+          paddingLeft: Math.max(0, insets.left),
+        },
+      ]}
+    >
       <CurrentMovieBar
         movie={currentlyWatching}
+        showEmptyState={activeTab === 'watch'}
         onMovieClick={() => currentlyWatching && setSelectedMovie(currentlyWatching)}
         isActive={watchingState === 'active'}
         watchingUpdatedAt={currentlyWatchingUpdatedAt}
         onPauseWatching={pauseCurrentlyWatching}
         onResumeWatching={resumeCurrentlyWatching}
       />
+      <ConnectivityBanner />
       <View style={styles.content}>
         {renderedResidentTabs.map((tab) => {
           const isVisible = tab === renderedTab;
 
           return (
-            <View
+            <TabScene
               key={tab}
-              collapsable={false}
-              accessibilityElementsHidden={!isVisible}
-              importantForAccessibility={isVisible ? 'auto' : 'no-hide-descendants'}
-              pointerEvents={isVisible ? 'auto' : 'none'}
-              style={[styles.tabScene, !isVisible && styles.hiddenTabScene]}
+              active={isVisible}
             >
               <Suspense fallback={isVisible ? renderTabFallback(tab) : null}>
                 {renderTab(tab)}
               </Suspense>
-            </View>
+            </TabScene>
           );
         })}
       </View>
@@ -565,7 +596,9 @@ function AppContent() {
         activeTab={activeTab}
         onTabIntent={prepareTab}
         onTabChange={switchTab}
+        onTabReselect={handleTabReselect}
         onHeightChange={handleBottomNavHeight}
+        badges={tabBadges}
       />
       <TransientPopup message={exitPopupMessage} bottomOffset={bottomNavHeight} icon="logout-variant" />
       <MovieDetailModal movie={selectedMovie} onClose={() => setSelectedMovie(null)} />
@@ -594,11 +627,6 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-  },
-  tabScene: {
-    flex: 1,
-  },
-  hiddenTabScene: {
-    display: 'none',
+    position: 'relative',
   },
 });

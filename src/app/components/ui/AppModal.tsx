@@ -13,6 +13,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 
 import { theme } from '../../../shared/theme';
 import { useLocalization } from '../../../context/LocalizationContext';
@@ -118,6 +119,7 @@ export default function AppModal({
         { maxWidth: resolvedMaxWidth },
       ]}
     >
+      {resolvedPresentation === 'sheet' ? <View accessible={false} style={styles.dragHandle} /> : null}
       <View style={styles.header}>
         <Text ref={titleRef} accessibilityRole="header" style={styles.title}>
           {title}
@@ -125,7 +127,14 @@ export default function AppModal({
         <AppIconButton
           accessibilityLabel={t('common.close')}
           disabled={!dismissible}
-          icon={<Text accessible={false} style={styles.closeIcon}>x</Text>}
+          icon={(
+            <MaterialCommunityIcons
+              accessible={false}
+              color={theme.colors.textPrimary}
+              name="close"
+              size={theme.icon.lg}
+            />
+          )}
           onPress={onClose}
           variant="surface"
         />
@@ -186,7 +195,7 @@ const styles = StyleSheet.create({
   card: {
     width: '100%',
     maxHeight: '100%',
-    borderRadius: theme.radius.lg,
+    borderRadius: theme.radius.modal,
     borderWidth: 1,
     borderColor: theme.colors.borderDefault,
     backgroundColor: theme.colors.surface,
@@ -217,12 +226,15 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
     fontSize: theme.typography.roles.sectionTitle.fontSize,
     lineHeight: theme.typography.roles.sectionTitle.lineHeight,
-    fontWeight: '900',
+    fontFamily: theme.fonts.bold,
   },
-  closeIcon: {
-    color: theme.colors.textPrimary,
-    fontSize: 18,
-    fontWeight: '900',
+  dragHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.borderStrong,
+    marginTop: theme.spacing.sm,
   },
   body: {
     padding: theme.spacing.lg,

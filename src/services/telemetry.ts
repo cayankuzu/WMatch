@@ -1,9 +1,18 @@
 import * as Sentry from '@sentry/react-native';
 
+import { performanceBudgets } from '../shared/constants/performance';
+
 type TelemetryProperties = Record<string, unknown>;
 
 type TelemetrySpan = {
   end: (properties?: TelemetryProperties) => void;
+};
+
+const STARTUP_BUDGET_BY_MILESTONE: Partial<Record<string, number>> = {
+  react_first_layout: performanceBudgets.reactFirstLayoutMs,
+  session_ready: performanceBudgets.sessionReadyMs,
+  first_media_display: performanceBudgets.firstUsefulContentMs,
+  watch_content_ready: performanceBudgets.firstUsefulContentMs,
 };
 
 const SENSITIVE_KEY_PATTERN = /(authorization|email|lat|latitude|lng|longitude|message|password|photo|secret|token|url)/i;
@@ -65,6 +74,9 @@ export function initializeTelemetry() {
     sendDefaultPii: false,
     attachStacktrace: true,
     enableAutoSessionTracking: true,
+    enableAppStartTracking: true,
+    enableNativeFramesTracking: true,
+    enableStallTracking: true,
     debug: false,
   });
 }
@@ -105,9 +117,21 @@ export const telemetry = {
 
   startSpan(name: string): TelemetrySpan {
     const startedAt = Date.now();
+    const sentrySpan = telemetryEnabled
+      ? Sentry.startInactiveSpan({ name, op: 'wmatch.task' })
+      : null;
 
     return {
       end(properties?: TelemetryProperties) {
+        const safeProperties = sanitizeProperties(properties);
+        if (sentrySpan && safeProperties) {
+          Object.entries(safeProperties).forEach(([key, value]) => {
+            if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+              sentrySpan.setAttribute(key, value);
+            }
+          });
+        }
+        sentrySpan?.end();
         telemetry.track(name, {
           ...properties,
           durationMs: Date.now() - startedAt,
@@ -122,9 +146,33 @@ export const telemetry = {
     }
 
     startupMilestones.add(name);
+    const elapsedMs = Date.now() - appModuleStartedAt;
+    const budgetMs = STARTUP_BUDGET_BY_MILESTONE[name];
+    if (telemetryEnabled) {
+      Sentry.setMeasurement(`app.startup.${name}`, elapsedMs, 'millisecond');
+    }
     telemetry.track(`app.startup.${name}`, {
       ...properties,
-      elapsedMs: Date.now() - appModuleStartedAt,
+      elapsedMs,
+      budgetMs,
+      budgetExceeded: budgetMs != null ? elapsedMs > budgetMs : undefined,
+    });
+  },
+
+  recordDuration(
+    name: string,
+    durationMs: number,
+    budgetMs: number,
+    properties?: TelemetryProperties,
+  ) {
+    if (telemetryEnabled) {
+      Sentry.setMeasurement(name, durationMs, 'millisecond');
+    }
+    telemetry.track(name, {
+      ...properties,
+      durationMs,
+      budgetMs,
+      budgetExceeded: durationMs > budgetMs,
     });
   },
 

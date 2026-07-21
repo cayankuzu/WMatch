@@ -70,6 +70,10 @@ export default function DiscoveryFiltersModal({
       })),
     [t],
   );
+  const genderChanged = draft.genderPreference !== DEFAULT_DISCOVERY_PREFERENCES.genderPreference;
+  const ageChanged = draft.ageMin !== DEFAULT_DISCOVERY_PREFERENCES.ageMin || draft.ageMax !== DEFAULT_DISCOVERY_PREFERENCES.ageMax;
+  const distanceChanged = draft.distanceMinKm !== DEFAULT_DISCOVERY_PREFERENCES.distanceMinKm || draft.distanceMaxKm !== DEFAULT_DISCOVERY_PREFERENCES.distanceMaxKm;
+  const compatibilityChanged = draft.compatibilityMin !== DEFAULT_DISCOVERY_PREFERENCES.compatibilityMin || draft.compatibilityMax !== DEFAULT_DISCOVERY_PREFERENCES.compatibilityMax;
 
   useEffect(() => {
     setDraft(normalizeDiscoveryPreferences(value));
@@ -86,7 +90,12 @@ export default function DiscoveryFiltersModal({
 
   return (
     <AccessibleModal visible animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView accessibilityViewIsModal importantForAccessibility="yes" edges={['top', 'bottom']} style={styles.container}>
+      <SafeAreaView
+        accessibilityViewIsModal
+        importantForAccessibility="yes"
+        edges={['top', 'right', 'bottom', 'left']}
+        style={styles.container}
+      >
         <View style={styles.header}>
           <Pressable accessibilityRole="button" accessibilityLabel={t('common.close')} onPress={onClose} style={styles.headerButton}>
             <MaterialCommunityIcons name="chevron-left" size={22} color={theme.colors.text} />
@@ -96,13 +105,26 @@ export default function DiscoveryFiltersModal({
         </View>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
+          {locked ? (
+            <Pressable accessibilityRole="button" onPress={handleLockedPress} style={styles.premiumNotice}>
+              <View style={styles.premiumNoticeIcon}>
+                <MaterialCommunityIcons name="crown-outline" size={20} color={theme.colors.primarySoft} />
+              </View>
+              <View style={styles.premiumNoticeCopy}>
+                <Text style={styles.premiumNoticeTitle}>{t('filters.premium.title')}</Text>
+                <Text style={styles.premiumNoticeDescription}>{lockedMessage ?? t('filters.premium.description')}</Text>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={20} color={theme.colors.textSoft} />
+            </Pressable>
+          ) : null}
+
           <FilterSection
             icon="account-heart-outline"
             title={t('filters.gender.title')}
             description={t('filters.gender.description')}
             locked={locked}
             onLockedAction={handleLockedPress}
-            onReset={() => updateDraft({ genderPreference: DEFAULT_DISCOVERY_PREFERENCES.genderPreference })}
+            onReset={!locked && genderChanged ? () => updateDraft({ genderPreference: DEFAULT_DISCOVERY_PREFERENCES.genderPreference }) : undefined}
           >
             <OptionChips<DiscoveryGenderFilter>
               options={genderOptions}
@@ -129,10 +151,10 @@ export default function DiscoveryFiltersModal({
             unit=""
             locked={locked}
             onLockedAction={handleLockedPress}
-            onReset={() => updateDraft({
+            onReset={!locked && ageChanged ? () => updateDraft({
               ageMin: DEFAULT_DISCOVERY_PREFERENCES.ageMin,
               ageMax: DEFAULT_DISCOVERY_PREFERENCES.ageMax,
-            })}
+            }) : undefined}
             onMinChange={(ageMin) => updateDraft({ ageMin })}
             onMaxChange={(ageMax) => updateDraft({ ageMax })}
           />
@@ -150,10 +172,10 @@ export default function DiscoveryFiltersModal({
             statusTone={locationReady ? 'success' : 'warning'}
             locked={locked}
             onLockedAction={handleLockedPress}
-            onReset={() => updateDraft({
+            onReset={!locked && distanceChanged ? () => updateDraft({
               distanceMinKm: DEFAULT_DISCOVERY_PREFERENCES.distanceMinKm,
               distanceMaxKm: DEFAULT_DISCOVERY_PREFERENCES.distanceMaxKm,
-            })}
+            }) : undefined}
             onMinChange={(distanceMinKm) => updateDraft({ distanceMinKm })}
             onMaxChange={(distanceMaxKm) => updateDraft({ distanceMaxKm })}
           />
@@ -169,10 +191,10 @@ export default function DiscoveryFiltersModal({
             unit="%"
             locked={locked}
             onLockedAction={handleLockedPress}
-            onReset={() => updateDraft({
+            onReset={!locked && compatibilityChanged ? () => updateDraft({
               compatibilityMin: DEFAULT_DISCOVERY_PREFERENCES.compatibilityMin,
               compatibilityMax: DEFAULT_DISCOVERY_PREFERENCES.compatibilityMax,
-            })}
+            }) : undefined}
             onMinChange={(compatibilityMin) => updateDraft({ compatibilityMin })}
             onMaxChange={(compatibilityMax) => updateDraft({ compatibilityMax })}
           />
@@ -180,7 +202,7 @@ export default function DiscoveryFiltersModal({
 
         <View style={styles.footer}>
           <AppButton
-            title={locked ? t('common.premium') : t('filters.save')}
+            title={locked ? t('filters.premium.unlock') : t('filters.save')}
             onPress={locked ? handleLockedPress : () => void onSave(draft)}
             loading={!locked && saving}
           />
@@ -198,7 +220,6 @@ function FilterSection({
   icon,
   onReset,
   locked = false,
-  onLockedAction,
   title,
 }: {
   children: ReactNode;
@@ -227,25 +248,17 @@ function FilterSection({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`${t('common.reset')} ${title}`}
-            onPress={locked ? onLockedAction : onReset}
-            style={[styles.resetButton, locked && styles.resetButtonLocked]}
+            onPress={onReset}
+            style={styles.resetButton}
           >
-            <Text style={[styles.resetButtonText, locked && styles.resetButtonTextLocked]}>{t('common.reset')}</Text>
+            <Text style={styles.resetButtonText}>{t('common.reset')}</Text>
           </Pressable>
         ) : null}
       </View>
       <View style={[styles.controlArea, locked && styles.controlAreaLocked]}>
-        <View style={[styles.controlContent, locked && styles.controlContentLocked]}>
+        <View pointerEvents={locked ? 'none' : 'auto'} style={[styles.controlContent, locked && styles.controlContentLocked]}>
           {children}
         </View>
-        {locked ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('common.premium')}
-            onPress={onLockedAction}
-            style={styles.lockOverlay}
-          />
-        ) : null}
       </View>
     </View>
   );
@@ -266,7 +279,6 @@ function RangeSection({
   title,
   unit,
   locked = false,
-  onLockedAction,
 }: {
   title: string;
   description: string;
@@ -278,7 +290,7 @@ function RangeSection({
   step: number;
   statusLabel?: string;
   statusTone?: 'success' | 'warning';
-  onReset: () => void;
+  onReset?: () => void;
   locked?: boolean;
   onLockedAction?: () => void;
   onMinChange: (value: number) => void;
@@ -302,19 +314,21 @@ function RangeSection({
             </View>
           ) : null}
 
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`${t('common.reset')} ${title}`}
-            onPress={locked ? onLockedAction : onReset}
-            style={[styles.resetButton, locked && styles.resetButtonLocked]}
-          >
-            <Text style={[styles.resetButtonText, locked && styles.resetButtonTextLocked]}>{t('common.reset')}</Text>
-          </Pressable>
+          {onReset ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${t('common.reset')} ${title}`}
+              onPress={onReset}
+              style={styles.resetButton}
+            >
+              <Text style={styles.resetButtonText}>{t('common.reset')}</Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
 
       <View style={[styles.controlArea, locked && styles.controlAreaLocked]}>
-        <View style={[styles.controlContent, locked && styles.controlContentLocked]}>
+        <View pointerEvents={locked ? 'none' : 'auto'} style={[styles.controlContent, locked && styles.controlContentLocked]}>
           <View style={styles.rangeValues}>
             <ValuePill label={t('common.min')} value={`${minValue}${unit}`} />
             <ValuePill label={t('common.max')} value={`${maxValue}${unit}`} />
@@ -340,14 +354,6 @@ function RangeSection({
             </Text>
           </View>
         </View>
-        {locked ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('common.premium')}
-            onPress={onLockedAction}
-            style={styles.lockOverlay}
-          />
-        ) : null}
       </View>
     </View>
   );
@@ -565,11 +571,11 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.background,
   },
   header: {
-    minHeight: 58,
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
@@ -577,7 +583,7 @@ const styles = StyleSheet.create({
   headerButton: {
     minWidth: theme.layout.controlMinUnified,
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surface,
@@ -588,21 +594,51 @@ const styles = StyleSheet.create({
   },
   title: {
     color: theme.colors.text,
-    fontSize: 16,
-    fontWeight: '900',
+    ...theme.typography.roles.sectionTitle,
   },
   content: {
     padding: 14,
-    gap: 14,
+    gap: 10,
+  },
+  premiumNotice: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: theme.radius.card,
+    borderWidth: 1,
+    borderColor: theme.alpha.brand22,
+    backgroundColor: theme.colors.primarySurface,
+    padding: 14,
+  },
+  premiumNoticeIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.backgroundElevated,
+  },
+  premiumNoticeCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  premiumNoticeTitle: {
+    color: theme.colors.text,
+    ...theme.typography.roles.cardTitle,
+  },
+  premiumNoticeDescription: {
+    color: theme.colors.textMuted,
+    ...theme.typography.roles.meta,
   },
   section: {
     position: 'relative',
-    borderRadius: 22,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
     padding: 14,
-    gap: 14,
+    gap: 10,
   },
   sectionLocked: {
     backgroundColor: theme.colors.surfaceMuted,
@@ -612,18 +648,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: 10,
   },
   sectionHeaderMain: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 10,
+    gap: 8,
   },
   sectionIcon: {
     width: 38,
     height: 38,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySurface,
@@ -636,28 +672,26 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   controlAreaLocked: {
-    borderRadius: 18,
+    borderRadius: theme.radius.card,
   },
   controlContent: {
-    gap: 12,
+    gap: 10,
   },
   controlContentLocked: {
     opacity: 0.72,
   },
   sectionTitle: {
     color: theme.colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    ...theme.typography.roles.cardTitle,
   },
   sectionDescription: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
+    ...theme.typography.roles.meta,
   },
   rangeHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: 10,
   },
   rangeHeaderCopy: {
     flex: 1,
@@ -665,16 +699,16 @@ const styles = StyleSheet.create({
   },
   rangeHeaderActions: {
     alignItems: 'flex-end',
-    gap: 8,
+    gap: 6,
   },
   resetButton: {
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
     justifyContent: 'center',
   },
   resetButtonLocked: {
@@ -685,15 +719,15 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   resetButtonTextLocked: {
     color: theme.colors.textSoft,
   },
   statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
   },
   statusPillSuccess: {
     backgroundColor: theme.colors.successSurface,
@@ -704,7 +738,7 @@ const styles = StyleSheet.create({
   statusPillText: {
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   statusPillTextSuccess: {
     color: theme.colors.successText,
@@ -714,32 +748,32 @@ const styles = StyleSheet.create({
   },
   rangeValues: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
   valuePill: {
     flex: 1,
     borderRadius: 14,
     backgroundColor: theme.colors.surface,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     gap: 2,
   },
   valuePillLabel: {
     color: theme.colors.textSoft,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   valuePillValue: {
     color: theme.colors.text,
-    fontSize: 13,
-    fontWeight: '900',
+    ...theme.typography.roles.cardTitle,
+    fontVariant: ['tabular-nums'],
   },
   sliderShell: {
-    gap: 10,
+    gap: 8,
   },
   sliderTouchArea: {
-    paddingVertical: 10,
+    paddingVertical: 8,
     paddingHorizontal: THUMB_SIDE_OFFSET,
   },
   sliderTrack: {
@@ -757,14 +791,14 @@ const styles = StyleSheet.create({
   },
   sliderTrackBase: {
     height: 6,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.surface,
   },
   sliderTrackActive: {
     position: 'absolute',
     top: (THUMB_TOUCH_SIZE - 6) / 2,
     height: 6,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     backgroundColor: theme.colors.primarySoft,
   },
   sliderThumbWrap: {
@@ -772,7 +806,7 @@ const styles = StyleSheet.create({
     top: 0,
     width: THUMB_TOUCH_SIZE,
     height: THUMB_TOUCH_SIZE,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 2,
@@ -780,7 +814,7 @@ const styles = StyleSheet.create({
   sliderThumb: {
     width: THUMB_SIZE,
     height: THUMB_SIZE,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     borderWidth: 3,
     borderColor: theme.colors.background,
     backgroundColor: theme.colors.white,
@@ -788,13 +822,13 @@ const styles = StyleSheet.create({
   rangeFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    gap: 12,
+    gap: 10,
   },
   rangeFooterText: {
     color: theme.colors.textSoft,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   footer: {
     padding: 12,
@@ -808,7 +842,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    borderRadius: 18,
+    borderRadius: theme.radius.card,
     backgroundColor: theme.alpha.background06,
   },
 });

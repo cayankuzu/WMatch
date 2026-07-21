@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Application from 'expo-application';
-import { Image } from 'expo-image';
 import {
   ActivityIndicator,
   Alert,
@@ -12,7 +11,6 @@ import {
   type LayoutChangeEvent,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -20,6 +18,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AccessibleModal from './ui/AccessibleModal';
+import AppModal from './ui/AppModal';
 
 import { useLocalization } from '../../context/LocalizationContext';
 import {
@@ -50,6 +49,7 @@ import {
 } from '../../services/chatCache';
 import { normalizeChat, patchChat, type ChatPatch } from '../../services/chatState';
 import { subscribeToUserEvent } from '../../services/userEventBus';
+import { triggerHaptic } from '../../services/haptics';
 import { CHAT_THREAD_INITIAL_PAGE_SIZE, MAX_MESSAGE_LENGTH } from '../../shared/constants';
 import type { ChatSettings } from '../../shared/types';
 import { theme } from '../../shared/theme';
@@ -66,6 +66,15 @@ import TypingDots from './chat/TypingDots';
 import useChatPresence from '../hooks/useChatPresence';
 import DataState from './ui/DataState';
 import { MessageThreadSkeleton } from './ui/Skeleton';
+import ChatAvatar from './chat/ChatAvatar';
+import {
+  createOptimisticMessage,
+  mergeMessagesById,
+  mergeServerMessages,
+  replaceOrAppendMessage,
+  sortMessages,
+  toLocalMessage,
+} from './chat/chatMessageModel';
 
 interface ChatModalProps {
   chat: ApiChat;
@@ -97,123 +106,6 @@ const TYPING_IDLE_TIMEOUT_MS = 1800;
 const CHAT_BOTTOM_PROXIMITY_PX = 120;
 const CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION = { minIndexForVisible: 0 } as const;
 const ANDROID_KEYBOARD_COMPOSER_GAP = 32;
-
-function toLocalMessage(message: ApiMessage): LocalChatMessage {
-  return {
-    ...message,
-    clientStatus: undefined,
-  };
-}
-
-function sortMessages<T extends { created_at: string; id?: string }>(messages: T[]) {
-  return [...messages].sort((left, right) => {
-    return (
-      new Date(right.created_at).getTime() - new Date(left.created_at).getTime() ||
-      (right.id ?? '').localeCompare(left.id ?? '')
-    );
-  });
-}
-
-function replaceOrAppendMessage(
-  currentMessages: LocalChatMessage[],
-  nextMessage: ApiMessage,
-  optimisticId?: string,
-) {
-  const normalizedMessage = toLocalMessage(nextMessage);
-  const existingIndex = currentMessages.findIndex((message) => message.id === normalizedMessage.id);
-
-  if (existingIndex >= 0) {
-    const nextMessages = [...currentMessages];
-    nextMessages[existingIndex] = normalizedMessage;
-    return sortMessages(nextMessages);
-  }
-
-  const optimisticIndex = currentMessages.findIndex((message) => {
-    if (optimisticId && message.id === optimisticId) {
-      return true;
-    }
-
-    return (
-      message.clientStatus === 'sending' &&
-      message.sender_id === normalizedMessage.sender_id &&
-      message.receiver_id === normalizedMessage.receiver_id &&
-      message.text === normalizedMessage.text
-    );
-  });
-
-  if (optimisticIndex >= 0) {
-    const nextMessages = [...currentMessages];
-    nextMessages[optimisticIndex] = normalizedMessage;
-    return sortMessages(nextMessages);
-  }
-
-  return sortMessages([...currentMessages, normalizedMessage]);
-}
-
-function mergeServerMessages(
-  serverMessages: ApiMessage[],
-  currentMessages: LocalChatMessage[],
-) {
-  const merged = sortMessages(serverMessages.map(toLocalMessage));
-  const leftoverMessages = currentMessages.filter((message) => {
-    if (message.clientStatus !== 'sending' && message.clientStatus !== 'failed') {
-      return false;
-    }
-
-    return !merged.some(
-      (serverMessage) =>
-        serverMessage.sender_id === message.sender_id &&
-        serverMessage.receiver_id === message.receiver_id &&
-        serverMessage.text === message.text &&
-        Math.abs(new Date(serverMessage.created_at).getTime() - new Date(message.created_at).getTime()) < 15000,
-    );
-  });
-
-  return sortMessages([...merged, ...leftoverMessages]);
-}
-
-function mergeMessagesById(
-  incomingMessages: ApiMessage[],
-  currentMessages: LocalChatMessage[],
-) {
-  const messagesById = new Map<string, LocalChatMessage>();
-
-  currentMessages.forEach((message) => {
-    messagesById.set(message.id, message);
-  });
-
-  incomingMessages.forEach((message) => {
-    messagesById.set(message.id, toLocalMessage(message));
-  });
-
-  return sortMessages([...messagesById.values()]);
-}
-
-function createOptimisticMessage({
-  id,
-  senderId,
-  receiverId,
-  text,
-  createdAt,
-  clientStatus = 'sending',
-}: {
-  id: string;
-  senderId: string;
-  receiverId: string;
-  text: string;
-  createdAt?: string;
-  clientStatus?: LocalChatMessage['clientStatus'];
-}): LocalChatMessage {
-  return {
-    id,
-    sender_id: senderId,
-    receiver_id: receiverId,
-    text,
-    read: false,
-    created_at: createdAt ?? new Date().toISOString(),
-    clientStatus,
-  };
-}
 
 export default function ChatModal({
   chat,
@@ -771,6 +663,7 @@ export default function ChatModal({
         ),
       );
       restoreThreadChat(previousChat);
+      triggerHaptic('error');
 
       Alert.alert(
         t('chat.modal.alert.sendFailed.title'),
@@ -794,6 +687,7 @@ export default function ChatModal({
     }
 
     setInputText('');
+    triggerHaptic('selection');
     if (typingIdleTimeoutRef.current) {
       clearTimeout(typingIdleTimeoutRef.current);
       typingIdleTimeoutRef.current = null;
@@ -1151,11 +1045,17 @@ export default function ChatModal({
         keyboardVerticalOffset={Platform.OS === 'ios' ? 6 : 0}
         onLayout={handleRootLayout}
       >
-        <SafeAreaView edges={['top']} style={styles.safeArea}>
+        <SafeAreaView edges={['top', 'right', 'left']} style={styles.safeArea}>
           <View accessibilityViewIsModal style={styles.header}>
             <View style={styles.headerLeft}>
-              <Pressable accessibilityRole="button" accessibilityLabel={t('common.back')} onPress={onClose} style={styles.iconButton}>
-                <MaterialCommunityIcons name="chevron-left" size={22} color={theme.colors.text} />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('common.back')}
+                hitSlop={6}
+                onPress={onClose}
+                style={styles.iconButton}
+              >
+                <MaterialCommunityIcons name="chevron-left" size={20} color={theme.colors.text} />
               </Pressable>
 
               <Pressable
@@ -1176,21 +1076,7 @@ export default function ChatModal({
                 }}
                 style={styles.profileButton}
               >
-                {photo ? (
-                  <Image
-                    accessible={false}
-                    cachePolicy="memory-disk"
-                    contentFit="cover"
-                    recyclingKey={photo}
-                    source={{ uri: photo }}
-                    style={styles.avatar}
-                    transition={120}
-                  />
-                ) : (
-                  <View accessible={false} style={[styles.avatar, styles.avatarPlaceholder]}>
-                    <MaterialCommunityIcons accessible={false} name="account-outline" size={20} color={theme.colors.primarySoft} />
-                  </View>
-                )}
+                <ChatAvatar uri={photo} size={34} />
 
                 <View style={styles.profileText}>
                   <Text numberOfLines={2} style={styles.name}>
@@ -1208,10 +1094,11 @@ export default function ChatModal({
               accessibilityRole="button"
               accessibilityLabel={t('a11y.chatMenu')}
               accessibilityState={{ expanded: showMenu }}
+              hitSlop={6}
               onPress={() => setShowMenu((value) => !value)}
               style={styles.iconButton}
             >
-              <MaterialCommunityIcons name="dots-vertical" size={20} color={theme.colors.text} />
+              <MaterialCommunityIcons name="dots-vertical" size={18} color={theme.colors.text} />
             </Pressable>
           </View>
 
@@ -1232,13 +1119,13 @@ export default function ChatModal({
               {!threadChat.ended && !threadChat.isBlocked ? (
                 <Pressable accessibilityRole="menuitem" onPress={handleEndConversation} style={styles.menuItem}>
                   <MaterialCommunityIcons name="message-lock-outline" size={16} color={theme.colors.warning} />
-                  <Text style={styles.menuText}>{t('chat.modal.menu.endMatch')}</Text>
+                  <Text style={[styles.menuText, styles.menuTextWarning]}>{t('chat.modal.menu.endMatch')}</Text>
                 </Pressable>
               ) : null}
 
               <Pressable accessibilityRole="menuitem" onPress={handleHideConversation} style={styles.menuItem}>
-                <MaterialCommunityIcons name="trash-can-outline" size={16} color={theme.colors.warning} />
-                <Text style={styles.menuText}>{t('chat.modal.menu.delete')}</Text>
+                  <MaterialCommunityIcons name="trash-can-outline" size={16} color={theme.colors.dangerText} />
+                  <Text style={[styles.menuText, styles.menuTextDanger]}>{t('chat.modal.menu.delete')}</Text>
               </Pressable>
 
               <Pressable
@@ -1249,8 +1136,8 @@ export default function ChatModal({
                 }}
                 style={styles.menuItem}
               >
-                <MaterialCommunityIcons name="alert-circle-outline" size={16} color={theme.colors.warning} />
-                <Text style={styles.menuText}>{t('profile.menu.report.label')}</Text>
+                <MaterialCommunityIcons name="alert-circle-outline" size={16} color={theme.colors.dangerText} />
+                <Text style={[styles.menuText, styles.menuTextDanger]}>{t('profile.menu.report.label')}</Text>
               </Pressable>
 
               {threadChat.blockedByMe ? (
@@ -1260,8 +1147,8 @@ export default function ChatModal({
                 </Pressable>
               ) : !threadChat.blockedByOther ? (
                 <Pressable accessibilityRole="menuitem" onPress={handleToggleBlock} style={styles.menuItem}>
-                  <MaterialCommunityIcons name="block-helper" size={16} color={theme.colors.warning} />
-                  <Text style={styles.menuText}>{t('chat.modal.menu.block')}</Text>
+                  <MaterialCommunityIcons name="block-helper" size={16} color={theme.colors.dangerText} />
+                  <Text style={[styles.menuText, styles.menuTextDanger]}>{t('chat.modal.menu.block')}</Text>
                 </Pressable>
               ) : null}
             </View>
@@ -1338,7 +1225,7 @@ export default function ChatModal({
               ) : showPlaceholder ? (
                 <View style={styles.emptyState}>
                   <View style={styles.emptyIcon}>
-                    <MaterialCommunityIcons name="heart" size={28} color={theme.colors.primarySoft} />
+                    <MaterialCommunityIcons name="heart" size={22} color={theme.colors.primarySoft} />
                   </View>
                   <Text style={styles.emptyTitle}>{t('chat.modal.empty.title')}</Text>
                   <Text style={styles.emptyDescription}>
@@ -1375,16 +1262,19 @@ export default function ChatModal({
                   accessibilityRole="button"
                   accessibilityLabel={t('a11y.sendMessage')}
                   accessibilityState={{ disabled: !inputText.trim() }}
+                  hitSlop={6}
                   onPress={() => void handleSend()}
                   disabled={!inputText.trim()}
                   style={[styles.sendButton, !inputText.trim() && styles.sendButtonDisabled]}
                 >
-                  <MaterialCommunityIcons name="send" size={18} color={theme.colors.white} />
+                  <MaterialCommunityIcons name="send" size={16} color={theme.colors.white} />
                 </Pressable>
               </View>
-              <Text style={styles.messageCounter}>
-                {messageCharacterCount}/{MAX_MESSAGE_LENGTH}
-              </Text>
+              {messageCharacterCount >= Math.floor(MAX_MESSAGE_LENGTH * 0.8) ? (
+                <Text style={styles.messageCounter}>
+                  {messageCharacterCount}/{MAX_MESSAGE_LENGTH}
+                </Text>
+              ) : null}
             </View>
           ) : (
             <View
@@ -1416,21 +1306,15 @@ export default function ChatModal({
           />
         ) : null}
 
-      {showReportForm ? (
-        <View style={styles.reportOverlay}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={styles.reportCard}
-          >
-            <ScrollView
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={styles.reportContent}
-              showsVerticalScrollIndicator={false}
-            >
-              <View style={styles.reportHeader}>
-                <Text style={styles.reportTitle}>{t('profile.report.sheet.title')}</Text>
-                <Text style={styles.reportSubtitle}>{t('profile.report.sheet.description')}</Text>
-              </View>
+      <AppModal
+        visible={showReportForm}
+        title={t('profile.report.sheet.title')}
+        presentation="sheet"
+        keyboardAware
+        scrollable
+        onClose={closeReportForm}
+      >
+              <Text style={styles.reportSubtitle}>{t('profile.report.sheet.description')}</Text>
 
               <View style={styles.reasonGrid}>
                 {REPORT_REASON_OPTIONS.map((reason) => {
@@ -1477,10 +1361,7 @@ export default function ChatModal({
                 <AppButton title={t('profile.report.submit')} onPress={() => void handleReportSubmit()} loading={reportSubmitting} />
                 <AppButton title={t('common.cancel')} onPress={closeReportForm} variant="secondary" />
               </View>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </View>
-      ) : null}
+      </AppModal>
     </AccessibleModal>
   );
 }
@@ -1497,29 +1378,29 @@ const styles = StyleSheet.create({
   loadingOlder: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
+    paddingVertical: 8,
   },
   header: {
-    minHeight: 66,
+    minHeight: 44,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
   },
   headerLeft: {
     flex: 1,
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
   },
   iconButton: {
-    minWidth: theme.layout.controlMinUnified,
-    minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    minWidth: 36,
+    minHeight: 36,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1528,20 +1409,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-  },
-  avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 999,
-    backgroundColor: theme.colors.surface,
-  },
-  avatarPlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.primarySurface,
-    borderWidth: 1,
-    borderColor: theme.alpha.brand18,
+    gap: 6,
   },
   profileText: {
     flex: 1,
@@ -1550,19 +1418,19 @@ const styles = StyleSheet.create({
   },
   name: {
     color: theme.colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 12,
+    fontFamily: theme.fonts.bold,
   },
   username: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '600',
+    fontFamily: theme.fonts.medium,
   },
   statusText: {
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   statusTextOnline: {
     color: theme.colors.successText,
@@ -1586,14 +1454,19 @@ const styles = StyleSheet.create({
     minHeight: theme.layout.controlMinUnified,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
   menuText: {
     color: theme.colors.text,
-    fontSize: 12,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
+  },
+  menuTextDanger: {
+    color: theme.colors.dangerText,
+  },
+  menuTextWarning: {
+    color: theme.colors.warningText,
   },
   reportOverlay: {
     zIndex: 24,
@@ -1604,11 +1477,11 @@ const styles = StyleSheet.create({
     left: 0,
     backgroundColor: theme.colors.scrim,
     justifyContent: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
   },
   reportCard: {
     maxHeight: '82%',
-    borderRadius: 22,
+    borderRadius: theme.radius.personCard,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
@@ -1616,64 +1489,63 @@ const styles = StyleSheet.create({
   },
   reportContent: {
     padding: 16,
-    gap: 16,
+    gap: 12,
   },
   reportHeader: {
-    gap: 6,
+    gap: 5,
   },
   reportTitle: {
     color: theme.colors.text,
-    fontSize: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    fontFamily: theme.fonts.extraBold,
   },
   reportSubtitle: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    lineHeight: 18,
+    ...theme.typography.roles.body,
   },
   reasonGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
   },
   reasonChip: {
     minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     backgroundColor: theme.colors.surface,
   },
   reasonChipActive: {
-    borderColor: theme.colors.warningText,
-    backgroundColor: theme.colors.warningSurface,
+    borderColor: theme.colors.dangerText,
+    backgroundColor: theme.colors.dangerSurface,
   },
   reasonChipText: {
     color: theme.colors.textSoft,
-    fontSize: 12,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
   },
   reasonChipTextActive: {
-    color: theme.colors.warningText,
+    color: theme.colors.dangerText,
   },
   detailsSection: {
-    gap: 8,
+    gap: 6,
   },
   detailsLabel: {
     color: theme.colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 12,
+    fontFamily: theme.fonts.bold,
   },
   detailsInput: {
-    minHeight: 148,
+    minHeight: 124,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
     color: theme.colors.text,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
     fontSize: theme.typography.body,
     lineHeight: 21,
   },
@@ -1681,16 +1553,16 @@ const styles = StyleSheet.create({
     color: theme.colors.textSoft,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
     textAlign: 'right',
   },
   reportActions: {
-    gap: 10,
+    gap: 8,
   },
   messages: {
     flexGrow: 1,
-    padding: 14,
-    gap: 8,
+    padding: 10,
+    gap: 4,
   },
   messagesEmpty: {
     alignItems: 'center',
@@ -1710,13 +1582,13 @@ const styles = StyleSheet.create({
   },
   emptyState: {
     alignItems: 'center',
-    paddingHorizontal: 22,
-    gap: 7,
+    paddingHorizontal: 16,
+    gap: 6,
   },
   emptyIcon: {
-    width: 62,
-    height: 62,
-    borderRadius: 999,
+    width: 44,
+    height: 44,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySurface,
@@ -1724,12 +1596,11 @@ const styles = StyleSheet.create({
   },
   emptyTitle: {
     color: theme.colors.text,
-    fontSize: 16,
-    fontWeight: '900',
+    ...theme.typography.roles.cardTitle,
   },
   emptyDescription: {
     color: theme.colors.textMuted,
-    fontSize: 12,
+    ...theme.typography.roles.body,
     textAlign: 'center',
   },
   inputSafeArea: {
@@ -1740,36 +1611,36 @@ const styles = StyleSheet.create({
   inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
   },
   messageCounter: {
     color: theme.colors.textSoft,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
     textAlign: 'right',
-    paddingHorizontal: 16,
-    paddingBottom: 6,
+    paddingHorizontal: 12,
+    paddingBottom: 5,
     marginTop: -6,
   },
   input: {
     flex: 1,
-    minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    minHeight: 36,
+    borderRadius: theme.radius.pill,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
     color: theme.colors.text,
-    paddingHorizontal: 14,
-    fontSize: theme.typography.body,
-    lineHeight: 21,
+    paddingHorizontal: 8,
+    fontSize: theme.typography.roles.meta.fontSize,
+    lineHeight: theme.typography.roles.meta.lineHeight,
   },
   sendButton: {
-    minWidth: theme.layout.controlMinUnified,
-    minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    minWidth: 36,
+    minHeight: 36,
+    borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primary,
@@ -1780,12 +1651,12 @@ const styles = StyleSheet.create({
   lockedNotice: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    marginHorizontal: 12,
+    gap: 8,
+    marginHorizontal: 8,
     marginVertical: 10,
     borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
   },
   lockedNoticeMuted: {
     backgroundColor: theme.colors.surface,
@@ -1796,7 +1667,6 @@ const styles = StyleSheet.create({
   lockedText: {
     flex: 1,
     color: theme.colors.text,
-    fontSize: 12,
-    lineHeight: 18,
+    ...theme.typography.roles.body,
   },
 });

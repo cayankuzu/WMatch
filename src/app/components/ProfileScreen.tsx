@@ -101,6 +101,8 @@ export default function ProfileScreen({ onMovieClick }: ProfileScreenProps) {
         ) : null}
         onMovieClick={onMovieClick}
         isOwnProfile
+        headerTitle={t('profile.screen.header')}
+        onEditProfile={() => setShowEditProfile(true)}
         onHeaderRightPress={() => setShowSettings(true)}
         headerRightIcon="cog-outline"
         refreshing={refreshing}
@@ -137,7 +139,7 @@ export default function ProfileScreen({ onMovieClick }: ProfileScreenProps) {
           currentBio={user.bio}
           currentLetterboxd={user.letterboxd}
           onCheckAvailability={checkAvailability}
-          onSave={(data) => updateProfile(data)}
+          onSave={(data, onUploadProgress, signal) => updateProfile(data, { onUploadProgress, signal })}
         />
       ) : null}
 

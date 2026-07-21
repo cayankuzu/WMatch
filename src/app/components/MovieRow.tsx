@@ -53,7 +53,7 @@ function MovieRow({
   );
 
   const renderMovie = useCallback(
-    ({ item }: { item: Movie }) => (
+    ({ item, index }: { item: Movie; index: number }) => (
       <MovieCard
         movie={item}
         size={size}
@@ -61,6 +61,7 @@ function MovieRow({
         showViewers={showViewerCount}
         viewerCount={showViewerCount ? viewerCounts?.[getMovieKey(item)] ?? 0 : 0}
         viewerProfiles={showViewerCount ? viewerProfiles?.[getMovieKey(item)] ?? [] : []}
+        imagePriority={index < 4 ? 'high' : 'normal'}
       />
     ),
     [onMovieClick, showViewerCount, size, viewerCounts, viewerProfiles],
@@ -115,7 +116,7 @@ export default memo(MovieRow);
 
 const styles = StyleSheet.create({
   section: {
-    gap: 10,
+    gap: 8,
   },
   header: {
     flexDirection: 'row',
@@ -129,13 +130,12 @@ const styles = StyleSheet.create({
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.typography.section,
-    fontWeight: '800',
+    ...theme.typography.roles.sectionTitle,
   },
   emptyState: {
     marginHorizontal: SCREEN_SIDE_SPACING,
-    minHeight: 84,
-    borderRadius: 18,
+    minHeight: 44,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
@@ -145,28 +145,27 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
     textAlign: 'center',
   },
   list: {
     paddingHorizontal: SCREEN_SIDE_SPACING,
-    gap: 10,
+    gap: 8,
   },
   skeletonList: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 8,
     paddingHorizontal: SCREEN_SIDE_SPACING,
     overflow: 'hidden',
   },
   skeletonCard: {
-    width: 98,
-    gap: 7,
+    width: 88,
+    gap: 5,
   },
   skeletonPoster: {
-    width: 98,
-    height: 146,
-    borderRadius: 16,
+    width: 88,
+    height: 131,
+    borderRadius: theme.radius.poster,
   },
   skeletonTitle: {
     width: 82,

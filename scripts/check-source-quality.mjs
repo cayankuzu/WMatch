@@ -24,9 +24,18 @@ const focusedTests = [];
 const skippedTests = [];
 const unfinishedMarkers = [];
 const debugConsoleCalls = [];
+const oversizedFiles = [];
+const tinyTypography = [];
 let rawModalImports = 0;
+let rawExpoImageImports = 0;
 let consoleCalls = 0;
 let explicitAny = 0;
+const LEGACY_COMPONENT_LINE_BUDGETS = new Map([
+  ['src/app/components/ChatModal.tsx', 1675],
+  ['src/app/components/SignUpScreen.tsx', 1145],
+  ['src/app/components/ChatScreen.tsx', 1045],
+  ['src/app/components/ProfileCard.tsx', 965],
+]);
 
 for (const file of sourceFiles) {
   const source = readFileSync(file, 'utf8');
@@ -45,6 +54,21 @@ for (const file of sourceFiles) {
 
   if (/\bconsole\.debug\s*\(/.test(source)) {
     debugConsoleCalls.push(file);
+  }
+
+  if (/^src\/app\/components\/.+\.tsx$/.test(file)) {
+    const lineCount = source.split(/\r?\n/).length;
+    const lineBudget = LEGACY_COMPONENT_LINE_BUDGETS.get(file) ?? 900;
+
+    if (lineCount > lineBudget) {
+      oversizedFiles.push(`${file} (${lineCount}/${lineBudget})`);
+    }
+
+    if (/fontSize:\s*(?:[0-9]|10|11)(?:\D|$)|letterSpacing:\s*-/.test(source)) {
+      tinyTypography.push(file);
+    }
+
+    rawExpoImageImports += (source.match(/import\s*{\s*Image\s*}\s*from\s*['"]expo-image['"]/g) ?? []).length;
   }
 
   if (/^src\/app\/components\/(?!ui\/AppModal\.tsx).+\.tsx$/.test(file)) {
@@ -71,8 +95,20 @@ if (debugConsoleCalls.length > 0) {
   fail(`debug console calls are committed: ${debugConsoleCalls.join(', ')}`);
 }
 
+if (oversizedFiles.length > 0) {
+  fail(`component line budgets exceeded: ${oversizedFiles.join(', ')}`);
+}
+
+if (tinyTypography.length > 0) {
+  fail(`tiny or negatively tracked typography found: ${tinyTypography.join(', ')}`);
+}
+
+if (rawExpoImageImports > 2) {
+  fail(`raw expo-image imports exceeded the branding-only budget: ${rawExpoImageImports}/2`);
+}
+
 if (rawModalImports > 1) {
   fail(`raw React Native Modal imports exceeded the primitive budget: ${rawModalImports}/1`);
 }
 
-console.log(`Source quality check passed. rawModalImports=${rawModalImports}, consoleCalls=${consoleCalls}, explicitAny=${explicitAny}`);
+console.log(`Source quality check passed. rawModalImports=${rawModalImports}, rawExpoImageImports=${rawExpoImageImports}, consoleCalls=${consoleCalls}, explicitAny=${explicitAny}`);

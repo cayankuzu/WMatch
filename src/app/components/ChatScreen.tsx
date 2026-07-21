@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Image } from 'expo-image';
 import {
   ActivityIndicator,
   Alert,
@@ -11,7 +10,6 @@ import {
   type ViewToken,
   View,
 } from 'react-native';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../context/AuthContext';
@@ -39,6 +37,7 @@ import {
   type ChatPatch,
 } from '../../services/chatState';
 import { subscribeToUserEvent } from '../../services/userEventBus';
+import { setTabBadge } from '../../services/tabBadges';
 import { SCREEN_BOTTOM_SPACING, SCREEN_SIDE_SPACING } from '../../shared/constants';
 import type { Movie } from '../../services/tmdb';
 import { theme } from '../../shared/theme';
@@ -52,86 +51,20 @@ import DataWarningBanner from './ui/DataWarningBanner';
 import { ChatListSkeleton } from './ui/Skeleton';
 import AppRefreshControl from './ui/AppRefreshControl';
 import useChatPresence from '../hooks/useChatPresence';
+import useTabReselect from '../hooks/useTabReselect';
+import ChatAvatar from './chat/ChatAvatar';
+import ScreenHeader from './ui/ScreenHeader';
+import {
+  applyMessageInsertToChats,
+  getChatPreview,
+  hasVisibleConversationActivity,
+  matchesChatFilter,
+} from './chat/chatListModel';
 
 interface ChatScreenProps {
   onMovieClick?: (movie: Movie) => void;
   requestedOpenUserId?: string | null;
   onRequestedOpenUserIdHandled?: (userId: string) => void;
-}
-
-function Avatar({
-  uri,
-  size,
-  bordered = false,
-}: {
-  uri: string | null;
-  size: number;
-  bordered?: boolean;
-}) {
-  if (uri) {
-    return (
-      <Image
-        accessible={false}
-        cachePolicy="memory-disk"
-        contentFit="cover"
-        recyclingKey={uri}
-        source={{ uri }}
-        style={[
-          {
-            width: size,
-            height: size,
-            borderRadius: size / 2,
-            backgroundColor: theme.colors.surface,
-          },
-          bordered && {
-            borderWidth: 2,
-            borderColor: theme.colors.primary,
-          },
-        ]}
-        transition={120}
-      />
-    );
-  }
-
-  return (
-    <View
-      accessible={false}
-      style={[
-        {
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: theme.colors.primarySurface,
-          borderWidth: bordered ? 2 : 1,
-          borderColor: bordered ? theme.colors.primary : theme.alpha.brand18,
-        },
-      ]}
-    >
-      <MaterialCommunityIcons accessible={false} name="account-outline" size={size * 0.38} color={theme.colors.primarySoft} />
-    </View>
-  );
-}
-
-function getChatPreview(chat: ApiChat, t: ReturnType<typeof useLocalization>['t']) {
-  if (chat.lastMessage.trim()) {
-    return chat.lastMessage;
-  }
-
-  if (chat.blockedByMe) {
-    return t('chat.screen.preview.blockedByMe');
-  }
-
-  if (chat.blockedByOther) {
-    return t('chat.screen.preview.blockedByOther');
-  }
-
-  if (chat.ended) {
-    return t('chat.screen.preview.ended');
-  }
-
-  return t('chat.screen.preview.matched');
 }
 
 function getChatTags(chat: ApiChat, t: ReturnType<typeof useLocalization>['t']) {
@@ -155,96 +88,7 @@ function getChatTags(chat: ApiChat, t: ReturnType<typeof useLocalization>['t']) 
     });
   }
 
-  if (!chat.isBlocked && !chat.ended) {
-    tags.push({
-      key: 'active',
-      label: t('chat.screen.tag.active'),
-      style: styles.tagSuccess,
-      textStyle: styles.tagSuccessText,
-    });
-  }
-
-  if (chat.unread) {
-    tags.push({
-      key: 'unread',
-      label: t('chat.screen.tag.unread'),
-      style: styles.tagInfo,
-      textStyle: styles.tagInfoText,
-    });
-  }
-
   return tags;
-}
-
-function hasVisibleConversationActivity(chat: ApiChat) {
-  return chat.hasConversationActivity || chat.lastMessage.trim().length > 0;
-}
-
-function matchesChatFilter(chat: ApiChat, filter: FilterType) {
-  if (filter === 'all') {
-    return true;
-  }
-
-  if (filter === 'blocked') {
-    return chat.isBlocked;
-  }
-
-  if (filter === 'ended') {
-    return chat.ended && !chat.isBlocked;
-  }
-
-  if (chat.isBlocked || chat.ended) {
-    return false;
-  }
-
-  if (filter === 'unread') {
-    return chat.unread;
-  }
-
-  if (filter === 'read') {
-    return hasVisibleConversationActivity(chat) && !chat.unread;
-  }
-
-  return true;
-}
-
-function applyMessageInsertToChats({
-  chats,
-  currentUserId,
-  message,
-  activeThreadUserId,
-}: {
-  chats: ApiChat[];
-  currentUserId: string;
-  message: ApiMessage;
-  activeThreadUserId: string | null;
-}) {
-  const otherUserId = message.sender_id === currentUserId ? message.receiver_id : message.sender_id;
-  let didUpdate = false;
-
-  const nextChats = chats.map((chat) => {
-    if (chat.userId !== otherUserId) {
-      return chat;
-    }
-
-    didUpdate = true;
-
-    return {
-      ...chat,
-      lastMessage: message.text,
-      lastMessageTime: message.created_at,
-      hasConversationActivity: true,
-      unread:
-        message.sender_id === currentUserId
-          ? chat.unread
-          : activeThreadUserId !== otherUserId,
-    };
-  });
-
-  return {
-    chats: didUpdate ? sortChats(nextChats) : chats,
-    didUpdate,
-  };
 }
 
 function ChatListItem({
@@ -283,10 +127,10 @@ function ChatListItem({
       accessibilityState={{ selected: chat.unread }}
       onPressIn={onIntent}
       onPress={onPress}
-      style={({ pressed }) => [styles.chatRow, pressed && styles.chatRowPressed]}
+      style={({ pressed }) => [styles.chatRow, chat.unread && styles.chatRowUnread, pressed && styles.chatRowPressed]}
     >
       <View style={styles.avatarWrap}>
-        <Avatar uri={photo} size={46} />
+        <ChatAvatar uri={photo} size={34} />
         {chat.unread ? <View style={styles.unreadDot} /> : null}
       </View>
 
@@ -348,6 +192,14 @@ export default function ChatScreen({
   const [stale, setStale] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
   const [activeChat, setActiveChat] = useState<ApiChat | null>(null);
+  const listRef = useRef<FlatList<ApiChat> | null>(null);
+  const scrollToTop = useCallback(() => {
+    if (!activeChat) {
+      listRef.current?.scrollToOffset({ offset: 0, animated: true });
+    }
+  }, [activeChat]);
+
+  useTabReselect('chat', scrollToTop);
   const [profileChat, setProfileChat] = useState<ApiChat | null>(null);
   const [profileBlockBusy, setProfileBlockBusy] = useState(false);
   const [visibleChatIds, setVisibleChatIds] = useState<Set<string>>(
@@ -681,6 +533,10 @@ export default function ChatScreen({
     [chats, filter],
   );
 
+  useEffect(() => {
+    setTabBadge('chat', chats.filter((chat) => chat.unread).length);
+  }, [chats]);
+
   const handleFilterPress = (nextFilter: FilterType) => {
     if (nextFilter === filter) {
       return;
@@ -765,7 +621,7 @@ export default function ChatScreen({
 
   if (loading && chats.length === 0) {
     return (
-      <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
+      <SafeAreaView edges={[]} style={styles.safeArea}>
         <ChatListSkeleton />
       </SafeAreaView>
     );
@@ -773,7 +629,7 @@ export default function ChatScreen({
 
   if (loadError && chats.length === 0 && !stale) {
     return (
-      <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
+      <SafeAreaView edges={[]} style={styles.safeArea}>
         <DataState
           state="fatal-error"
           title={t('data.error.title')}
@@ -790,8 +646,9 @@ export default function ChatScreen({
   }
 
   return (
-    <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
+    <SafeAreaView edges={[]} style={styles.safeArea}>
       <FlatList
+        ref={listRef}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.content}
         refreshControl={
@@ -829,8 +686,7 @@ export default function ChatScreen({
                   onAction={() => void loadChats('refresh')}
                 />
               ) : null}
-              <Text style={styles.title}>{t('chat.screen.title')}</Text>
-              <Text style={styles.subtitle}>{t('chat.screen.subtitle')}</Text>
+              <ScreenHeader title={t('chat.screen.title')} subtitle={t('chat.screen.subtitle')} />
             </View>
 
             {newMatches.length > 0 && filter === 'all' ? (
@@ -853,7 +709,7 @@ export default function ChatScreen({
                         onPress={() => setActiveChat(chat)}
                         style={styles.matchItem}
                       >
-                        <Avatar uri={photo} size={56} bordered />
+                        <ChatAvatar uri={photo} size={40} bordered />
                         <Text numberOfLines={1} style={styles.matchName}>
                           {chat.user.name.split(' ')[0]}
                         </Text>
@@ -872,6 +728,7 @@ export default function ChatScreen({
                     key={item.value}
                     accessibilityRole="tab"
                     accessibilityState={{ selected: active }}
+                    hitSlop={6}
                     onPress={() => handleFilterPress(item.value)}
                     style={[styles.filterChip, active && styles.filterChipActive]}
                   >
@@ -957,12 +814,12 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: SCREEN_SIDE_SPACING,
-    paddingTop: 14,
+    paddingTop: 10,
     paddingBottom: SCREEN_BOTTOM_SPACING,
-    gap: 14,
+    gap: 10,
   },
   loadingMore: {
-    minHeight: 56,
+    minHeight: 46,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -974,62 +831,52 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     color: theme.colors.textMuted,
-    marginTop: 12,
-    fontSize: 12,
-    fontWeight: '700',
+    marginTop: 8,
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
   },
   header: {
-    gap: 5,
-    paddingHorizontal: 16,
-  },
-  title: {
-    color: theme.colors.text,
-    fontSize: theme.typography.title,
-    fontWeight: '900',
-  },
-  subtitle: {
-    color: theme.colors.textMuted,
-    fontSize: 12,
-    fontWeight: '600',
+    gap: 4,
+    paddingHorizontal: 12,
   },
   section: {
-    gap: 10,
-    paddingHorizontal: 16,
+    gap: 8,
+    paddingHorizontal: 12,
   },
   sectionTitle: {
     color: theme.colors.text,
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 13,
+    fontFamily: theme.fonts.bold,
   },
   matchList: {
-    gap: 12,
+    gap: 10,
   },
   matchItem: {
-    width: 60,
-    minHeight: 84,
+    width: 52,
+    minHeight: 60,
     alignItems: 'center',
-    gap: 5,
+    gap: 4,
   },
   matchName: {
     color: theme.colors.text,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
-    maxWidth: 60,
+    fontFamily: theme.fonts.semibold,
+    maxWidth: 52,
     textAlign: 'center',
   },
   filterList: {
-    gap: 8,
-    paddingHorizontal: 16,
+    gap: 6,
+    paddingHorizontal: 12,
   },
   filterChip: {
-    minHeight: theme.layout.controlMinUnified,
-    borderRadius: 999,
+    minHeight: 36,
+    borderRadius: theme.radius.pill,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     justifyContent: 'center',
   },
   filterChipActive: {
@@ -1038,32 +885,37 @@ const styles = StyleSheet.create({
   },
   filterText: {
     color: theme.colors.textMuted,
-    fontSize: 12,
-    fontWeight: '800',
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
   },
   filterTextActive: {
     color: theme.colors.white,
   },
   chatList: {
-    gap: 10,
-    paddingHorizontal: 16,
+    gap: 8,
+    paddingHorizontal: 12,
   },
   chatSeparator: {
     height: 10,
   },
   chatRow: {
-    minHeight: 76,
-    borderRadius: 18,
+    minHeight: 56,
+    borderRadius: theme.radius.card,
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.border,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    padding: 12,
+    gap: 6,
+    padding: 8,
   },
   chatRowPressed: {
     opacity: 0.86,
+  },
+  chatRowUnread: {
+    borderLeftWidth: 3,
+    borderLeftColor: theme.colors.primary,
+    backgroundColor: theme.colors.backgroundElevated,
   },
   avatarWrap: {
     position: 'relative',
@@ -1074,7 +926,7 @@ const styles = StyleSheet.create({
     right: 1,
     width: 10,
     height: 10,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     borderWidth: 2,
     borderColor: theme.colors.surface,
     backgroundColor: theme.colors.primarySoft,
@@ -1086,56 +938,52 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: 6,
   },
   chatPrimaryColumn: {
     flex: 1,
     minWidth: 0,
-    gap: 6,
+    gap: 5,
   },
   chatMetaColumn: {
     alignItems: 'flex-end',
-    gap: 6,
-    minWidth: 76,
+    gap: 5,
+    minWidth: 58,
   },
   chatName: {
     color: theme.colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    ...theme.typography.roles.cardTitle,
   },
   chatTime: {
     color: theme.colors.textSoft,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '700',
+    ...theme.typography.roles.micro,
+    fontVariant: ['tabular-nums'],
   },
   lastMessage: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '600',
+    ...theme.typography.roles.meta,
   },
   lastMessageUnread: {
     color: theme.colors.text,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   lastMessageTyping: {
     color: theme.colors.successText,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   tagRow: {
     alignItems: 'flex-end',
-    gap: 6,
+    gap: 5,
   },
   tagBase: {
-    borderRadius: 999,
-    paddingHorizontal: 8,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 6,
     paddingVertical: 4,
   },
   tagBaseText: {
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   tagMuted: {
     backgroundColor: theme.colors.surfaceStrong,

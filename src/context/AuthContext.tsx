@@ -9,7 +9,9 @@ import {
   cleanupManagedProfilePhotos,
   cleanupRemovedProfilePhotos,
   hasLocalProfilePhotos,
+  ProfilePhotoUploadCancelledError,
   persistProfilePhotos,
+  type ProfilePhotoUploadProgress,
 } from '../services/storage';
 import {
   PUBLIC_WEB_BASE_URL,
@@ -52,7 +54,13 @@ interface AuthContextType {
   checkAvailability: (payload: AvailabilityPayload) => Promise<AvailabilityResult>;
   sendPasswordReset: (email: string) => Promise<void>;
   sendVerificationEmail: (email: string) => Promise<void>;
-  updateProfile: (data: ProfileUpdateInput) => Promise<void>;
+  updateProfile: (
+    data: ProfileUpdateInput,
+    options?: {
+      onUploadProgress?: (progress: ProfilePhotoUploadProgress) => void;
+      signal?: AbortSignal;
+    },
+  ) => Promise<void>;
   deleteAccount: () => Promise<void>;
   completePasswordRecovery: (newPassword: string) => Promise<void>;
   cancelPasswordRecovery: () => Promise<void>;
@@ -905,7 +913,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setPendingVerificationEmail(normalizedEmail);
   };
 
-  const updateProfile = async (data: ProfileUpdateInput) => {
+  const updateProfile = async (
+    data: ProfileUpdateInput,
+    options?: {
+      onUploadProgress?: (progress: ProfilePhotoUploadProgress) => void;
+      signal?: AbortSignal;
+    },
+  ) => {
     if (!user) {
       return;
     }
@@ -920,8 +934,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         photos: payload.photos,
         previousPhotos,
         cleanupRemoved: false,
+        onProgress: options?.onUploadProgress,
+        signal: options?.signal,
       });
       uploadedPhotosForRollback = payload.photos.filter((photo) => !previousPhotos.includes(photo));
+    }
+
+    if (options?.signal?.aborted) {
+      if (uploadedPhotosForRollback.length > 0) {
+        await cleanupManagedProfilePhotos(uploadedPhotosForRollback);
+      }
+      throw new ProfilePhotoUploadCancelledError();
     }
 
     try {

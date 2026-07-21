@@ -1,10 +1,10 @@
 import { memo } from 'react';
-import { Image } from 'expo-image';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { useLocalization } from '../../context/LocalizationContext';
 import type { ViewerPreview } from '../../shared/types';
 import { theme } from '../../shared/theme';
+import AppImage from './ui/AppImage';
 
 interface ViewerCountProps {
   totalCount: number;
@@ -36,14 +36,13 @@ function ViewerCount({ totalCount, viewerProfiles }: ViewerCountProps) {
             ]}
           >
             {viewer.photo ? (
-              <Image
-                accessible={false}
-                cachePolicy="memory-disk"
+              <AppImage
                 contentFit="cover"
+                fallbackIcon="account-outline"
                 recyclingKey={viewer.photo}
-                source={{ uri: viewer.photo }}
+                uri={viewer.photo}
                 style={styles.avatar}
-                transition={120}
+                transition={theme.motion.fast}
               />
             ) : (
               <View style={styles.avatarFallback}>
@@ -80,7 +79,7 @@ const styles = StyleSheet.create({
   avatarShell: {
     width: 28,
     height: 28,
-    borderRadius: 999,
+    borderRadius: theme.radius.pill,
     borderWidth: 2,
     borderColor: theme.colors.surface,
     overflow: 'hidden',
@@ -103,7 +102,7 @@ const styles = StyleSheet.create({
     color: theme.colors.white,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   countBadge: {
     alignItems: 'center',
@@ -114,13 +113,13 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
     fontSize: theme.typography.roles.micro.fontSize,
     lineHeight: theme.typography.roles.micro.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   label: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '600',
+    fontFamily: theme.fonts.medium,
     marginLeft: 8,
   },
 });

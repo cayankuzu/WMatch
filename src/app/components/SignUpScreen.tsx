@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -18,6 +17,7 @@ import {
 import { readSignupDraft, writeSignupDraft, type StoredSignupDraft } from '../../services/signupDraft';
 import { getLocalizedUserGenderLabel } from '../../shared/i18n/helpers';
 import { theme } from '../../shared/theme';
+import AppImage from './ui/AppImage';
 import {
   USER_GENDERS,
   type UserGender,
@@ -32,6 +32,7 @@ import AuthLegalConsent from './ui/AuthLegalConsent';
 import AuthWordmark from './ui/AuthWordmark';
 import OptionChips from './ui/OptionChips';
 import Screen from './ui/Screen';
+import SignUpProgress from './ui/SignUpProgress';
 import SortablePhotoGrid from './ui/SortablePhotoGrid';
 
 interface SignUpScreenProps {
@@ -614,11 +615,7 @@ export default function SignUpScreen({
           </View>
         </Pressable>
 
-        <View style={styles.progressRow}>
-          {[1, 2, 3, 4].map((item) => (
-            <View key={item} style={[styles.progressBar, item <= step && styles.progressBarActive]} />
-          ))}
-        </View>
+        <SignUpProgress step={step} />
 
         <View style={styles.card}>
           <Text style={styles.title}>
@@ -833,16 +830,16 @@ export default function SignUpScreen({
             <View style={styles.reviewStack}>
               <View style={styles.reviewCard}>
                 {reviewPhoto ? (
-                  <Image
-                    cachePolicy="memory-disk"
+                  <AppImage
                     contentFit="cover"
+                    fallbackIcon="account-outline"
                     recyclingKey={reviewPhoto}
-                    source={{ uri: reviewPhoto }}
+                    uri={reviewPhoto}
                     style={styles.reviewPhoto}
                   />
                 ) : (
                   <View style={styles.reviewPhotoFallback}>
-                    <MaterialCommunityIcons name="account-outline" size={24} color={theme.colors.primarySoft} />
+                    <MaterialCommunityIcons name="account-outline" size={20} color={theme.colors.primarySoft} />
                   </View>
                 )}
 
@@ -909,16 +906,16 @@ export default function SignUpScreen({
 
 const styles = StyleSheet.create({
   container: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    gap: 10,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    gap: 8,
   },
   hero: {
     alignItems: 'center',
     marginBottom: 4,
   },
   lockedSection: {
-    gap: 10,
+    gap: 8,
   },
   backRow: {
     flexDirection: 'row',
@@ -928,44 +925,29 @@ const styles = StyleSheet.create({
   backText: {
     color: theme.colors.text,
     fontSize: theme.typography.body,
-    fontWeight: '700',
-  },
-  progressRow: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  progressBar: {
-    flex: 1,
-    height: 4,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.surfaceStrong,
-  },
-  progressBarActive: {
-    backgroundColor: theme.colors.primaryStrong,
+    fontFamily: theme.fonts.semibold,
   },
   card: {
-    borderRadius: 22,
+    borderRadius: theme.radius.personCard,
     backgroundColor: theme.alpha.panel94,
     borderWidth: 1,
     borderColor: theme.colors.border,
     padding: 15,
-    gap: 12,
+    gap: 10,
   },
   title: {
     color: theme.colors.text,
-    fontSize: theme.typography.title,
-    fontWeight: '900',
+    ...theme.typography.roles.screenTitle,
   },
   subtitle: {
     color: theme.colors.textMuted,
-    fontSize: theme.typography.caption,
-    fontWeight: '700',
+    ...theme.typography.roles.meta,
   },
   formFields: {
-    gap: 11,
+    gap: 8,
   },
   passwordStrength: {
-    gap: 9,
+    gap: 7,
     borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
@@ -976,16 +958,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 10,
+    gap: 8,
   },
   passwordStrengthTitle: {
     color: theme.colors.text,
     fontSize: theme.typography.caption,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   passwordStrengthLabel: {
     fontSize: theme.typography.caption,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   passwordStrengthWeak: {
     color: theme.colors.dangerText,
@@ -998,7 +980,7 @@ const styles = StyleSheet.create({
   },
   passwordMeter: {
     flexDirection: 'row',
-    gap: 5,
+    gap: 4,
   },
   passwordMeterSegment: {
     flex: 1,
@@ -1016,30 +998,29 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.successText,
   },
   passwordCheckList: {
-    gap: 6,
+    gap: 5,
   },
   passwordCheckRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
+    gap: 6,
   },
   passwordCheckText: {
     flex: 1,
     color: theme.colors.textMuted,
     fontSize: theme.typography.caption,
     lineHeight: 17,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   passwordCheckTextPassed: {
     color: theme.colors.text,
   },
   inlineSection: {
-    gap: 8,
+    gap: 6,
   },
   inlineLabel: {
     color: theme.colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    ...theme.typography.roles.control,
   },
   helperText: {
     color: theme.colors.textMuted,
@@ -1056,30 +1037,30 @@ const styles = StyleSheet.create({
     color: theme.colors.dangerText,
     fontSize: theme.typography.caption,
     lineHeight: 17,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
   reviewStack: {
-    gap: 12,
+    gap: 10,
   },
   reviewCard: {
-    minHeight: 116,
-    borderRadius: 18,
+    minHeight: 96,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
     flexDirection: 'row',
-    gap: 12,
+    gap: 10,
     padding: 12,
   },
   reviewPhoto: {
     width: 72,
-    height: 96,
+    height: 80,
     borderRadius: 14,
     backgroundColor: theme.colors.surfaceStrong,
   },
   reviewPhotoFallback: {
     width: 72,
-    height: 96,
+    height: 80,
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1087,19 +1068,19 @@ const styles = StyleSheet.create({
   },
   reviewBody: {
     flex: 1,
-    gap: 5,
+    gap: 4,
     justifyContent: 'center',
     minWidth: 0,
   },
   reviewName: {
     color: theme.colors.text,
     fontSize: theme.typography.section,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   reviewUsername: {
     color: theme.colors.primarySoft,
     fontSize: theme.typography.body,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   reviewBio: {
     color: theme.colors.textMuted,
@@ -1108,33 +1089,33 @@ const styles = StyleSheet.create({
   },
   reviewGrid: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
   },
   reviewMetric: {
     flex: 1,
-    minHeight: 66,
+    minHeight: 46,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
     justifyContent: 'center',
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     gap: 4,
   },
   reviewMetricLabel: {
     color: theme.colors.textSoft,
     fontSize: theme.typography.roles.meta.fontSize,
     lineHeight: theme.typography.roles.meta.lineHeight,
-    fontWeight: '800',
+    fontFamily: theme.fonts.bold,
   },
   reviewMetricValue: {
     color: theme.colors.text,
     fontSize: theme.typography.body,
-    fontWeight: '900',
+    fontFamily: theme.fonts.extraBold,
   },
   error: {
     color: theme.colors.dangerText,
     fontSize: theme.typography.body,
-    fontWeight: '700',
+    fontFamily: theme.fonts.semibold,
   },
 });

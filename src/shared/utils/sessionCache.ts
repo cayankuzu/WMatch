@@ -7,6 +7,7 @@ const USER_SESSION_STORAGE_PREFIXES = [
   'wmatch:library-snapshot:',
   'wmatch:swipe-quota:',
   'wmatch:tab-history:',
+  'wmatch:recent-searches:',
 ] as const;
 
 export function registerSessionCache(cleaner: () => void) {

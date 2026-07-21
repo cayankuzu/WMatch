@@ -2,10 +2,13 @@ import { useSyncExternalStore } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 
 type AppStateListener = (state: AppStateStatus) => void;
+type MemoryWarningListener = () => void;
 
 const listeners = new Set<AppStateListener>();
 let currentState = AppState.currentState;
 let nativeSubscription: ReturnType<typeof AppState.addEventListener> | null = null;
+const memoryWarningListeners = new Set<MemoryWarningListener>();
+let memoryWarningSubscription: ReturnType<typeof AppState.addEventListener> | null = null;
 
 function ensureNativeSubscription() {
   if (nativeSubscription) {
@@ -51,6 +54,24 @@ export function subscribeToForeground(listener: () => void) {
       listener();
     }
   });
+}
+
+export function subscribeToMemoryWarning(listener: MemoryWarningListener) {
+  memoryWarningListeners.add(listener);
+
+  if (!memoryWarningSubscription) {
+    memoryWarningSubscription = AppState.addEventListener('memoryWarning', () => {
+      memoryWarningListeners.forEach((memoryListener) => memoryListener());
+    });
+  }
+
+  return () => {
+    memoryWarningListeners.delete(listener);
+    if (memoryWarningListeners.size === 0 && memoryWarningSubscription) {
+      memoryWarningSubscription.remove();
+      memoryWarningSubscription = null;
+    }
+  };
 }
 
 export function useAppStateStatus() {

@@ -16,7 +16,7 @@ export default function SplashScreen() {
   const logoWidth = logoHeight * logoAspectRatio;
 
   return (
-    <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
+    <SafeAreaView edges={['top', 'right', 'bottom', 'left']} style={styles.safeArea}>
       <View
         accessibilityLabel={t('a11y.wmatchLoading')}
         accessibilityLiveRegion="polite"
@@ -31,6 +31,7 @@ export default function SplashScreen() {
               style={[styles.logo, { width: logoWidth, height: logoHeight }]}
             />
             <Text style={styles.tagline}>Watch Match</Text>
+            <View style={styles.brandSignal} />
           </View>
         </View>
 
@@ -58,15 +59,21 @@ const styles = StyleSheet.create({
   },
   logoShell: {
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
   },
   logo: {
     maxWidth: '92%',
   },
   tagline: {
     color: theme.colors.textSoft,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0,
+    ...theme.typography.roles.meta,
+    fontFamily: theme.fonts.semibold,
+    letterSpacing: 0.2,
+  },
+  brandSignal: {
+    width: 42,
+    height: 3,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.primary,
   },
 });

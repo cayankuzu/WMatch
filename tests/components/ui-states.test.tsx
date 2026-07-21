@@ -79,7 +79,11 @@ describe('shared UI states', () => {
         </LocalizationProvider>
       </SafeAreaProvider>,
     );
-    const tabList = screen.getByRole('tab', { name: 'Watch' }).parent;
+    let tabList = screen.getByRole('tab', { name: 'Watch' }).parent;
+    while (tabList && tabList.props.accessibilityRole !== 'tablist') {
+      tabList = tabList.parent;
+    }
+    expect(tabList).not.toBeNull();
     const wrapperStyle = StyleSheet.flatten(tabList?.parent?.props.style);
 
     expect(wrapperStyle.width).toBe('100%');
