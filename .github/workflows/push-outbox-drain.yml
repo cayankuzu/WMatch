@@ -1,0 +1,71 @@
+name: Push outbox drain
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # GitHub Actions' minimum interval is five minutes. Offset from minute zero
+    # to reduce the documented top-of-hour scheduling congestion.
+    - cron: '2/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: push-outbox-drain-production
+  cancel-in-progress: false
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: production
+    steps:
+      - name: Validate worker configuration
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_JWT: ${{ secrets.SUPABASE_ANON_JWT }}
+          NOTIFICATION_WORKER_SECRET: ${{ secrets.NOTIFICATION_WORKER_SECRET }}
+        run: |
+          test -n "$SUPABASE_URL"
+          test -n "$SUPABASE_ANON_JWT"
+          test -n "$NOTIFICATION_WORKER_SECRET"
+
+      - name: Drain and assert outbox health
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_JWT: ${{ secrets.SUPABASE_ANON_JWT }}
+          NOTIFICATION_WORKER_SECRET: ${{ secrets.NOTIFICATION_WORKER_SECRET }}
+        run: |
+          response_file="${RUNNER_TEMP}/push-outbox-response.json"
+          curl \
+            --silent \
+            --show-error \
+            --fail-with-body \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 10 \
+            --max-time 45 \
+            --request POST \
+            --header "Authorization: Bearer ${SUPABASE_ANON_JWT}" \
+            --header "apikey: ${SUPABASE_ANON_JWT}" \
+            --header "X-WMatch-Worker-Secret: ${NOTIFICATION_WORKER_SECRET}" \
+            --header "Content-Type: application/json" \
+            --output "$response_file" \
+            "${SUPABASE_URL%/}/functions/v1/make-server-d962235e/notifications/push-outbox/drain"
+
+          jq -e '
+            .success == true
+            and .healthy == true
+            and (.health.dead | type == "number")
+            and (.health.stalled | type == "number")
+            and (.health.receiptFailed | type == "number")
+            and (.health.receiptStalled | type == "number")
+            and .health.dead == 0
+            and .health.stalled == 0
+            and .health.receiptFailed == 0
+            and .health.receiptStalled == 0
+          ' "$response_file" >/dev/null
+
+          jq '{processed, healthy, health}' "$response_file"
