@@ -44,7 +44,7 @@ SELECT ok(
   'authenticated cannot invoke private chat directory RPC directly'
 );
 SELECT ok(
-  NOT has_function_privilege('authenticated', 'public.get_compatibility_candidate_page(uuid,bigint,uuid,integer)', 'EXECUTE'),
+  NOT has_function_privilege('authenticated', 'public.get_compatibility_candidate_page(uuid,integer,uuid,integer)', 'EXECUTE'),
   'authenticated cannot invoke private compatibility cursor RPC directly'
 );
 SELECT ok(
