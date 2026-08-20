@@ -8,6 +8,7 @@ import {
   DAILY_UNDO_LIMIT,
   SWIPE_QUOTA_WINDOW_HOURS,
 } from '../../shared/constants';
+import { storageKeys } from '../../shared/constants/storage';
 import type { SwipeQuotaKind, SwipeQuotaState } from '../../shared/types';
 import { getServerNowMs } from '../../shared/utils/serverTime';
 import { registerSessionCache } from '../../shared/utils/sessionCache';
@@ -24,7 +25,6 @@ const foregroundListeners = new Set<() => void>();
 let clockInterval: ReturnType<typeof setInterval> | null = null;
 let unsubscribeAppForeground: (() => void) | null = null;
 let cacheGeneration = 0;
-const SWIPE_QUOTA_STORAGE_PREFIX = 'wmatch:swipe-quota:';
 const SWIPE_QUOTA_REVALIDATE_AFTER_MS = 30_000;
 
 registerSessionCache(() => {
@@ -115,10 +115,6 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function getSwipeQuotaStorageKey(userId: string) {
-  return `${SWIPE_QUOTA_STORAGE_PREFIX}${userId}`;
-}
-
 function rebuildState(base: SwipeQuotaState, now = getServerNowMs()): SwipeQuotaState {
   const liveBase = withLiveRemaining(base, now);
   const likeLimit = Math.max(0, Number(liveBase.likeLimit || DAILY_LIKE_SWIPE_LIMIT));
@@ -153,7 +149,7 @@ function queuePersistState(userId: string, nextState: SwipeQuotaState | null) {
       }
 
       try {
-        const storageKey = getSwipeQuotaStorageKey(userId);
+        const storageKey = storageKeys.swipeQuota(userId);
 
         if (!nextState) {
           await AsyncStorage.removeItem(storageKey);
@@ -175,7 +171,7 @@ function queuePersistState(userId: string, nextState: SwipeQuotaState | null) {
 }
 
 async function readPersistedState(userId: string) {
-  const storageKey = getSwipeQuotaStorageKey(userId);
+  const storageKey = storageKeys.swipeQuota(userId);
 
   try {
     const rawValue = await AsyncStorage.getItem(storageKey);

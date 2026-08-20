@@ -2,23 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Application from 'expo-application';
 import {
-  ActivityIndicator,
   Alert,
   FlatList,
-  Keyboard,
   KeyboardAvoidingView,
-  type KeyboardEvent,
-  type LayoutChangeEvent,
   Platform,
-  Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AccessibleModal from './ui/AccessibleModal';
-import AppModal from './ui/AppModal';
 
 import { useLocalization } from '../../context/LocalizationContext';
 import {
@@ -50,23 +43,23 @@ import {
 import { normalizeChat, patchChat, type ChatPatch } from '../../services/chatState';
 import { subscribeToUserEvent } from '../../services/userEventBus';
 import { triggerHaptic } from '../../services/haptics';
-import { CHAT_THREAD_INITIAL_PAGE_SIZE, MAX_MESSAGE_LENGTH } from '../../shared/constants';
+import { CHAT_THREAD_INITIAL_PAGE_SIZE } from '../../shared/constants';
 import type { ChatSettings } from '../../shared/types';
 import { theme } from '../../shared/theme';
-import { calculateKeyboardInset } from '../../shared/utils/keyboard';
-import {
-  clampMessageText,
-  countMessageCharacters,
-  validateMessageText,
-} from '../../shared/utils/validation';
-import AppButton from './ui/AppButton';
+import { validateMessageText } from '../../shared/utils/validation';
 import ChatSettingsModal from './ChatSettingsModal';
-import ChatMessageBubble, { type LocalChatMessage } from './chat/ChatMessageBubble';
-import TypingDots from './chat/TypingDots';
+import type { LocalChatMessage } from './chat/ChatMessageBubble';
+import ChatComposer from './chat/ChatComposer';
+import ChatThreadList from './chat/ChatThreadList';
+import ChatReportForm, {
+  MIN_CHAT_REPORT_DETAILS_LENGTH,
+  type ChatReportReason,
+} from './chat/ChatReportForm';
 import useChatPresence from '../hooks/useChatPresence';
-import DataState from './ui/DataState';
-import { MessageThreadSkeleton } from './ui/Skeleton';
-import ChatAvatar from './chat/ChatAvatar';
+import useTransientPopup from '../hooks/useTransientPopup';
+import useChatKeyboard from '../hooks/useChatKeyboard';
+import TransientPopup from './ui/TransientPopup';
+import ChatHeader from './chat/ChatHeader';
 import {
   createOptimisticMessage,
   mergeMessagesById,
@@ -88,24 +81,8 @@ interface ChatModalProps {
   onChatDeleted?: (userId: string) => void;
 }
 
-const REPORT_REASON_OPTIONS = [
-  'fake_profile',
-  'harassment',
-  'spam',
-  'nudity',
-  'underage',
-  'hate_speech',
-  'other',
-] as const;
-
-type ReportReasonCode = (typeof REPORT_REASON_OPTIONS)[number];
-
-const MIN_REPORT_DETAILS_LENGTH = 20;
-const MAX_REPORT_DETAILS_LENGTH = 1500;
 const TYPING_IDLE_TIMEOUT_MS = 1800;
 const CHAT_BOTTOM_PROXIMITY_PX = 120;
-const CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION = { minIndexForVisible: 0 } as const;
-const ANDROID_KEYBOARD_COMPOSER_GAP = 32;
 
 export default function ChatModal({
   chat,
@@ -129,7 +106,6 @@ export default function ChatModal({
   const [threadChat, setThreadChat] = useState<ApiChat>(() =>
     normalizeChat(initialCachedThread?.chat ?? chat),
   );
-  const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(!initialCachedThread);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [threadLoadError, setThreadLoadError] = useState<ApiRequestError | Error | null>(null);
@@ -140,19 +116,13 @@ export default function ChatModal({
   const [showMenu, setShowMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showReportForm, setShowReportForm] = useState(false);
-  const [reportReason, setReportReason] = useState<ReportReasonCode>('fake_profile');
+  const [reportReason, setReportReason] = useState<ChatReportReason>('fake_profile');
   const [reportDetails, setReportDetails] = useState('');
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
-  const [isComposerFocused, setIsComposerFocused] = useState(false);
-  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
-  const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
   const [isTypingForPresence, setIsTypingForPresence] = useState(false);
+  const feedback = useTransientPopup(2400);
   const listRef = useRef<FlatList<LocalChatMessage>>(null);
-  const composerInputRef = useRef<TextInput>(null);
-  const rootHeightRef = useRef(0);
-  const rootHeightWithoutKeyboardRef = useRef(0);
-  const androidKeyboardHeightRef = useRef(0);
   const userScrolledMessagesRef = useRef(false);
   const scrollOffsetRef = useRef(0);
   const mountedRef = useRef(true);
@@ -160,10 +130,16 @@ export default function ChatModal({
   const olderMessagesInFlightRef = useRef(false);
   const olderMessagesCursorRef = useRef<string | null>(initialCachedThread?.pageInfo?.nextCursor ?? null);
   const typingIdleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const keyboardResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const acknowledgedReadIdsRef = useRef<Set<string>>(new Set());
   const shouldBroadcastTyping = threadChat.canSend && isTypingForPresence;
-  const messageCharacterCount = countMessageCharacters(inputText);
+  const {
+    androidInset: androidKeyboardInset,
+    dismiss: dismissComposer,
+    handleFocusChange: handleComposerFocusChange,
+    handleRootLayout,
+    inputRef: composerInputRef,
+    visible: isKeyboardVisible,
+  } = useChatKeyboard(threadChat.canSend);
 
   const peerPresence = useChatPresence({
     currentUserId,
@@ -201,10 +177,6 @@ export default function ChatModal({
         clearTimeout(typingIdleTimeoutRef.current);
         typingIdleTimeoutRef.current = null;
       }
-      if (keyboardResetTimeoutRef.current) {
-        clearTimeout(keyboardResetTimeoutRef.current);
-        keyboardResetTimeoutRef.current = null;
-      }
     };
   }, []);
 
@@ -216,6 +188,12 @@ export default function ChatModal({
     userScrolledMessagesRef.current = false;
     scrollOffsetRef.current = 0;
   }, [chat.userId]);
+
+  useEffect(() => {
+    if (!threadChat.canSend) {
+      setIsTypingForPresence(false);
+    }
+  }, [threadChat.canSend]);
 
   useEffect(() => {
     let cancelled = false;
@@ -249,91 +227,6 @@ export default function ChatModal({
     };
   }, [chat.userId, currentUserId]);
 
-  useEffect(() => {
-    if (!threadChat.canSend) {
-      setIsComposerFocused(false);
-      setIsKeyboardVisible(false);
-      androidKeyboardHeightRef.current = 0;
-      setAndroidKeyboardInset(0);
-      setIsTypingForPresence(false);
-      return;
-    }
-
-    const syncAndroidKeyboardInset = (keyboardHeight: number) => {
-      if (Platform.OS !== 'android') {
-        return;
-      }
-
-      const nextInset = calculateKeyboardInset(
-        rootHeightWithoutKeyboardRef.current,
-        rootHeightRef.current,
-        keyboardHeight,
-        ANDROID_KEYBOARD_COMPOSER_GAP,
-      );
-      setAndroidKeyboardInset((current) => (current === nextInset ? current : nextInset));
-    };
-
-    const handleKeyboardShown = (event: KeyboardEvent) => {
-      if (mountedRef.current) {
-        if (keyboardResetTimeoutRef.current) {
-          clearTimeout(keyboardResetTimeoutRef.current);
-          keyboardResetTimeoutRef.current = null;
-        }
-        setIsKeyboardVisible(true);
-
-        if (Platform.OS === 'android') {
-          const measuredKeyboardHeight = Keyboard.metrics()?.height ?? 0;
-          const keyboardHeight = Math.max(event.endCoordinates.height, measuredKeyboardHeight, 0);
-          androidKeyboardHeightRef.current = keyboardHeight;
-          syncAndroidKeyboardInset(keyboardHeight);
-        }
-      }
-    };
-
-    const handleKeyboardHidden = () => {
-      if (mountedRef.current) {
-        if (keyboardResetTimeoutRef.current) {
-          clearTimeout(keyboardResetTimeoutRef.current);
-          keyboardResetTimeoutRef.current = null;
-        }
-        setIsKeyboardVisible(false);
-        androidKeyboardHeightRef.current = 0;
-        setAndroidKeyboardInset(0);
-      }
-    };
-
-    const keyboardShowSubscription = Keyboard.addListener('keyboardDidShow', handleKeyboardShown);
-    const keyboardHideSubscription = Keyboard.addListener('keyboardDidHide', handleKeyboardHidden);
-
-    return () => {
-      keyboardShowSubscription.remove();
-      keyboardHideSubscription.remove();
-    };
-  }, [threadChat.canSend]);
-
-  const handleRootLayout = (event: LayoutChangeEvent) => {
-    const height = event.nativeEvent.layout.height;
-    rootHeightRef.current = height;
-
-    if (Platform.OS !== 'android') {
-      return;
-    }
-
-    const keyboardHeight = androidKeyboardHeightRef.current;
-    if (keyboardHeight <= 0) {
-      rootHeightWithoutKeyboardRef.current = height;
-      return;
-    }
-
-    const nextInset = calculateKeyboardInset(
-      rootHeightWithoutKeyboardRef.current,
-      height,
-      keyboardHeight,
-      ANDROID_KEYBOARD_COMPOSER_GAP,
-    );
-    setAndroidKeyboardInset((current) => (current === nextInset ? current : nextInset));
-  };
-
   const scrollToLatestMessage = (animated = true) => {
     const scroll = () => listRef.current?.scrollToOffset({ offset: 0, animated });
 
@@ -348,9 +241,10 @@ export default function ChatModal({
       .filter((id) => !acknowledgedReadIdsRef.current.has(id));
 
     if (unreadIds.length > 0) {
+      const unreadIdSet = new Set(unreadIds);
       setMessages((current) =>
         current.map((message) =>
-          unreadIds.includes(message.id) ? { ...message, read: true } : message,
+          unreadIdSet.has(message.id) ? { ...message, read: true } : message,
         ),
       );
 
@@ -464,8 +358,7 @@ export default function ChatModal({
       setHasOlderMessages(Boolean(response.pageInfo?.hasMore && response.pageInfo.nextCursor));
       setThreadLoadError(null);
     } catch (error) {
-      Alert.alert(
-        t('data.error.title'),
+      feedback.showPopup(
         error instanceof ApiRequestError ? t(error.userMessageKey as never) : t('data.error.generic'),
       );
     } finally {
@@ -550,16 +443,13 @@ export default function ChatModal({
     });
   }, [chat.userId, currentUserId, hasOlderMessages, messages, threadChat]);
 
-  const handleInputChange = (nextValue: string) => {
-    const clampedValue = clampMessageText(nextValue);
-    setInputText(clampedValue);
-
+  const handleComposerActivity = (text: string) => {
     if (typingIdleTimeoutRef.current) {
       clearTimeout(typingIdleTimeoutRef.current);
       typingIdleTimeoutRef.current = null;
     }
 
-    if (!clampedValue.trim()) {
+    if (!text.trim()) {
       setIsTypingForPresence(false);
       return;
     }
@@ -569,28 +459,6 @@ export default function ChatModal({
       setIsTypingForPresence(false);
       typingIdleTimeoutRef.current = null;
     }, TYPING_IDLE_TIMEOUT_MS);
-  };
-
-  const dismissComposer = () => {
-    if (!isComposerFocused && !isKeyboardVisible) {
-      return;
-    }
-
-    composerInputRef.current?.blur();
-    Keyboard.dismiss();
-    setIsComposerFocused(false);
-
-    if (keyboardResetTimeoutRef.current) {
-      clearTimeout(keyboardResetTimeoutRef.current);
-    }
-    keyboardResetTimeoutRef.current = setTimeout(() => {
-      if (mountedRef.current) {
-        setIsKeyboardVisible(false);
-        androidKeyboardHeightRef.current = 0;
-        setAndroidKeyboardInset(0);
-      }
-      keyboardResetTimeoutRef.current = null;
-    }, 350);
   };
 
   const submitMessage = async (text: string, optimisticId?: string) => {
@@ -665,28 +533,22 @@ export default function ChatModal({
       restoreThreadChat(previousChat);
       triggerHaptic('error');
 
-      Alert.alert(
-        t('chat.modal.alert.sendFailed.title'),
-        error instanceof Error ? error.message : t('chat.modal.alert.sendFailed.fallback'),
-      );
+      feedback.showPopup(t('chat.modal.alert.sendFailed.fallback'));
     }
   };
 
-  const handleSend = async () => {
-    const text = inputText.trim();
-
+  const handleSend = (text: string) => {
     if (!threadChat.canSend) {
-      Alert.alert(t('chat.modal.alert.cannotSend.title'), threadChat.lockedReason ?? t('chat.modal.locked.default'));
-      return;
+      feedback.showPopup(threadChat.lockedReason ?? t('chat.modal.locked.default'));
+      return false;
     }
 
     const validationMessage = validateMessageText(text);
     if (validationMessage) {
-      Alert.alert(t('chat.modal.alert.sendFailed.title'), validationMessage);
-      return;
+      feedback.showPopup(validationMessage);
+      return false;
     }
 
-    setInputText('');
     triggerHaptic('selection');
     if (typingIdleTimeoutRef.current) {
       clearTimeout(typingIdleTimeoutRef.current);
@@ -694,7 +556,8 @@ export default function ChatModal({
     }
     setIsTypingForPresence(false);
     dismissComposer();
-    await submitMessage(text);
+    void submitMessage(text);
+    return true;
   };
 
   const handleRetryMessage = (message: LocalChatMessage) => {
@@ -713,10 +576,7 @@ export default function ChatModal({
         setMessages((current) => current.filter((item) => item.id !== message.id));
       }
     } catch (error) {
-      Alert.alert(
-        t('chat.modal.retry.cancelFailedTitle'),
-        error instanceof Error ? error.message : t('chat.modal.retry.cancelFailedDescription'),
-      );
+      feedback.showPopup(t('chat.modal.retry.cancelFailedDescription'));
     }
   };
 
@@ -776,10 +636,7 @@ export default function ChatModal({
       }));
       onChatPatched?.(threadChat.userId, { settings: previousSettings });
 
-      Alert.alert(
-        t('chat.modal.alert.settingsFailed'),
-        error instanceof Error ? error.message : t('chat.modal.alert.sendFailed.fallback'),
-      );
+      feedback.showPopup(t('chat.modal.alert.settingsFailed'));
     } finally {
       if (mountedRef.current) {
         setSavingSettings(false);
@@ -823,10 +680,7 @@ export default function ChatModal({
               refreshAfterMutation();
             } catch (error) {
               restoreThreadChat(previousChat);
-              Alert.alert(
-                t('chat.modal.alert.end.failed'),
-                error instanceof Error ? error.message : t('chat.modal.alert.sendFailed.fallback'),
-              );
+              feedback.showPopup(t('chat.modal.alert.end.failed'));
             } finally {
               if (mountedRef.current) {
                 setActionBusy(false);
@@ -853,10 +707,7 @@ export default function ChatModal({
       onChatUpdated?.();
     } catch (error) {
       onChatRestored?.(previousChat);
-      Alert.alert(
-        t('chat.modal.alert.action.failed'),
-        error instanceof Error ? error.message : t('chat.modal.alert.sendFailed.fallback'),
-      );
+      feedback.showPopup(t('chat.modal.alert.action.failed'));
     } finally {
       if (mountedRef.current) {
         setActionBusy(false);
@@ -938,9 +789,8 @@ export default function ChatModal({
             refreshAfterMutation();
           } catch (error) {
             restoreThreadChat(previousChat);
-            Alert.alert(
+            feedback.showPopup(
               isBlockedByMe ? t('chat.modal.alert.block.removeFailed') : t('chat.modal.alert.block.addFailed'),
-              error instanceof Error ? error.message : t('chat.modal.alert.sendFailed.fallback'),
             );
           } finally {
             if (mountedRef.current) {
@@ -955,7 +805,7 @@ export default function ChatModal({
   const handleReportSubmit = async () => {
     const normalizedDetails = reportDetails.trim();
 
-    if (normalizedDetails.length < MIN_REPORT_DETAILS_LENGTH) {
+    if (normalizedDetails.length < MIN_CHAT_REPORT_DETAILS_LENGTH) {
       Alert.alert(t('profile.report.validation.title'), t('profile.report.validation.detailsMin'));
       return;
     }
@@ -979,14 +829,9 @@ export default function ChatModal({
       });
 
       closeReportForm(true);
-      Alert.alert(t('profile.report.successTitle'), t('profile.report.successDescription'));
+      feedback.showPopup(t('profile.report.successDescription'));
     } catch (error) {
-      Alert.alert(
-        t('profile.report.errorTitle'),
-        error instanceof Error && error.message.trim().length > 0
-          ? error.message
-          : t('profile.report.errorDescription'),
-      );
+      feedback.showPopup(t('profile.report.errorDescription'));
     } finally {
       if (mountedRef.current) {
         setReportSubmitting(false);
@@ -994,10 +839,6 @@ export default function ChatModal({
     }
   };
 
-  const photo = threadChat.user.photos.find((item) => item.trim().length > 0) ?? null;
-  const showLoadingSkeleton = loading && messages.length === 0;
-  const showThreadError = !loading && messages.length === 0 && threadLoadError != null;
-  const showPlaceholder = !loading && messages.length === 0 && !showThreadError;
   const composerBottomPadding =
     Platform.OS === 'ios'
       ? Math.max(insets.bottom, 10)
@@ -1006,29 +847,6 @@ export default function ChatModal({
         : Math.max(insets.bottom, 10);
   const androidComposerPadding =
     Platform.OS === 'android' && isKeyboardVisible ? androidKeyboardInset : 0;
-  const statusContent = useMemo(() => {
-    if (threadChat.ended) {
-      return null;
-    }
-
-    if (peerPresence.isTyping) {
-      return <TypingDots label={t('chat.modal.header.typing')} />;
-    }
-
-    if (!threadChat.peerSettings.onlineStatus) {
-      return null;
-    }
-
-    return (
-      <Text
-        numberOfLines={2}
-        style={[styles.statusText, peerPresence.isOnline ? styles.statusTextOnline : styles.statusTextOffline]}
-      >
-        {peerPresence.isOnline ? t('chat.modal.header.online') : t('chat.modal.header.offline')}
-      </Text>
-    );
-  }, [peerPresence.isOnline, peerPresence.isTyping, t, threadChat.ended, threadChat.peerSettings.onlineStatus, threadChat.peerSettings.typingIndicator]);
-
   return (
     <AccessibleModal visible animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView
@@ -1046,241 +864,76 @@ export default function ChatModal({
         onLayout={handleRootLayout}
       >
         <SafeAreaView edges={['top', 'right', 'left']} style={styles.safeArea}>
-          <View accessibilityViewIsModal style={styles.header}>
-            <View style={styles.headerLeft}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t('common.back')}
-                hitSlop={6}
-                onPress={onClose}
-                style={styles.iconButton}
-              >
-                <MaterialCommunityIcons name="chevron-left" size={20} color={theme.colors.text} />
-              </Pressable>
+          <ChatHeader
+            chat={threadChat}
+            menuVisible={showMenu}
+            peerOnline={peerPresence.isOnline}
+            peerTyping={peerPresence.isTyping}
+            onBack={onClose}
+            onDelete={handleHideConversation}
+            onEnd={handleEndConversation}
+            onOpenProfile={() => {
+              if (threadChat.isBlocked) {
+                feedback.showPopup(t('chat.modal.profile.hidden.description'));
+                return;
+              }
+              onProfileClick?.();
+            }}
+            onOpenReport={() => {
+              setShowMenu(false);
+              setShowReportForm(true);
+            }}
+            onOpenSettings={() => {
+              setShowMenu(false);
+              setShowSettings(true);
+            }}
+            onToggleBlock={handleToggleBlock}
+            onToggleMenu={() => setShowMenu((value) => !value)}
+          />
 
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t('a11y.openProfile', { name: threadChat.user.name })}
-                accessibilityState={{ disabled: threadChat.isBlocked }}
-                disabled={threadChat.isBlocked}
-                onPress={() => {
-                  if (threadChat.isBlocked) {
-                    Alert.alert(
-                      t('chat.modal.profile.hidden.title'),
-                      t('chat.modal.profile.hidden.description'),
-                    );
-                    return;
-                  }
-
-                  onProfileClick?.();
-                }}
-                style={styles.profileButton}
-              >
-                <ChatAvatar uri={photo} size={34} />
-
-                <View style={styles.profileText}>
-                  <Text numberOfLines={2} style={styles.name}>
-                    {threadChat.user.name}
-                  </Text>
-                  <Text numberOfLines={2} style={styles.username}>
-                    {threadChat.user.username}
-                  </Text>
-                  {statusContent}
-                </View>
-              </Pressable>
-            </View>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t('a11y.chatMenu')}
-              accessibilityState={{ expanded: showMenu }}
-              hitSlop={6}
-              onPress={() => setShowMenu((value) => !value)}
-              style={styles.iconButton}
-            >
-              <MaterialCommunityIcons name="dots-vertical" size={18} color={theme.colors.text} />
-            </Pressable>
-          </View>
-
-          {showMenu ? (
-            <View accessibilityRole="menu" style={styles.menu}>
-              <Pressable
-                accessibilityRole="menuitem"
-                onPress={() => {
-                  setShowMenu(false);
-                  setShowSettings(true);
-                }}
-                style={styles.menuItem}
-              >
-                <MaterialCommunityIcons name="tune-variant" size={16} color={theme.colors.info} />
-                <Text style={styles.menuText}>{t('chat.modal.menu.settings')}</Text>
-              </Pressable>
-
-              {!threadChat.ended && !threadChat.isBlocked ? (
-                <Pressable accessibilityRole="menuitem" onPress={handleEndConversation} style={styles.menuItem}>
-                  <MaterialCommunityIcons name="message-lock-outline" size={16} color={theme.colors.warning} />
-                  <Text style={[styles.menuText, styles.menuTextWarning]}>{t('chat.modal.menu.endMatch')}</Text>
-                </Pressable>
-              ) : null}
-
-              <Pressable accessibilityRole="menuitem" onPress={handleHideConversation} style={styles.menuItem}>
-                  <MaterialCommunityIcons name="trash-can-outline" size={16} color={theme.colors.dangerText} />
-                  <Text style={[styles.menuText, styles.menuTextDanger]}>{t('chat.modal.menu.delete')}</Text>
-              </Pressable>
-
-              <Pressable
-                accessibilityRole="menuitem"
-                onPress={() => {
-                  setShowMenu(false);
-                  setShowReportForm(true);
-                }}
-                style={styles.menuItem}
-              >
-                <MaterialCommunityIcons name="alert-circle-outline" size={16} color={theme.colors.dangerText} />
-                <Text style={[styles.menuText, styles.menuTextDanger]}>{t('profile.menu.report.label')}</Text>
-              </Pressable>
-
-              {threadChat.blockedByMe ? (
-                <Pressable accessibilityRole="menuitem" onPress={handleToggleBlock} style={styles.menuItem}>
-                  <MaterialCommunityIcons name="lock-open-variant-outline" size={16} color={theme.colors.info} />
-                  <Text style={styles.menuText}>{t('chat.modal.menu.unblock')}</Text>
-                </Pressable>
-              ) : !threadChat.blockedByOther ? (
-                <Pressable accessibilityRole="menuitem" onPress={handleToggleBlock} style={styles.menuItem}>
-                  <MaterialCommunityIcons name="block-helper" size={16} color={theme.colors.dangerText} />
-                  <Text style={[styles.menuText, styles.menuTextDanger]}>{t('chat.modal.menu.block')}</Text>
-                </Pressable>
-              ) : null}
-            </View>
-          ) : null}
-
-          <FlatList
+          <ChatThreadList
             ref={listRef}
-            data={messages}
-            inverted
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={[
-              styles.messages,
-              (showPlaceholder || showThreadError) && styles.messagesEmpty,
-              showLoadingSkeleton && styles.messagesLoading,
-            ]}
-            keyboardShouldPersistTaps="never"
-            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-            initialNumToRender={CHAT_THREAD_INITIAL_PAGE_SIZE}
-            maxToRenderPerBatch={12}
-            windowSize={7}
-            maintainVisibleContentPosition={CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION}
-            onTouchStart={dismissComposer}
-            onScrollBeginDrag={() => {
-              userScrolledMessagesRef.current = true;
-              dismissComposer();
-            }}
-            onScroll={(event) => {
-              scrollOffsetRef.current = Math.max(0, event.nativeEvent.contentOffset.y);
-            }}
-            onEndReached={() => {
+            canSend={threadChat.canSend}
+            currentUserId={currentUserId}
+            failedLabel={t('chat.modal.retry.failed')}
+            loading={loading}
+            loadingOlder={loadingOlderMessages}
+            messages={messages}
+            peerReadReceipts={threadChat.peerSettings.readReceipts}
+            threadError={threadLoadError}
+            onDismissComposer={dismissComposer}
+            onFailedMessagePress={handleFailedMessagePress}
+            onLoadOlder={() => {
               if (userScrolledMessagesRef.current && !loading && !loadingOlderMessages) {
                 void loadOlderMessages();
               }
             }}
-            onEndReachedThreshold={0.2}
-            scrollEventThrottle={32}
-            ListFooterComponent={
-              loadingOlderMessages ? (
-                <View style={styles.loadingOlder}>
-                  <ActivityIndicator color={theme.colors.primarySoft} />
-                </View>
-              ) : null
-            }
-            renderItem={({ item }) => {
-              const isOwn = item.sender_id === currentUserId;
-
-              return (
-                <View style={[styles.messageRow, isOwn ? styles.messageRowOwn : styles.messageRowOther]}>
-                  <ChatMessageBubble
-                    message={item}
-                    isOwn={isOwn}
-                    canShowReadReceipt={threadChat.peerSettings.readReceipts}
-                    failedLabel={t('chat.modal.retry.failed')}
-                    onFailedPress={isOwn ? () => handleFailedMessagePress(item) : undefined}
-                  />
-                </View>
-              );
+            onRetry={() => void syncThread(false)}
+            onScrollOffset={(offset) => {
+              scrollOffsetRef.current = offset;
             }}
-            ListEmptyComponent={
-              showLoadingSkeleton ? (
-                <MessageThreadSkeleton />
-              ) : showThreadError ? (
-                <DataState
-                  state="fatal-error"
-                  title={t('data.error.title')}
-                  description={
-                    threadLoadError instanceof ApiRequestError
-                      ? t(threadLoadError.userMessageKey as never)
-                      : t('data.error.generic')
-                  }
-                  actionLabel={t('data.action.retry')}
-                  onAction={() => void syncThread(false)}
-                />
-              ) : showPlaceholder ? (
-                <View style={styles.emptyState}>
-                  <View style={styles.emptyIcon}>
-                    <MaterialCommunityIcons name="heart" size={22} color={theme.colors.primarySoft} />
-                  </View>
-                  <Text style={styles.emptyTitle}>{t('chat.modal.empty.title')}</Text>
-                  <Text style={styles.emptyDescription}>
-                    {threadChat.canSend ? t('chat.modal.empty.description.start') : t('chat.modal.empty.description.locked')}
-                  </Text>
-                </View>
-              ) : null
-            }
+            onUserScroll={() => {
+              userScrolledMessagesRef.current = true;
+            }}
           />
 
           {threadChat.canSend ? (
-            <View
-              style={[styles.inputSafeArea, { paddingBottom: composerBottomPadding }]}
-            >
-              <View style={styles.inputRow}>
-                <TextInput
-                  ref={composerInputRef}
-                  value={inputText}
-                  onChangeText={handleInputChange}
-                  onFocus={() => {
-                    setIsComposerFocused(true);
-                  }}
-                  onBlur={() => {
-                    setIsComposerFocused(false);
-                  }}
-                  placeholder={t('chat.modal.input.placeholder')}
-                  accessibilityLabel={t('chat.modal.input.placeholder')}
-                  placeholderTextColor={theme.colors.textSoft}
-                  style={styles.input}
-                  returnKeyType="send"
-                  onSubmitEditing={() => void handleSend()}
-                />
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t('a11y.sendMessage')}
-                  accessibilityState={{ disabled: !inputText.trim() }}
-                  hitSlop={6}
-                  onPress={() => void handleSend()}
-                  disabled={!inputText.trim()}
-                  style={[styles.sendButton, !inputText.trim() && styles.sendButtonDisabled]}
-                >
-                  <MaterialCommunityIcons name="send" size={16} color={theme.colors.white} />
-                </Pressable>
-              </View>
-              {messageCharacterCount >= Math.floor(MAX_MESSAGE_LENGTH * 0.8) ? (
-                <Text style={styles.messageCounter}>
-                  {messageCharacterCount}/{MAX_MESSAGE_LENGTH}
-                </Text>
-              ) : null}
-            </View>
+            <ChatComposer
+              key={threadChat.userId}
+              ref={composerInputRef}
+              bottomPadding={composerBottomPadding}
+              onFocusChange={handleComposerFocusChange}
+              onSend={handleSend}
+              onTextActivity={handleComposerActivity}
+            />
           ) : (
-            <View
-              style={[styles.inputSafeArea, { paddingBottom: composerBottomPadding }]}
-            >
-              <View style={[styles.lockedNotice, threadChat.isBlocked ? styles.lockedNoticeDanger : styles.lockedNoticeMuted]}>
+            <View style={[styles.inputSafeArea, { paddingBottom: composerBottomPadding }]}>
+              <View
+                style={[
+                  styles.lockedNotice,
+                  threadChat.isBlocked ? styles.lockedNoticeDanger : styles.lockedNoticeMuted,
+                ]}
+              >
                 <MaterialCommunityIcons
                   name={threadChat.isBlocked ? 'block-helper' : 'message-lock-outline'}
                   size={18}
@@ -1295,73 +948,32 @@ export default function ChatModal({
         </SafeAreaView>
       </KeyboardAvoidingView>
 
-        {showSettings ? (
-          <ChatSettingsModal
-            value={threadChat.settings}
+      {showSettings ? (
+        <ChatSettingsModal
+          value={threadChat.settings}
           saving={savingSettings}
           onClose={() => setShowSettings(false)}
           onChange={(nextSettings) => {
             void handleSettingsChange(nextSettings);
           }}
-          />
-        ) : null}
+        />
+      ) : null}
 
-      <AppModal
+      <ChatReportForm
         visible={showReportForm}
-        title={t('profile.report.sheet.title')}
-        presentation="sheet"
-        keyboardAware
-        scrollable
+        reason={reportReason}
+        details={reportDetails}
+        submitting={reportSubmitting}
+        onReasonChange={setReportReason}
+        onDetailsChange={setReportDetails}
+        onSubmit={() => void handleReportSubmit()}
         onClose={closeReportForm}
-      >
-              <Text style={styles.reportSubtitle}>{t('profile.report.sheet.description')}</Text>
-
-              <View style={styles.reasonGrid}>
-                {REPORT_REASON_OPTIONS.map((reason) => {
-                  const selected = reportReason === reason;
-
-                  return (
-                    <Pressable
-                      key={reason}
-                      accessibilityRole="radio"
-                      accessibilityLabel={t(`profile.report.reason.${reason}`)}
-                      accessibilityState={{ checked: selected }}
-                      onPress={() => setReportReason(reason)}
-                      style={[styles.reasonChip, selected && styles.reasonChipActive]}
-                    >
-                      <Text style={[styles.reasonChipText, selected && styles.reasonChipTextActive]}>
-                        {t(`profile.report.reason.${reason}`)}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-
-              <View style={styles.detailsSection}>
-                <Text style={styles.detailsLabel}>{t('profile.report.detailsLabel')}</Text>
-                <TextInput
-                  multiline
-                  maxLength={MAX_REPORT_DETAILS_LENGTH}
-                  editable={!reportSubmitting}
-                  accessibilityLabel={t('profile.report.detailsLabel')}
-                  accessibilityHint={t('profile.report.detailsPlaceholder')}
-                  placeholder={t('profile.report.detailsPlaceholder')}
-                  placeholderTextColor={theme.colors.textSoft}
-                  style={styles.detailsInput}
-                  textAlignVertical="top"
-                  value={reportDetails}
-                  onChangeText={setReportDetails}
-                />
-                <Text style={styles.detailsCounter}>
-                  {reportDetails.trim().length}/{MAX_REPORT_DETAILS_LENGTH}
-                </Text>
-              </View>
-
-              <View style={styles.reportActions}>
-                <AppButton title={t('profile.report.submit')} onPress={() => void handleReportSubmit()} loading={reportSubmitting} />
-                <AppButton title={t('common.cancel')} onPress={closeReportForm} variant="secondary" />
-              </View>
-      </AppModal>
+      />
+      <TransientPopup
+        message={feedback.message}
+        icon="information-outline"
+        bottomOffset={composerBottomPadding + 54}
+      />
     </AccessibleModal>
   );
 }
@@ -1375,278 +987,10 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
-  loadingOlder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-  },
-  header: {
-    minHeight: 44,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-    backgroundColor: theme.colors.backgroundElevated,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 8,
-  },
-  headerLeft: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  iconButton: {
-    minWidth: 36,
-    minHeight: 36,
-    borderRadius: theme.radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  profileButton: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  profileText: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  name: {
-    color: theme.colors.text,
-    fontSize: 12,
-    fontFamily: theme.fonts.bold,
-  },
-  username: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontFamily: theme.fonts.medium,
-  },
-  statusText: {
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontFamily: theme.fonts.semibold,
-  },
-  statusTextOnline: {
-    color: theme.colors.successText,
-  },
-  statusTextOffline: {
-    color: theme.colors.textSoft,
-  },
-  menu: {
-    position: 'absolute',
-    top: 76,
-    right: 12,
-    zIndex: 20,
-    minWidth: 220,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    overflow: 'hidden',
-  },
-  menuItem: {
-    minHeight: theme.layout.controlMinUnified,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  menuText: {
-    color: theme.colors.text,
-    ...theme.typography.roles.meta,
-  },
-  menuTextDanger: {
-    color: theme.colors.dangerText,
-  },
-  menuTextWarning: {
-    color: theme.colors.warningText,
-  },
-  reportOverlay: {
-    zIndex: 24,
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: theme.colors.scrim,
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-  },
-  reportCard: {
-    maxHeight: '82%',
-    borderRadius: theme.radius.personCard,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    overflow: 'hidden',
-  },
-  reportContent: {
-    padding: 16,
-    gap: 12,
-  },
-  reportHeader: {
-    gap: 5,
-  },
-  reportTitle: {
-    color: theme.colors.text,
-    fontSize: 16,
-    fontFamily: theme.fonts.extraBold,
-  },
-  reportSubtitle: {
-    color: theme.colors.textMuted,
-    ...theme.typography.roles.body,
-  },
-  reasonGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  reasonChip: {
-    minHeight: theme.layout.controlMinUnified,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: theme.colors.surface,
-  },
-  reasonChipActive: {
-    borderColor: theme.colors.dangerText,
-    backgroundColor: theme.colors.dangerSurface,
-  },
-  reasonChipText: {
-    color: theme.colors.textSoft,
-    ...theme.typography.roles.meta,
-    fontFamily: theme.fonts.semibold,
-  },
-  reasonChipTextActive: {
-    color: theme.colors.dangerText,
-  },
-  detailsSection: {
-    gap: 6,
-  },
-  detailsLabel: {
-    color: theme.colors.text,
-    fontSize: 12,
-    fontFamily: theme.fonts.bold,
-  },
-  detailsInput: {
-    minHeight: 124,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    color: theme.colors.text,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    fontSize: theme.typography.body,
-    lineHeight: 21,
-  },
-  detailsCounter: {
-    color: theme.colors.textSoft,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontFamily: theme.fonts.semibold,
-    textAlign: 'right',
-  },
-  reportActions: {
-    gap: 8,
-  },
-  messages: {
-    flexGrow: 1,
-    padding: 10,
-    gap: 4,
-  },
-  messagesEmpty: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  messagesLoading: {
-    flex: 1,
-  },
-  messageRow: {
-    flexDirection: 'row',
-  },
-  messageRowOwn: {
-    justifyContent: 'flex-end',
-  },
-  messageRowOther: {
-    justifyContent: 'flex-start',
-  },
-  emptyState: {
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    gap: 6,
-  },
-  emptyIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: theme.radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.primarySurface,
-    marginBottom: 6,
-  },
-  emptyTitle: {
-    color: theme.colors.text,
-    ...theme.typography.roles.cardTitle,
-  },
-  emptyDescription: {
-    color: theme.colors.textMuted,
-    ...theme.typography.roles.body,
-    textAlign: 'center',
-  },
   inputSafeArea: {
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundElevated,
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  messageCounter: {
-    color: theme.colors.textSoft,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontFamily: theme.fonts.semibold,
-    textAlign: 'right',
-    paddingHorizontal: 12,
-    paddingBottom: 5,
-    marginTop: -6,
-  },
-  input: {
-    flex: 1,
-    minHeight: 36,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    color: theme.colors.text,
-    paddingHorizontal: 8,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-  },
-  sendButton: {
-    minWidth: 36,
-    minHeight: 36,
-    borderRadius: theme.radius.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.primary,
-  },
-  sendButtonDisabled: {
-    backgroundColor: theme.colors.disabledSurface,
   },
   lockedNotice: {
     flexDirection: 'row',

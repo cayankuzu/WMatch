@@ -19,9 +19,12 @@ WMatch_web/
 .env
 .env.local
 .env.*
-!.env
 !.env.example
 !.env.sample
+.secrets/
+credentials.json
+credentials.json.*
+!credentials.json.example
 android/keystore.properties
 android/keystore.properties.*
 !android/keystore.properties

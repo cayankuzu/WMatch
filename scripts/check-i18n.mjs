@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 const fail = (message) => {
   console.error(`i18n check failed: ${message}`);
@@ -35,25 +35,11 @@ const assertNoDuplicates = (keys, label) => {
 };
 
 const trKeys = extractKeys('src/shared/i18n/locales/tr.ts');
-const enKeys = extractKeys('src/shared/i18n/locales/en.ts');
-
 assertNoDuplicates(trKeys, 'tr');
-assertNoDuplicates(enKeys, 'en');
 
-const trSet = new Set(trKeys);
-const enSet = new Set(enKeys);
-const missingInEn = trKeys.filter((key) => !enSet.has(key));
-const missingInTr = enKeys.filter((key) => !trSet.has(key));
-
-if (missingInEn.length > 0 || missingInTr.length > 0) {
-  fail(
-    [
-      missingInEn.length ? `missing in en: ${missingInEn.join(', ')}` : null,
-      missingInTr.length ? `missing in tr: ${missingInTr.join(', ')}` : null,
-    ]
-      .filter(Boolean)
-      .join('; '),
-  );
+const localeFiles = readdirSync('src/shared/i18n/locales').filter((file) => file.endsWith('.ts'));
+if (localeFiles.length !== 1 || localeFiles[0] !== 'tr.ts') {
+  fail(`the mobile product must ship only the Turkish locale; found: ${localeFiles.join(', ')}`);
 }
 
-console.log('i18n key parity check passed.');
+console.log(`Turkish locale integrity check passed. keys=${trKeys.length}`);

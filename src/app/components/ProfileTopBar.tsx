@@ -59,7 +59,13 @@ function TopBarButton({
   onPress: () => void;
 }) {
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={styles.button}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      hitSlop={4}
+      onPress={onPress}
+      style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
+    >
       <MaterialCommunityIcons name={icon} size={20} color={theme.colors.primarySoft} />
     </Pressable>
   );
@@ -113,5 +119,9 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
     borderWidth: 1,
     borderColor: theme.colors.border,
+  },
+  buttonPressed: {
+    opacity: theme.interaction.pressedOpacity,
+    transform: [{ scale: theme.interaction.iconPressedScale }],
   },
 });

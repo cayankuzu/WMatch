@@ -1,11 +1,16 @@
 export const PUBLIC_WEB_BASE_URL = 'https://cayankuzu.github.io/WMatch_web';
 
-export function getEmailVerificationRedirectUrl() {
-  return `${PUBLIC_WEB_BASE_URL}/auth/verify/`;
+function getAuthRedirectUrl(path: string, state?: string) {
+  const baseUrl = `${PUBLIC_WEB_BASE_URL}${path}`;
+  return state ? `${baseUrl}?state=${encodeURIComponent(state)}` : baseUrl;
 }
 
-export function getPasswordResetRedirectUrl() {
-  return `${PUBLIC_WEB_BASE_URL}/auth/reset-password/`;
+export function getEmailVerificationRedirectUrl(state?: string) {
+  return getAuthRedirectUrl('/auth/verify/', state);
+}
+
+export function getPasswordResetRedirectUrl(state?: string) {
+  return getAuthRedirectUrl('/auth/reset-password/', state);
 }
 
 export function getPrivacyPolicyUrl() {

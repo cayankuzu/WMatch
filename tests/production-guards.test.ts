@@ -7,6 +7,10 @@ function read(path: string) {
   return readFileSync(path, 'utf8');
 }
 
+function readTogether(...paths: string[]) {
+  return paths.map(read).join('\n');
+}
+
 function collectSourceFiles(path: string): string[] {
   const stats = statSync(path);
 
@@ -20,6 +24,25 @@ function collectSourceFiles(path: string): string[] {
 const EXPO_CLI = join('node_modules', 'expo', 'bin', 'cli');
 
 describe('production guardrails', () => {
+  it('keeps all six requested primary destinations, including Compatibility', () => {
+    const navSource = read('src/app/components/BottomNav.tsx');
+    const itemIds = [...navSource.matchAll(/\{ id: '([^']+)', labelKey:/g)].map((match) => match[1]);
+
+    expect(itemIds).toEqual(['watch', 'match', 'compatibility', 'likes', 'chat', 'profile']);
+  });
+
+  it('keeps private local credentials out of EAS build uploads', () => {
+    const easIgnore = read('.easignore');
+    const secretCheck = read('scripts/check-no-private-secrets.mjs');
+
+    expect(easIgnore).toContain('\n.env\n');
+    expect(easIgnore).toContain('\n.env.*\n');
+    expect(easIgnore).not.toContain('\n!.env\n');
+    expect(easIgnore).toContain('\n.secrets/\n');
+    expect(easIgnore).toContain('\ncredentials.json\n');
+    expect(secretCheck).toContain("fail('.easignore must not re-include a private environment file')");
+  });
+
   it('requires Supabase public config from the build environment', () => {
     const source = read('utils/supabase/info.tsx');
 
@@ -31,13 +54,32 @@ describe('production guardrails', () => {
 
   it('uses PKCE and rejects raw session tokens in auth deep links', () => {
     const clientSource = read('utils/supabase/client.ts');
-    const authSource = read('src/context/AuthContext.tsx');
+    const authSource = readTogether(
+      'src/context/AuthContext.tsx',
+      'src/context/auth/authSupport.ts',
+      'src/context/auth/authDeepLink.ts',
+    );
 
     expect(clientSource).toContain("flowType: 'pkce'");
     expect(authSource).toContain('exchangeCodeForSession');
     expect(authSource).not.toContain('supabase.auth.setSession');
-    expect(authSource).toContain("const TRUSTED_CUSTOM_AUTH_SCHEMES = new Set(['wmatch:'])");
+    expect(authSource).not.toContain('TRUSTED_CUSTOM_AUTH_SCHEMES');
+    expect(authSource).toContain('getTrustedAuthDeepLinkKind');
+    expect(authSource).toContain('validateAuthFlowState');
+    expect(authSource).toContain("beginAuthFlow('signup')");
+    expect(authSource).toContain("beginAuthFlow('recovery')");
     expect(authSource).not.toContain('exp+wmatch');
+  });
+
+  it('does not trust spoofable proxy chains or expose native APIs through wildcard CORS', () => {
+    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const clientSource = read('utils/supabase/client.ts');
+
+    expect(edgeSource).not.toContain('c.req.header("x-forwarded-for")');
+    expect(edgeSource).not.toContain('origin: "*"');
+    expect(edgeSource).toContain('TRUSTED_CLIENT_IP_HEADER');
+    expect(edgeSource).toContain('getRequestRateLimitIdentity');
+    expect(clientSource).toContain("'X-WMatch-Install-Id'");
   });
 
   it('keeps discovery invalidation event driven instead of interval polling', () => {
@@ -177,22 +219,39 @@ describe('production guardrails', () => {
 
   it('uses deterministic keyset pagination for the full compatibility candidate set', () => {
     const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
-    const migrationSource = read('supabase/migrations/20260718120000_production_integrity_hardening.sql');
+    const migrationSource = read('supabase/migrations/20260819090000_discovery_correctness_read_models.sql');
     const screenSource = read('src/app/components/CompatibilityScreen.tsx');
 
     expect(edgeSource).toContain('supabase.rpc(\n      "get_compatibility_candidate_page"');
-    expect(edgeSource).toContain('loadCompatibilityCandidatePageFallback');
-    expect(edgeSource).toContain('isMissingFunctionError(candidateError, "get_compatibility_candidate_page")');
+    expect(edgeSource).not.toContain('loadCompatibilityCandidatePageFallback');
+    expect(edgeSource).toContain('p_cursor_score: cursor?.score');
+    expect(edgeSource).not.toContain('p_cursor_overlap');
     expect(edgeSource).toContain('.limit(MAX_RELATIONSHIP_ROWS)');
     expect(edgeSource).toContain('decodeCompatibilityCursor');
     expect(edgeSource).toContain('encodeCompatibilityCursor');
     expect(edgeSource).not.toContain('MAX_COMPATIBILITY_CANDIDATE_ROWS');
-    expect(migrationSource).toContain('ORDER BY candidate_scores.overlap_count DESC, candidate_scores.user_id ASC');
+    expect(migrationSource).toContain('ORDER BY eligible.compatibility_score DESC, eligible.user_id ASC');
+    expect(migrationSource).toContain('p_cursor_score INTEGER');
+    expect(migrationSource).toContain('public.calculate_discovery_compatibility_score');
     expect(migrationSource).toContain('REVOKE ALL ON FUNCTION public.get_compatibility_candidate_page');
     expect(screenSource).toContain('onLoadMoreFeed={() => loadMore()}');
     expect(screenSource).toContain('hasMore={hasMore}');
     expect(screenSource).toContain('loadingMore={loadingMore}');
     expect(screenSource).toContain('loadMore');
+  });
+
+  it('keeps the social hot paths backed by keyset read models and composite indexes', () => {
+    const chatPerformance = read('supabase/migrations/20260611220000_chat_performance_indexes_and_rpc.sql');
+    const liveNowPerformance = read('supabase/migrations/20260715183000_final_reaudit_contracts.sql');
+    const productionPerformance = read('supabase/migrations/20260718120000_production_integrity_hardening.sql');
+
+    expect(chatPerformance).toContain('idx_messages_pair_created_at');
+    expect(chatPerformance).toContain('idx_messages_receiver_sender_read_created_at');
+    expect(liveNowPerformance).toContain('idx_currently_watching_live_keyset');
+    expect(productionPerformance).toContain('idx_chat_pair_summaries_user1_activity');
+    expect(productionPerformance).toContain('idx_chat_pair_summaries_user2_activity');
+    expect(productionPerformance).toContain('idx_notification_events_push_outbox');
+    expect(productionPerformance).toContain('CREATE OR REPLACE FUNCTION public.get_chat_directory_page');
   });
 
   it('updates profile movie collections through a service-only atomic RPC', () => {
@@ -226,7 +285,7 @@ describe('production guardrails', () => {
   });
 
   it('keeps movie library sync ordered and separate from watch-session transitions', () => {
-    const appSource = read('src/context/AppContext.tsx');
+    const appSource = readTogether('src/context/AppContext.tsx', 'src/context/app/librarySupport.ts');
     const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
     const watchReturnTypeMigrationSource = read('supabase/migrations/20260720012500_watch_session_media_type_ambiguity_fix.sql');
 
@@ -237,6 +296,10 @@ describe('production guardrails', () => {
     expect(appSource).not.toContain("console.error('Movie sync error:'");
     expect(appSource).toContain("telemetry.captureException(error, { scope: 'movie_sync' })");
     expect(appSource).toContain("console.warn('Movie sync retry scheduled:', error)");
+    expect(appSource).toContain('const libraryHydrationKey = useMemo(');
+    expect(appSource).toContain('const hydrationUser = libraryUserRef.current;');
+    expect(appSource).toContain('}, [libraryHydrationKey]);');
+    expect(appSource).not.toContain('}, [user]);');
     expect(appSource).toContain('return [movie, ...movies];');
     expect(appSource.match(/const next = \[movie, \.\.\.current\];/g)?.length).toBeGreaterThanOrEqual(2);
     expect(edgeSource.match(/\.order\("created_at", \{ ascending: false \}\)/g)?.length).toBeGreaterThanOrEqual(3);
@@ -260,6 +323,9 @@ describe('production guardrails', () => {
   it('delivers push notifications through a durable service-only retry outbox', () => {
     const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
     const migrationSource = read('supabase/migrations/20260718120000_production_integrity_hardening.sql');
+    const healthMigrationSource = read('supabase/migrations/20260819100000_push_delivery_health.sql');
+    const receiptMigrationSource = read('supabase/migrations/20260819190000_push_delivery_receipts.sql');
+    const schedulerSource = read('.github/workflows/push-outbox-drain.yml');
     const dispatchSource = edgeSource.slice(
       edgeSource.indexOf('const dispatchNotificationEvents = async'),
       edgeSource.indexOf('const notifyChatStatusChange = async'),
@@ -272,8 +338,46 @@ describe('production guardrails', () => {
     expect(edgeSource).toContain('const drainPushDeliveryOutbox = async');
     expect(edgeSource).toContain('NOTIFICATION_WORKER_SECRET');
     expect(edgeSource).toContain('job.attempt_count >= 5');
+    expect(edgeSource).toContain('get_push_delivery_health');
     expect(dispatchSource).toContain('drainPushDeliveryOutbox');
     expect(dispatchSource).not.toContain('sendPushNotifications(');
+    expect(healthMigrationSource).toContain('SECURITY DEFINER');
+    expect(healthMigrationSource).toContain('stalled_count');
+    expect(healthMigrationSource).toContain('REVOKE ALL ON FUNCTION public.get_push_delivery_health()');
+    expect(receiptMigrationSource).toContain('CREATE TABLE IF NOT EXISTS public.push_delivery_receipts');
+    expect(receiptMigrationSource).toContain("NOW() + INTERVAL '15 minutes'");
+    expect(receiptMigrationSource).toContain('CREATE OR REPLACE FUNCTION public.claim_push_receipt_jobs');
+    expect(edgeSource).toContain('const drainPushDeliveryReceipts = async');
+    expect(schedulerSource).toContain("cron: '2/5 * * * *'");
+    expect(schedulerSource).toContain('--retry 3');
+    expect(schedulerSource).toContain('.health.dead == 0');
+    expect(schedulerSource).toContain('.health.stalled == 0');
+  });
+
+  it('keeps shared interactive primitives at the 48 dp cross-platform target', () => {
+    const themeSource = read('src/shared/theme/index.ts');
+    const buttonSource = read('src/app/components/ui/AppButton.tsx');
+    const iconButtonSource = read('src/app/components/ui/AppIconButton.tsx');
+    const textFieldSource = read('src/app/components/ui/AppTextField.tsx');
+    const segmentedSource = read('src/app/components/ui/SegmentedControl.tsx');
+
+    expect(themeSource).toContain('controlMinIOS: 44');
+    expect(themeSource).toContain('controlMinAndroid: 48');
+    expect(themeSource).toContain('controlMinUnified: 48');
+
+    for (const source of [buttonSource, iconButtonSource, textFieldSource, segmentedSource]) {
+      expect(source).toContain('theme.layout.controlMinUnified');
+    }
+  });
+
+  it('typechecks the Edge boundary against generated database types', () => {
+    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const generatedTypes = read('supabase/types/database.generated.ts');
+
+    expect(edgeSource).toContain('createClient<Database>');
+    expect(edgeSource).toContain('from "../../types/database.generated.ts"');
+    expect(generatedTypes).toContain('get_push_delivery_health');
+    expect(generatedTypes).toContain('get_compatibility_candidate_page');
   });
 
   it('exposes release and schema readiness in the Edge health contract', () => {
@@ -289,6 +393,9 @@ describe('production guardrails', () => {
     expect(source).toContain('schemaReady');
     expect(source).toContain('requiredSchema');
     expect(source).toContain('serverTime');
+    expect(source).toContain('SCHEMA_READINESS_CACHE_TTL_MS');
+    expect(source).toContain('const getSchemaReady = (supabase: SupabaseAdminClient) =>');
+    expect(source).toContain('const schemaReady = await getSchemaReady(supabase);');
     expect(source).toContain('supabase.rpc("get_chat_directory_page"');
     expect(source).toContain('supabase.rpc("get_compatibility_candidate_page"');
     expect(source).toContain('supabase.rpc("get_watch_discovery_candidate_page"');
@@ -298,14 +405,14 @@ describe('production guardrails', () => {
   it('keeps match selects aligned with the composite matches primary key', () => {
     const source = read('supabase/functions/make-server-d962235e/index.ts');
     const matchSelect = source.slice(
-      source.indexOf('const MATCH_SELECT = ['),
-      source.indexOf('const MESSAGE_SELECT = ['),
+      source.indexOf('const MATCH_SELECT ='),
+      source.indexOf('const MESSAGE_SELECT ='),
     );
 
-    expect(matchSelect).not.toContain('"id"');
-    expect(matchSelect).toContain('"user1_id"');
-    expect(matchSelect).toContain('"user2_id"');
-    expect(matchSelect).toContain('"created_at"');
+    expect(matchSelect).not.toMatch(/(^|,)id(,|$)/);
+    expect(matchSelect).toContain('user1_id');
+    expect(matchSelect).toContain('user2_id');
+    expect(matchSelect).toContain('created_at');
   });
 
   it('keeps chat list message stats on the bounded RPC path', () => {
@@ -358,10 +465,12 @@ describe('production guardrails', () => {
 
   it('shows typing presence in both the chat list and active thread', () => {
     const chatScreenSource = read('src/app/components/ChatScreen.tsx');
+    const chatListItemSource = read('src/app/components/chat/ChatListItem.tsx');
     const chatModalSource = read('src/app/components/ChatModal.tsx');
 
-    expect(chatScreenSource).toContain('useChatPresence');
-    expect(chatScreenSource).toContain("t('chat.screen.preview.typing')");
+    expect(chatScreenSource).toContain('ChatListItem');
+    expect(chatListItemSource).toContain('useChatPresence');
+    expect(chatListItemSource).toContain("t('chat.screen.preview.typing')");
     expect(chatModalSource).toContain('useChatPresence');
   });
 
@@ -402,7 +511,7 @@ describe('production guardrails', () => {
 
   it('pages same-title watch discovery without a fixed candidate cap', () => {
     const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
-    const migrationSource = read('supabase/migrations/20260718120000_production_integrity_hardening.sql');
+    const migrationSource = read('supabase/migrations/20260819090000_discovery_correctness_read_models.sql');
     const matchSource = read('src/app/components/MatchScreen.tsx');
     const routeSource = edgeSource.slice(
       edgeSource.indexOf('app.get("/make-server-d962235e/discovery/watch"'),
@@ -410,14 +519,14 @@ describe('production guardrails', () => {
     );
 
     expect(routeSource).toContain('get_watch_discovery_candidate_page');
-    expect(routeSource).toContain('loadWatchCandidatePageFallback');
-    expect(routeSource).toContain('isMissingFunctionError(watchingError, "get_watch_discovery_candidate_page")');
+    expect(routeSource).not.toContain('loadWatchCandidatePageFallback');
+    expect(routeSource).not.toContain('passesDiscoveryFilters');
     expect(routeSource).toContain('decodeLiveNowCursor');
     expect(routeSource).toContain('pageInfo');
     expect(routeSource).not.toContain('.limit(200)');
     expect(edgeSource).toContain('queueWatchSessionDiscoveryEvents');
     expect(edgeSource).toContain('{ reason: "watch_session" }');
-    expect(migrationSource).toContain('ORDER BY watching.updated_at DESC, watching.user_id DESC');
+    expect(migrationSource).toContain('ORDER BY eligible.updated_at DESC, eligible.user_id DESC');
     expect(matchSource).toContain('getMediaRefKey({ id: activeWatchingId');
     expect(matchSource).toContain('void refresh(true)');
     expect(matchSource).toContain('onLoadMoreFeed={activeWatchingId ? loadMore : undefined}');
@@ -577,23 +686,29 @@ describe('production guardrails', () => {
   });
 
   it('opens chat threads on the latest message without auto-loading older pages', () => {
-    const source = read('src/app/components/ChatModal.tsx');
+    const source = readTogether(
+      'src/app/components/ChatModal.tsx',
+      'src/app/components/chat/ChatThreadList.tsx',
+    );
     const modelSource = read('src/app/components/chat/chatMessageModel.ts');
 
     expect(modelSource).toContain('new Date(right.created_at).getTime() - new Date(left.created_at).getTime()');
     expect(source).toContain('inverted');
     expect(source).toContain('userScrolledMessagesRef');
     expect(source).toContain('scrollToOffset({ offset: 0, animated })');
-    expect(source).toContain('onEndReached={() =>');
+    expect(source).toContain('onEndReached={onLoadOlder}');
     expect(source).toContain('userScrolledMessagesRef.current && !loading && !loadingOlderMessages');
     expect(source).not.toContain('onContentSizeChange');
   });
 
   it('keeps the reader anchored when older chat pages are appended to the inverted list', () => {
-    const source = read('src/app/components/ChatModal.tsx');
+    const source = readTogether(
+      'src/app/components/ChatModal.tsx',
+      'src/app/components/chat/ChatThreadList.tsx',
+    );
 
-    expect(source).toContain('maintainVisibleContentPosition={CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION}');
-    expect(source).toContain('CHAT_MAINTAIN_VISIBLE_CONTENT_POSITION = { minIndexForVisible: 0 } as const');
+    expect(source).toContain('maintainVisibleContentPosition={MAINTAIN_VISIBLE_POSITION}');
+    expect(source).toContain('MAINTAIN_VISIBLE_POSITION = { minIndexForVisible: 0 } as const');
     expect(source).toContain('ListFooterComponent=');
     expect(source).not.toContain('pendingPrependAnchorRef');
     expect(source).not.toContain('contentHeightRef');
@@ -611,7 +726,7 @@ describe('production guardrails', () => {
   });
 
   it('does not store local signup photos in auth metadata or clear the draft before verification', () => {
-    const authSource = read('src/context/AuthContext.tsx');
+    const authSource = readTogether('src/context/AuthContext.tsx', 'src/context/auth/authSupport.ts');
     const signupSource = read('src/app/components/SignUpScreen.tsx');
     const draftSource = read('src/services/signupDraft.ts');
     const handleSubmitStart = signupSource.indexOf('const handleSubmit');
@@ -629,15 +744,17 @@ describe('production guardrails', () => {
     expect(handleSubmitBody).not.toContain('clearSignupDraft');
   });
 
-  it('restores sessions from a short-lived private profile cache without leaking telemetry strings', () => {
-    const authSource = read('src/context/AuthContext.tsx');
+  it('restores valid sessions from the last private profile snapshot without blocking on cache age', () => {
+    const authSource = readTogether('src/context/AuthContext.tsx', 'src/context/auth/authSupport.ts');
     const telemetrySource = read('src/services/telemetry.ts');
 
-    expect(authSource).toContain('AUTH_PROFILE_CACHE_TTL_MS');
+    expect(authSource).not.toContain('AUTH_PROFILE_CACHE_TTL_MS');
     expect(authSource).toContain('SecureStore.setItemAsync');
     expect(authSource).toContain("profileResult.status === 'unavailable'");
     expect(authSource).toContain('readCachedProfile(session.user.id)');
-    expect(authSource).toContain('deleteCachedProfile(signedOutUserId)');
+    expect(authSource).toContain('purgeLocalAuthSession(signedOutUserId)');
+    expect(authSource).toContain('await Promise.allSettled([');
+    expect(authSource).toContain('preserveEqualUser');
     expect(telemetrySource).toContain("if (typeof value === 'string')");
     expect(telemetrySource).toContain('return sanitizeText(value)');
   });
@@ -672,7 +789,10 @@ describe('production guardrails', () => {
   });
 
   it('keeps signup single-password and exposes password strength feedback', () => {
-    const source = read('src/app/components/SignUpScreen.tsx');
+    const source = readTogether(
+      'src/app/components/SignUpScreen.tsx',
+      'src/app/components/signup/PasswordStrength.tsx',
+    );
 
     expect(source).not.toContain('confirmPassword');
     expect(source).toContain('passwordStrength');
@@ -704,21 +824,28 @@ describe('production guardrails', () => {
     expect(appSource).toContain("tab === 'match' || tab === 'compatibility'");
   });
 
-  it('keeps profile libraries and like lists on the requested three-column grid', () => {
+  it('keeps three columns on normal screens and adapts dense grids on narrow devices', () => {
     const compatibilitySource = read('src/app/components/CompatibilityScreen.tsx');
-    const likesSource = read('src/app/components/LikesScreen.tsx');
-    const profileSource = read('src/app/components/ProfileCard.tsx');
+    const likesSource = readTogether(
+      'src/app/components/LikesScreen.tsx',
+      'src/app/components/likes/LikesGridPage.tsx',
+    );
+    const profileSource = readTogether(
+      'src/app/components/ProfileCard.tsx',
+      'src/app/components/profile/ProfileMediaLibrary.tsx',
+    );
     const cardSource = read('src/app/components/UserMiniCard.tsx');
     const skeletonSource = read('src/app/components/ui/Skeleton.tsx');
 
     expect(likesSource).toContain('const LIKES_GRID_COLUMNS = 3');
-    expect(likesSource).toContain('numColumns={gridColumns}');
+    expect(likesSource).toContain('numColumns={columns}');
+    expect(likesSource).toContain('pageWidth < LIKES_COMPACT_BREAKPOINT ? 2 : LIKES_GRID_COLUMNS');
     expect(likesSource).toContain('getFixedGridItemWidth');
-    expect(likesSource).toContain('style={gridItemStyle}');
-    expect(profileSource).toContain('const profileGridColumns = 3');
-    expect(profileSource).toContain('onLayout={handleProfileGridLayout}');
+    expect(likesSource).toContain('itemStyle={gridItemStyle}');
+    expect(profileSource).toContain('columns = availableWidth < 350 ? 2 : 3');
+    expect(profileSource).toContain('onLayout={handleLayout}');
     expect(profileSource).toContain('getFixedGridItemWidth');
-    expect(profileSource).toContain('width={profileMovieWidth}');
+    expect(profileSource).toContain('width={movieWidth}');
     expect(compatibilitySource).not.toContain('numColumns={2}');
     expect(likesSource).not.toContain('numColumns={2}');
     expect(cardSource).not.toContain("width: '46.8%'");
@@ -761,7 +888,10 @@ describe('production guardrails', () => {
     }
 
     expect(read('app.json')).toContain('"microphonePermission": false');
-    expect(manifestSource).not.toContain('android.permission.RECORD_AUDIO');
+    expect(manifestSource).toContain('android.permission.CAMERA" tools:node="remove"');
+    expect(manifestSource).toContain('android.permission.RECORD_AUDIO" tools:node="remove"');
+    expect(manifestSource).toContain('android.permission.SYSTEM_ALERT_WINDOW" tools:node="remove"');
+    expect(manifestSource).toContain('android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove"');
     expect(manifestSource).not.toContain('exp+wmatch');
     expect(manifestSource).toContain('android:autoVerify="true"');
   }, 30000);
@@ -783,7 +913,7 @@ describe('production guardrails', () => {
   it('keeps Expo Doctor and dependency drift checks blocking in CI', () => {
     const workflowSource = read('.github/workflows/ci.yml');
 
-    expect(workflowSource).toContain('npm audit --audit-level=high');
+    expect(workflowSource).toContain('npm run check:audit');
     expect(workflowSource).toContain('npx expo install --check');
     expect(workflowSource).toContain('npm run doctor');
     expect(workflowSource).not.toContain('continue-on-error: true');
@@ -825,7 +955,7 @@ describe('production guardrails', () => {
     expect(scripts['verify:release']).toContain('npm run check:edge');
     expect(scripts['verify:release']).toContain('npm run check:edge:type');
     expect(scripts['verify:release']).toContain('npm run check:migrations');
-    expect(scripts['verify:release']).toContain('npm audit --audit-level=high');
+    expect(scripts['verify:release']).toContain('npm run check:audit');
     expect(scripts['verify:release']).toContain('npx expo install --check');
     expect(scripts['verify:release']).toContain('npm run doctor');
   });
@@ -834,7 +964,6 @@ describe('production guardrails', () => {
     const settingsSource = read('src/app/components/SettingsModal.tsx');
     const externalLinksSource = read('src/shared/config/externalLinks.ts');
     const trSource = read('src/shared/i18n/locales/tr.ts');
-    const enSource = read('src/shared/i18n/locales/en.ts');
 
     expect(settingsSource).toContain('getPrivacyPolicyUrl');
     expect(settingsSource).toContain('getTermsOfUseUrl');
@@ -844,7 +973,7 @@ describe('production guardrails', () => {
     expect(settingsSource).toContain("t('settings.about.tmdb.attribution')");
     expect(settingsSource).toContain('accessibilityRole="link"');
     expect(trSource).toContain('settings.about.tmdb.attribution');
-    expect(enSource).toContain('This product uses the TMDB API but is not endorsed or certified by TMDB.');
+    expect(trSource).toContain("Bu ürün TMDB API'sini kullanır");
   });
 
   it('keeps a bounded LRU of visited tabs while only the focused scene is interactive', () => {
@@ -917,21 +1046,23 @@ describe('production guardrails', () => {
     const schedulerSource = read('src/services/launchScheduler.ts');
     const usageSource = read('src/services/tabUsage.ts');
 
-    expect(source).toContain('FIRST_FRAME_GRACE_MS = 250');
+    expect(source).toContain('FIRST_USEFUL_CONTENT_GRACE_MS = 450');
     expect(source).toContain('await waitForIdle()');
-    expect(source).toContain("await preloadTabData(user, tab, 'predictive')");
-    expect(source).toContain('loadTabWarmupOrder(user.id, currentTab)');
-    expect(source).not.toContain('Promise.all');
+    expect(source).toContain("await preloadTabData(userId, tab, 'idle')");
+    expect(source).toContain('loadTabWarmupOrder(userId, currentTab)');
+    expect(source).toContain('await Promise.all');
+    expect(source).toContain('for (const tab of warmupOrder)');
     expect(source).toContain("getAppState() !== 'active'");
-    expect(source).toContain("chats.slice(0, 1)");
-    expect(source).toContain("preloadDiscoveryData('watch', user.id)");
-    expect(source).toContain('preloadSwipeQuota(user.id)');
+    expect(source).not.toContain('preloadChatThread');
+    expect(source).toContain("preloadDiscoveryData('watch', userId)");
+    expect(source).toContain('preloadSwipeQuota(userId)');
     expect(appSource).toContain('useAppDataWarmup(user, activeTab)');
     expect(schedulerSource).toContain('getLaunchTaskConcurrency()');
     expect(schedulerSource).toContain('getNetworkConcurrencyLimit()');
     expect(schedulerSource).toContain("critical: 0");
     expect(schedulerSource).toContain("intent: 1");
     expect(usageSource).toContain('MAX_HISTORY_LENGTH = 3');
+    expect(usageSource).toContain('.slice(0, 2)');
   });
 
   it('centralizes app lifecycle work and bounds prioritized media prefetching', () => {
@@ -960,16 +1091,22 @@ describe('production guardrails', () => {
   });
 
   it('keeps the primary profile gesture and imagery off the JS-heavy legacy path', () => {
-    const profileCardSource = read('src/app/components/ProfileCard.tsx');
+    const profileCardSource = readTogether(
+      'src/app/components/ProfileCard.tsx',
+      'src/app/components/profile/useProfileCardGesture.ts',
+    );
     const imageSource = read('src/app/components/ui/AppImage.tsx');
     const rootSource = read('App.tsx');
 
     expect(rootSource).toContain('GestureHandlerRootView');
     expect(profileCardSource).toContain('Gesture.Pan()');
     expect(profileCardSource).toContain('useAnimatedStyle');
-    expect(profileCardSource).toContain('runOnJS(commitSwipeDown)');
+    expect(profileCardSource).toContain('runOnJS(commitDown)');
     expect(profileCardSource).toContain("import AppImage from './ui/AppImage'");
     expect(imageSource).toContain('cachePolicy="memory-disk"');
+    expect(imageSource).toContain('getStableImageCacheKey(uri)');
+    expect(imageSource).toContain('enforceEarlyResizing = true');
+    expect(imageSource).not.toContain('blurhash');
     expect(profileCardSource).not.toContain('PanResponder');
     expect(profileCardSource).not.toContain('ImageBackground');
   });
@@ -991,11 +1128,12 @@ describe('production guardrails', () => {
   it('commits bottom navigation feedback before rendering the expensive destination screen', () => {
     const appSource = read('src/app/App.tsx');
     const navSource = read('src/app/components/BottomNav.tsx');
+    const sceneSource = read('src/app/components/ui/TabScene.tsx');
 
-    expect(appSource).toContain('const renderedTab = useDeferredValue(activeTab)');
+    expect(appSource).not.toContain('useDeferredValue');
     expect(appSource).toContain('setActiveTab(tab)');
     expect(appSource).toContain('renderedResidentTabs.map((tab) =>');
-    expect(appSource).toContain("preloadTabData(user, tab, 'intent')");
+    expect(appSource).toContain("preloadTabData(userId, tab, 'intent')");
     expect(appSource).toContain('preloadTabModule(tab)');
     expect(appSource).toContain("telemetry.recordDuration(");
     expect(appSource).toContain("'navigation.tab_committed'");
@@ -1004,6 +1142,7 @@ describe('production guardrails', () => {
     expect(appSource).toContain('<SwipeDeckSkeleton />');
     expect(navSource).toContain('onIntent={() => onTabIntent?.(item.id)}');
     expect(navSource).toContain('export default memo(BottomNav)');
+    expect(sceneSource).toContain("mode={active ? 'visible' : 'hidden'}");
   });
 
   it('streams visible home sections independently and keeps speculative media off the critical path', () => {
@@ -1080,7 +1219,7 @@ describe('production guardrails', () => {
       'src/app/components/WatchScreen.tsx',
       'src/app/components/ChatScreen.tsx',
       'src/app/components/CompatibilityScreen.tsx',
-      'src/app/components/LikesScreen.tsx',
+      'src/app/components/likes/LikesGridPage.tsx',
       'src/app/components/MatchScreen.tsx',
       'src/app/components/ProfileCard.tsx',
     ]) {
@@ -1094,7 +1233,9 @@ describe('production guardrails', () => {
     const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
 
     expect(source).toContain('let pushSyncInFlight:');
-    expect(source).toContain('if (pushSyncInFlight.userId === normalizedUserId)');
+    expect(source).toContain('pushSyncInFlight.userId === normalizedUserId');
+    expect(source).toContain('pushSyncInFlight.requestPermission');
+    expect(source).toContain('requestPermission && shouldRequestNotificationPermission(finalPermissions)');
     expect(source).toContain('return pushSyncInFlight.promise');
     expect(source).toContain('await pushSyncInFlight?.promise');
     expect(source).toContain('Notifications.IosAuthorizationStatus.PROVISIONAL');
@@ -1109,47 +1250,65 @@ describe('production guardrails', () => {
     expect(edgeSource).toContain('getExpoPushHeaders()');
     expect(edgeSource).toContain('fetchExpoPushWithRetry');
     expect(edgeSource).toContain('await drainPushDeliveryOutbox(supabase);');
-    expect(edgeSource.indexOf('if (retryableErrors.length > 0)')).toBeLessThan(
-      edgeSource.indexOf('if (acceptedCount > 0)'),
+    expect(edgeSource.indexOf('if (acceptedCount > 0)')).toBeLessThan(
+      edgeSource.indexOf('if (retryableErrors.length > 0)'),
     );
+    expect(edgeSource).toContain('for (const message of messages)');
+    expect(edgeSource).toContain('permanentErrors.push(`expo_ticket_${errorCode ?? "unknown"}`)');
     expect(appSource).toContain('void syncCurrentUserPush(user?.id)');
     expect(appSource).toContain('subscribeToPushTokenChanges(user?.id)');
+    expect(appSource).toContain('pushPermissionRequestedUserIdsRef');
+    expect(appSource).toContain('void requestPushNotifications(currentUserId)');
     expect(appSource).toContain('openPushNotificationSettings');
+    expect(appSource).toContain("if (tab === 'chat')");
+    expect(appSource).toContain('requestPushNotifications(userId)');
   });
 
   it('restores the chat composer and exposes bounded failed-message actions', () => {
-    const modalSource = read('src/app/components/ChatModal.tsx');
+    const modalSource = readTogether(
+      'src/app/components/ChatModal.tsx',
+      'src/app/components/chat/ChatComposer.tsx',
+      'src/app/components/chat/ChatThreadList.tsx',
+      'src/app/hooks/useChatKeyboard.ts',
+    );
     const validationSource = read('src/shared/utils/validation.ts');
 
     expect(modalSource).toContain("behavior={Platform.OS === 'ios' ? 'padding' : undefined}");
     expect(modalSource).toContain("enabled={Platform.OS === 'ios'}");
     expect(modalSource).toContain('calculateKeyboardInset(');
-    expect(modalSource).toContain('ANDROID_KEYBOARD_COMPOSER_GAP = 32');
+    expect(modalSource).toContain('ANDROID_COMPOSER_GAP = 32');
     expect(modalSource).toContain("Platform.OS === 'android' && isKeyboardVisible ? androidKeyboardInset : 0");
     expect(modalSource).toContain('onLayout={handleRootLayout}');
-    expect(modalSource).toContain('composerInputRef.current?.blur()');
-    expect(modalSource).toContain('keyboardResetTimeoutRef.current = setTimeout');
+    expect(modalSource).toContain('inputRef.current?.blur()');
+    expect(modalSource).toContain('resetTimerRef.current = setTimeout');
     expect(modalSource).toContain('dismissComposer();');
-    expect(modalSource).toContain('{messageCharacterCount}/{MAX_MESSAGE_LENGTH}');
+    expect(modalSource).toContain('{characterCount}/{MAX_MESSAGE_LENGTH}');
     expect(modalSource).toContain("t('chat.modal.retry.resend')");
     expect(modalSource).toContain("t('chat.modal.retry.cancel')");
     expect(modalSource).toContain('removePendingChatMessage(currentUserId, message.id)');
     expect(validationSource).toContain('Array.from(value).slice(0, MAX_MESSAGE_LENGTH)');
   });
 
-  it('only requests password reset delivery for a registered account', () => {
+  it('does not reveal whether a password reset account exists', () => {
     const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
     const routeSource = edgeSource.slice(
       edgeSource.indexOf('app.post("/make-server-d962235e/auth/password-reset"'),
       edgeSource.indexOf('app.post("/make-server-d962235e/auth/signup"'),
     );
 
-    expect(routeSource).toContain('"check_email_availability"');
-    expect(routeSource).toContain('availabilityRows[0]?.email_available === false');
-    expect(routeSource).toContain('code: "ACCOUNT_NOT_FOUND"');
-    expect(routeSource.indexOf('check_email_availability')).toBeLessThan(
-      routeSource.indexOf('resetPasswordForEmail'),
-    );
+    expect(routeSource).not.toContain('"check_email_availability"');
+    expect(routeSource).not.toContain('code: "ACCOUNT_NOT_FOUND"');
+    expect(routeSource).toContain('resetPasswordForEmail');
+    expect(routeSource).toContain('account-existence state enables account enumeration');
+    expect(routeSource).toContain('}, 202)');
+  });
+
+  it('does not expose raw infrastructure errors through Edge API responses', () => {
+    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+
+    expect(edgeSource).not.toMatch(/return c\.json\(\{ error: String\(error\)/);
+    expect(edgeSource).not.toMatch(/return c\.json\(\{ error: error\.message/);
+    expect(edgeSource).not.toMatch(/return c\.json\(\{ error: \w+Error\??\.message/);
   });
 
   it('keeps protected release identity stable', () => {
@@ -1237,9 +1396,13 @@ describe('production guardrails', () => {
     const buttonSource = read('src/app/components/ui/AppButton.tsx');
     const textFieldSource = read('src/app/components/ui/AppTextField.tsx');
     const chatBubbleSource = read('src/app/components/chat/ChatMessageBubble.tsx');
-    const chatModalSource = read('src/app/components/ChatModal.tsx');
+    const chatModalSource = readTogether(
+      'src/app/components/ChatModal.tsx',
+      'src/app/components/chat/ChatComposer.tsx',
+      'src/app/components/chat/ChatHeader.tsx',
+    );
 
-    expect(themeSource).toContain('controlMinUnified: 40');
+    expect(themeSource).toContain('controlMinUnified: 48');
     expect(themeSource).toContain("body: { fontFamily: 'Inter_400Regular', fontSize: 13");
     expect(themeSource).toContain("control: { fontFamily: 'Inter_600SemiBold', fontSize: 12");
     expect(themeSource).toContain('dangerText');
@@ -1263,7 +1426,7 @@ describe('production guardrails', () => {
     expect(chatBubbleSource).toContain('paddingHorizontal: 8');
     expect(chatBubbleSource).toContain('paddingVertical: 5');
     expect(chatBubbleSource).toContain('...theme.typography.roles.meta');
-    expect(chatModalSource).toContain('minHeight: 36');
+    expect(chatModalSource).toContain('minHeight: theme.layout.controlMinUnified');
     expect(chatModalSource).toContain('hitSlop={6}');
   });
 });

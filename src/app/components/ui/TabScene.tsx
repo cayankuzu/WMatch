@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { Activity, useEffect, type ReactNode } from 'react';
 import { StyleSheet } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 
@@ -33,7 +33,7 @@ export default function TabScene({ active, children }: TabSceneProps) {
       pointerEvents={active ? 'auto' : 'none'}
       style={[styles.scene, !active && styles.inactiveScene, animatedStyle]}
     >
-      {children}
+      <Activity mode={active ? 'visible' : 'hidden'}>{children}</Activity>
     </Animated.View>
   );
 }

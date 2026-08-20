@@ -40,7 +40,7 @@ jobs:
         run: npm ci
 
       - name: Dependency audit
-        run: npm audit --audit-level=high
+        run: npm run check:audit
 
       - name: Generate dependency SBOM
         run: npm sbom --sbom-format cyclonedx > "${RUNNER_TEMP}/wmatch-sbom.json"
@@ -62,6 +62,9 @@ jobs:
 
       - name: i18n parity
         run: npm run check:i18n
+
+      - name: Touch target guard
+        run: npm run check:touch
 
       - name: Typecheck
         run: npm run typecheck

@@ -22,11 +22,15 @@ interface MovieCardProps {
   width?: number;
 }
 
-const sizeMap = {
+export const MOVIE_CARD_DIMENSIONS = {
   small: { width: 88, posterHeight: 131 },
   medium: { width: 112, posterHeight: 167 },
   large: { width: 140, posterHeight: 209 },
-};
+} as const;
+
+export function getMovieCardWidth(size: keyof typeof MOVIE_CARD_DIMENSIONS) {
+  return MOVIE_CARD_DIMENSIONS[size].width;
+}
 let firstMediaDisplayed = false;
 
 function markFirstMediaDisplay() {
@@ -52,7 +56,7 @@ function MovieCard({
   const title = movie.title || movie.name || t('movie.detail.untitled');
   const year = movie.release_date?.slice(0, 4) || movie.first_air_date?.slice(0, 4);
   const rating = movie.vote_average ? movie.vote_average.toFixed(1) : null;
-  const dimensions = sizeMap[size];
+  const dimensions = MOVIE_CARD_DIMENSIONS[size];
   const resolvedWidth = width ?? dimensions.width;
   const resolvedPosterHeight = width ? Math.round(width * 1.49) : dimensions.posterHeight;
   const posterSize = size === 'large' ? 'w500' : 'w200';

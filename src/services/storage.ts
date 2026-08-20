@@ -1,6 +1,7 @@
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 
 import { SUPABASE_URL, supabase } from '../../utils/supabase/client';
+import { telemetry } from './telemetry';
 
 export const PROFILE_PHOTOS_BUCKET = 'profile-photos';
 
@@ -168,20 +169,12 @@ function extractErrorMessage(error: unknown, fallback: string) {
 
 function mapStorageError(error: unknown) {
   const message = extractErrorMessage(error, 'Profil fotoğrafı yüklenemedi.');
+  telemetry.captureException(error instanceof Error ? error : new Error(message), {
+    operation: 'profile_photo_upload',
+    storageCategory: /bucket|row-level security|policy/i.test(message) ? 'configuration' : 'request',
+  });
 
-  if (/bucket/i.test(message) && /not found|does not exist/i.test(message)) {
-    return new Error(
-      `Profil fotoğrafları yüklenemedi. Supabase Storage içinde "${PROFILE_PHOTOS_BUCKET}" adında public bir bucket oluşturmalısın.`,
-    );
-  }
-
-  if (/row-level security|policy/i.test(message)) {
-    return new Error(
-      `Profil fotoğrafları yüklenemedi. "${PROFILE_PHOTOS_BUCKET}" bucket'ı için storage policy ayarlarını tamamlamalısın.`,
-    );
-  }
-
-  return new Error(message);
+  return new Error('Profil fotoğrafı yüklenemedi. Bağlantını kontrol edip tekrar dene.');
 }
 
 function decodeBase64ToArrayBuffer(base64: string) {

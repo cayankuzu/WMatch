@@ -101,8 +101,8 @@ const styles = StyleSheet.create({
     paddingTop: theme.spacing.md,
   },
   button: {
-    width: 44,
-    height: 44,
+    width: theme.layout.controlMinUnified,
+    height: theme.layout.controlMinUnified,
     borderRadius: theme.radius.pill,
     borderWidth: 1,
     alignItems: 'center',
@@ -114,8 +114,8 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.dangerSurface,
   },
   undo: {
-    width: 40,
-    height: 40,
+    width: theme.layout.controlMinUnified,
+    height: theme.layout.controlMinUnified,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.infoSurface,
   },

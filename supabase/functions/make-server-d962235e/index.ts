@@ -1,5 +1,4 @@
-import { Hono } from "npm:hono@4.12.30";
-import { cors } from "npm:hono@4.12.30/cors";
+import { Hono, type Context, type Next } from "npm:hono@4.13.3";
 import { createClient } from "jsr:@supabase/supabase-js@2.107.0";
 import nodemailer from "npm:nodemailer@9.0.3";
 import {
@@ -25,16 +24,16 @@ import {
   SWIPE_QUOTA_WINDOW_HOURS,
 } from "../../../src/shared/constants/index.ts";
 import { getUsernameValidationMessage, normalizeUsername } from "../../../src/shared/utils/username.ts";
+import { getPasswordResetRedirectUrl } from "../../../src/shared/config/publicWeb.ts";
 import { getCompatibilityBreakdown } from "../../../src/shared/utils/compatibility.ts";
 import {
   DEFAULT_DISCOVERY_PREFERENCES,
-  getDistanceKm,
   hasActiveDistanceFilter,
+  isDiscoveryGenderFilter,
   isUserGender,
   normalizeDiscoveryPreferences,
   validateDiscoveryPreferences,
   type DiscoveryPreferences,
-  type UserGender,
 } from "../../../src/shared/utils/discovery.ts";
 import {
   normalizeBio,
@@ -47,6 +46,24 @@ import {
   validateLetterboxd,
   validateMessageText,
 } from "../../../src/shared/utils/validation.ts";
+import {
+  decodeChatDirectoryCursor,
+  decodeCompatibilityCursor,
+  decodeLiveNowCursor,
+  decodeMessageCursor,
+  encodeChatDirectoryCursor,
+  encodeCompatibilityCursor,
+  encodeLiveNowCursor,
+  encodeMessageCursor,
+} from "./cursors.ts";
+import {
+  buildAbuseKey,
+  getRequestRateLimitIdentity as resolveRequestRateLimitIdentity,
+  hashIdempotencyPayload,
+  isTrustedPasswordResetRedirect as validatePasswordResetRedirect,
+  normalizeIdempotencyKey,
+} from "./httpSecurity.ts";
+import type { Database, Json, Tables, TablesInsert, TablesUpdate } from "../../types/database.generated.ts";
 
 type AppVariables = {
   userId: string;
@@ -54,21 +71,34 @@ type AppVariables = {
   requestStartedAt: number;
 };
 
+type AppContext = Context<{ Variables: AppVariables }>;
+type DatabaseRow = Record<string, unknown>;
+type ChatSettingsRow = Tables<"chat_settings">;
+type DiscoveryPreferencesRow = Tables<"discovery_preferences">;
+type JsonObject = { [key: string]: Json | undefined };
+
+const isDatabaseRow = (value: unknown): value is DatabaseRow =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+
 const app = new Hono<{ Variables: AppVariables }>();
 
-const getSupabase = (): any =>
-  createClient(
+const getSupabase = () =>
+  createClient<Database>(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
       Deno.env.get("SUPABASE_SECRET_KEY") ??
       "",
   );
+type SupabaseAdminClient = ReturnType<typeof getSupabase>;
 
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 const PROFILE_PHOTOS_BUCKET = "profile-photos";
 const PROFILE_PHOTOS_PUBLIC_PREFIX = `${Deno.env.get("SUPABASE_URL")!}/storage/v1/object/public/${PROFILE_PHOTOS_BUCKET}/`;
 const PROFILE_PHOTOS_SIGNED_PREFIX = `${Deno.env.get("SUPABASE_URL")!}/storage/v1/object/sign/${PROFILE_PHOTOS_BUCKET}/`;
 const PROFILE_PHOTO_SIGNED_URL_TTL_SECONDS = 6 * 60 * 60;
+const PROFILE_PHOTO_SIGNED_URL_CACHE_TTL_MS = (PROFILE_PHOTO_SIGNED_URL_TTL_SECONDS - 5 * 60) * 1000;
+const MAX_PROFILE_PHOTO_SIGNED_URL_CACHE_ENTRIES = 1_000;
+const SCHEMA_READINESS_CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_SIGNUP_ATTEMPTS_PER_HOUR = 6;
 const MAX_PASSWORD_RESET_REQUESTS_PER_HOUR = 6;
 const MAX_PASSWORD_RESET_LOOKUPS_PER_HOUR = 20;
@@ -100,15 +130,16 @@ const DEFAULT_DIRECTORY_PAGE_SIZE = 80;
 const MAX_DIRECTORY_PAGE_SIZE = 120;
 const MONETIZATION_ENABLED = Deno.env.get("MONETIZATION_ENABLED") === "true";
 const WATCH_SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
-const API_VERSION = "2026-07-19";
-const RELEASE_VERSION = "1.0.45";
-const REQUIRED_SCHEMA_VERSION = "20260720012500";
+const API_VERSION = "2026-08-19";
+const RELEASE_VERSION = "1.0.50";
+const REQUIRED_SCHEMA_VERSION = "20260819190000";
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const TMDB_PROXY_CACHE_TTL_MS = 30 * 60 * 1000;
 const TMDB_PROXY_MAX_CACHE_ENTRIES = 300;
 const ANDROID_NOTIFICATION_CHANNEL_ID = "wmatch-alerts-v2";
 const EXPO_PUSH_MAX_HTTP_ATTEMPTS = 3;
 const EXPO_PUSH_RETRY_BASE_DELAY_MS = 400;
+const MAX_PUSH_TOKENS_PER_USER = 16;
 const DEFAULT_CHAT_SETTINGS = {
   readReceipts: true,
   onlineStatus: true,
@@ -132,149 +163,7 @@ const isMediaType = (value: unknown): value is MediaType =>
 
 const getMediaRefKey = (ref: MediaRef) => `${ref.mediaType}:${ref.id}`;
 
-const encodeMessageCursor = (message: { created_at?: string | null; id?: string | null }) => {
-  if (!message.created_at || !message.id) {
-    return null;
-  }
-
-  return btoa(JSON.stringify({
-    createdAt: message.created_at,
-    id: message.id,
-  }));
-};
-
-const decodeMessageCursor = (cursor: string | null | undefined) => {
-  if (!cursor) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(atob(cursor)) as { createdAt?: unknown; id?: unknown };
-
-    if (
-      typeof parsed.createdAt === "string" &&
-      Number.isFinite(new Date(parsed.createdAt).getTime()) &&
-      typeof parsed.id === "string" &&
-      parsed.id.length > 0
-    ) {
-      return {
-        createdAt: parsed.createdAt,
-        id: parsed.id,
-      };
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-};
-
-const encodeLiveNowCursor = (row: { updated_at?: string | null; user_id?: string | null }) => {
-  if (!row.updated_at || !row.user_id) {
-    return null;
-  }
-
-  return btoa(JSON.stringify({
-    updatedAt: row.updated_at,
-    userId: row.user_id,
-  }));
-};
-
-const decodeLiveNowCursor = (cursor: string | null | undefined) => {
-  if (!cursor) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(atob(cursor)) as { updatedAt?: unknown; userId?: unknown };
-
-    if (
-      typeof parsed.updatedAt === "string" &&
-      Number.isFinite(new Date(parsed.updatedAt).getTime()) &&
-      typeof parsed.userId === "string" &&
-      parsed.userId.length > 0
-    ) {
-      return {
-        updatedAt: parsed.updatedAt,
-        userId: parsed.userId,
-      };
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-};
-
-const encodeChatDirectoryCursor = (row: { activity_at?: string | null; other_user_id?: string | null }) => {
-  if (!row.activity_at || !row.other_user_id) {
-    return null;
-  }
-
-  return btoa(JSON.stringify({
-    activityAt: row.activity_at,
-    userId: row.other_user_id,
-  }));
-};
-
-const decodeChatDirectoryCursor = (cursor: string | null | undefined) => {
-  if (!cursor) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(atob(cursor)) as { activityAt?: unknown; userId?: unknown };
-
-    if (
-      typeof parsed.activityAt === "string" &&
-      Number.isFinite(new Date(parsed.activityAt).getTime()) &&
-      typeof parsed.userId === "string" &&
-      /^[0-9a-f-]{36}$/i.test(parsed.userId)
-    ) {
-      return { activityAt: parsed.activityAt, userId: parsed.userId };
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-};
-
-const encodeCompatibilityCursor = (row: { overlap_count?: number | string | null; user_id?: string | null }) => {
-  const overlapCount = Number(row.overlap_count);
-
-  if (!Number.isSafeInteger(overlapCount) || overlapCount < 1 || !row.user_id) {
-    return null;
-  }
-
-  return btoa(JSON.stringify({ overlapCount, userId: row.user_id }));
-};
-
-const decodeCompatibilityCursor = (cursor: string | null | undefined) => {
-  if (!cursor) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(atob(cursor)) as { overlapCount?: unknown; userId?: unknown };
-
-    if (
-      typeof parsed.overlapCount === "number" &&
-      Number.isSafeInteger(parsed.overlapCount) &&
-      parsed.overlapCount > 0 &&
-      typeof parsed.userId === "string" &&
-      /^[0-9a-f-]{36}$/i.test(parsed.userId)
-    ) {
-      return { overlapCount: parsed.overlapCount, userId: parsed.userId };
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
-};
-
-const userHasIncomingLikesEntitlement = async (supabase: any, userId: string) => {
+const userHasIncomingLikesEntitlement = async (supabase: SupabaseAdminClient, userId: string) => {
   if (!MONETIZATION_ENABLED) {
     return true;
   }
@@ -296,52 +185,15 @@ const userHasIncomingLikesEntitlement = async (supabase: any, userId: string) =>
 
   return (data ?? []).length > 0;
 };
-const PUBLIC_PROFILE_SELECT = [
-  "id",
-  "name",
-  "age",
-  "show_age_on_profile",
-  "gender",
-  "show_gender_on_profile",
-  "username",
-  "bio",
-  "letterboxd",
-  "photos",
-  "email_confirmed",
-].join(", ");
-const SERVER_PROFILE_SELECT = `${PUBLIC_PROFILE_SELECT}, latitude, longitude, location_updated_at`;
-const MATCH_SELECT = [
-  "user1_id",
-  "user2_id",
-  "status",
-  "created_at",
-  "updated_at",
-  "ended_at",
-  "ended_by_user_id",
-  "match_source_type",
-  "match_source_score",
-  "match_source_movie_id",
-  "common_favorite_movie_ids",
-  "common_watched_movie_ids",
-  "first_like_by_user_id",
-  "accepted_by_user_id",
-  "user1_chat_deleted_at",
-  "user2_chat_deleted_at",
-  "user1_chat_cleared_at",
-  "user2_chat_cleared_at",
-].join(", ");
-const MESSAGE_SELECT = [
-  "id",
-  "sender_id",
-  "receiver_id",
-  "text",
-  "read",
-  "created_at",
-  "client_request_id",
-  "client_message_id",
-].join(", ");
+const PUBLIC_PROFILE_SELECT =
+  "id,name,age,show_age_on_profile,gender,show_gender_on_profile,username,bio,letterboxd,photos,email_confirmed" as const;
+const SERVER_PROFILE_SELECT = `${PUBLIC_PROFILE_SELECT},latitude,longitude,location_updated_at` as const;
+const MATCH_SELECT =
+  "user1_id,user2_id,status,created_at,updated_at,ended_at,ended_by_user_id,match_source_type,match_source_score,match_source_movie_id,common_favorite_movie_ids,common_watched_movie_ids,first_like_by_user_id,accepted_by_user_id,user1_chat_deleted_at,user2_chat_deleted_at,user1_chat_cleared_at,user2_chat_cleared_at" as const;
+const MESSAGE_SELECT =
+  "id,sender_id,receiver_id,text,read,created_at,client_request_id,client_message_id" as const;
 const SWIPE_QUOTA_WINDOW_MS = SWIPE_QUOTA_WINDOW_HOURS * 60 * 60 * 1000;
-const REPORT_REASON_CODES = new Set([
+const REPORT_REASON_CODES = new Set<string>([
   "fake_profile",
   "harassment",
   "spam",
@@ -349,8 +201,8 @@ const REPORT_REASON_CODES = new Set([
   "underage",
   "hate_speech",
   "other",
-] as const);
-const REPORT_TARGET_TYPES = new Set(["profile", "chat_message", "match", "other"] as const);
+]);
+const REPORT_TARGET_TYPES = new Set<string>(["profile", "chat_message", "match", "other"]);
 const MODERATION_REPORT_TO_EMAIL =
   normalizeEmail(Deno.env.get("MODERATION_REPORT_TO_EMAIL") ?? "");
 const MODERATION_REPORT_FROM_EMAIL =
@@ -362,10 +214,16 @@ const MODERATION_SMTP_HOST =
 const MODERATION_SMTP_PORT = Number(Deno.env.get("MODERATION_SMTP_PORT") ?? "587");
 const MODERATION_SMTP_USERNAME = (Deno.env.get("MODERATION_SMTP_USERNAME") ?? "").trim();
 const MODERATION_SMTP_PASSWORD = Deno.env.get("MODERATION_SMTP_PASSWORD") ?? "";
+const TRUSTED_CLIENT_IP_HEADER = (Deno.env.get("TRUSTED_CLIENT_IP_HEADER") ?? "")
+  .trim()
+  .toLowerCase();
 
 let moderationTransporter: nodemailer.Transporter | null = null;
 const tmdbProxyCache = new Map<string, { payload: unknown; expiresAt: number }>();
 const tmdbProxyInflight = new Map<string, Promise<unknown>>();
+const signedProfilePhotoCache = new Map<string, { signedUrl: string; expiresAt: number }>();
+let schemaReadinessCache: { ready: boolean; expiresAt: number } | null = null;
+let schemaReadinessFlight: Promise<boolean> | null = null;
 
 type SwipeQuotaKind = "like" | "dislike" | "undo";
 
@@ -377,15 +235,13 @@ interface SwipeQuotaRow {
   used_undos: number;
 }
 
-const getClientIp = (c: any) => {
-  const forwardedFor = c.req.header("x-forwarded-for");
+const getRequestRateLimitIdentity = (c: AppContext) =>
+  resolveRequestRateLimitIdentity(c.req, TRUSTED_CLIENT_IP_HEADER);
 
-  if (forwardedFor) {
-    return forwardedFor.split(",")[0]?.trim() ?? "unknown-ip";
-  }
+const getPathParam = (c: AppContext, name: string) => c.req.param(name) ?? "";
 
-  return c.req.header("x-real-ip") ?? "unknown-ip";
-};
+const isTrustedPasswordResetRedirect = (value: unknown): value is string =>
+  validatePasswordResetRedirect(value, getPasswordResetRedirectUrl());
 
 const getManagedStoragePath = (photoUrl: string) => {
   const prefix = photoUrl.startsWith(PROFILE_PHOTOS_PUBLIC_PREFIX)
@@ -418,9 +274,9 @@ const sanitizePhotoList = (photos: unknown) =>
     : [];
 
 const signProfilePhotosForPayloads = async (
-  supabase: any,
-  payloads: Record<string, any>[],
-): Promise<Record<string, any>[]> => {
+  supabase: SupabaseAdminClient,
+  payloads: DatabaseRow[],
+): Promise<DatabaseRow[]> => {
   const managedPaths = [...new Set(
     payloads.flatMap((payload) =>
       sanitizePhotoList(payload.photos)
@@ -433,20 +289,48 @@ const signProfilePhotosForPayloads = async (
     return payloads;
   }
 
-  const { data, error } = await supabase.storage
-    .from(PROFILE_PHOTOS_BUCKET)
-    .createSignedUrls(managedPaths, PROFILE_PHOTO_SIGNED_URL_TTL_SECONDS);
-
-  if (error) {
-    throw error;
-  }
-
   const signedUrlByPath = new Map<string, string>();
-  (data ?? []).forEach((item: { path?: string | null; signedUrl?: string | null }) => {
-    if (item.path && item.signedUrl) {
-      signedUrlByPath.set(item.path, item.signedUrl);
+  const now = Date.now();
+  const unsignedPaths = managedPaths.filter((path) => {
+    const cached = signedProfilePhotoCache.get(path);
+    if (!cached || cached.expiresAt <= now) {
+      signedProfilePhotoCache.delete(path);
+      return true;
     }
+
+    signedProfilePhotoCache.delete(path);
+    signedProfilePhotoCache.set(path, cached);
+    signedUrlByPath.set(path, cached.signedUrl);
+    return false;
   });
+
+  if (unsignedPaths.length > 0) {
+    const { data, error } = await supabase.storage
+      .from(PROFILE_PHOTOS_BUCKET)
+      .createSignedUrls(unsignedPaths, PROFILE_PHOTO_SIGNED_URL_TTL_SECONDS);
+
+    if (error) {
+      throw error;
+    }
+
+    (data ?? []).forEach((item: { path?: string | null; signedUrl?: string | null }) => {
+      if (item.path && item.signedUrl) {
+        signedUrlByPath.set(item.path, item.signedUrl);
+        signedProfilePhotoCache.set(item.path, {
+          signedUrl: item.signedUrl,
+          expiresAt: now + PROFILE_PHOTO_SIGNED_URL_CACHE_TTL_MS,
+        });
+      }
+    });
+
+    while (signedProfilePhotoCache.size > MAX_PROFILE_PHOTO_SIGNED_URL_CACHE_ENTRIES) {
+      const oldestPath = signedProfilePhotoCache.keys().next().value as string | undefined;
+      if (!oldestPath) {
+        break;
+      }
+      signedProfilePhotoCache.delete(oldestPath);
+    }
+  }
 
   if (signedUrlByPath.size !== managedPaths.length) {
     throw new Error("One or more profile photos could not be signed.");
@@ -467,7 +351,7 @@ const extractManagedProfilePhotoPaths = (photos: unknown) =>
     .filter((path): path is string => Boolean(path));
 
 const cleanupRemovedManagedProfilePhotos = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   previousPhotos: unknown,
   nextPhotos: unknown,
 ) => {
@@ -526,25 +410,8 @@ const sanitizeMediaRefList = (value: unknown, legacyMovieIds: number[], maxCount
   return refs.slice(0, maxCount);
 };
 
-const buildAbuseKey = (parts: Array<string | null | undefined>) =>
-  parts
-    .map((part) => part?.trim())
-    .filter((part): part is string => Boolean(part))
-    .join(":");
-
-const normalizeIdempotencyKey = (value: string | undefined) => {
-  const normalized = value?.trim() ?? "";
-  return /^[A-Za-z0-9:._-]{8,180}$/.test(normalized) ? normalized : null;
-};
-
-const hashIdempotencyPayload = async (value: string) => {
-  const bytes = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-};
-
 const enforceRateLimit = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   config: {
     action: string;
     key: string;
@@ -843,7 +710,7 @@ const getPairUserIds = (leftUserId: string, rightUserId: string) =>
 const getPairKey = (leftUserId: string, rightUserId: string) => getPairUserIds(leftUserId, rightUserId).join(":");
 
 const serializeProfile = (
-  profile: Record<string, any>,
+  profile: DatabaseRow,
   extras: Record<string, unknown> = {},
 ) => ({
   id: typeof profile.id === "string" ? profile.id : "",
@@ -874,7 +741,7 @@ const serializeProfile = (
   ...extras,
 });
 
-const buildAuthUserMetadata = (profile: Record<string, any>) => ({
+const buildAuthUserMetadata = (profile: DatabaseRow) => ({
   name: typeof profile.name === "string" ? profile.name : "User",
   age: typeof profile.age === "number" ? profile.age : 18,
   gender: isUserGender(profile.gender) ? profile.gender : "other",
@@ -893,7 +760,7 @@ const buildAuthUserMetadata = (profile: Record<string, any>) => ({
 });
 
 const buildUserPayload = (
-  profile: Record<string, any>,
+  profile: DatabaseRow,
   movies: Array<{ movie_id: number; media_type?: MediaType | string | null; type: string }> = [],
   currentlyWatching: {
     movie_id: number;
@@ -940,13 +807,13 @@ const buildUserPayload = (
 const buildFallbackUserPayload = (userId: string) =>
   buildUserPayload({
     id: userId,
-    name: "Kullanici",
+    name: "Kullanıcı",
     age: 18,
     gender: "other",
     email_confirmed: true,
   });
 
-const isEmailConfirmedProfile = (profile: Record<string, any> | null | undefined) =>
+const isEmailConfirmedProfile = (profile: DatabaseRow | null | undefined) =>
   profile?.email_confirmed === true;
 
 const sanitizeReportReasonCode = (value: unknown) => {
@@ -955,7 +822,7 @@ const sanitizeReportReasonCode = (value: unknown) => {
   }
 
   const normalized = value.trim().toLowerCase();
-  return REPORT_REASON_CODES.has(normalized as any)
+  return REPORT_REASON_CODES.has(normalized)
     ? normalized
     : "other";
 };
@@ -966,7 +833,7 @@ const sanitizeReportTargetType = (value: unknown) => {
   }
 
   const normalized = value.trim().toLowerCase();
-  return REPORT_TARGET_TYPES.has(normalized as any)
+  return REPORT_TARGET_TYPES.has(normalized)
     ? normalized
     : "profile";
 };
@@ -974,7 +841,7 @@ const sanitizeReportTargetType = (value: unknown) => {
 const sanitizeReportDetails = (value: unknown) =>
   typeof value === "string" ? normalizeWhitespace(value).trim().slice(0, MAX_REPORT_DETAILS_LENGTH) : "";
 
-const buildReportUserSnapshot = (user: Record<string, any> | null | undefined) => {
+const buildReportUserSnapshot = (user: DatabaseRow | null | undefined) => {
   if (!user) {
     return null;
   }
@@ -1038,9 +905,9 @@ const sendModerationReportEmail = async (report: {
   targetType: string;
   reasonCode: string;
   details: string;
-  reporterSnapshot: Record<string, unknown> | null;
-  targetSnapshot: Record<string, unknown> | null;
-  contextSnapshot: Record<string, unknown>;
+  reporterSnapshot: Json;
+  targetSnapshot: Json;
+  contextSnapshot: Json;
   createdAt: string;
 }) => {
   const transporter = getModerationTransporter();
@@ -1083,7 +950,7 @@ const sendModerationReportEmail = async (report: {
   return true;
 };
 
-const serializeChatSettings = (row: Record<string, any> | null | undefined) => ({
+const serializeChatSettings = (row: Partial<ChatSettingsRow> | null | undefined) => ({
   readReceipts:
     typeof row?.read_receipts_enabled === "boolean"
       ? row.read_receipts_enabled
@@ -1102,9 +969,11 @@ const serializeChatSettings = (row: Record<string, any> | null | undefined) => (
       : DEFAULT_CHAT_SETTINGS.notifications,
 });
 
-const serializeDiscoveryPreferences = (row: Record<string, any> | null | undefined) =>
+const serializeDiscoveryPreferences = (row: Partial<DiscoveryPreferencesRow> | null | undefined) =>
   normalizeDiscoveryPreferences({
-    genderPreference: row?.gender_preference,
+    genderPreference: isDiscoveryGenderFilter(row?.gender_preference)
+      ? row.gender_preference
+      : undefined,
     ageMin: row?.age_min,
     ageMax: row?.age_max,
     distanceMinKm: row?.distance_min_km,
@@ -1164,7 +1033,7 @@ const serializeSwipeQuota = (row: SwipeQuotaRow, now = Date.now()) => {
   };
 };
 
-const persistSwipeQuotaRow = async (supabase: any, row: SwipeQuotaRow) => {
+const persistSwipeQuotaRow = async (supabase: SupabaseAdminClient, row: SwipeQuotaRow) => {
   const normalized = normalizeSwipeQuotaRow(row.user_id, row);
   const { data, error } = await supabase
     .from("swipe_quotas")
@@ -1186,7 +1055,7 @@ const persistSwipeQuotaRow = async (supabase: any, row: SwipeQuotaRow) => {
   return normalizeSwipeQuotaRow(normalized.user_id, data);
 };
 
-const loadSwipeQuotaRow = async (supabase: any, userId: string) => {
+const loadSwipeQuotaRow = async (supabase: SupabaseAdminClient, userId: string) => {
   const { data, error } = await supabase
     .from("swipe_quotas")
     .select("user_id, window_started_at, used_like_swipes, used_dislike_swipes, used_undos")
@@ -1208,7 +1077,7 @@ const loadSwipeQuotaRow = async (supabase: any, userId: string) => {
   return needsPersist ? persistSwipeQuotaRow(supabase, normalized) : normalized;
 };
 
-const consumeSwipeQuota = async (supabase: any, userId: string, kind: SwipeQuotaKind) => {
+const consumeSwipeQuota = async (supabase: SupabaseAdminClient, userId: string, kind: SwipeQuotaKind) => {
   const { data, error } = await supabase.rpc("consume_swipe_quota_atomic", {
     p_user_id: userId,
     p_kind: kind,
@@ -1231,7 +1100,7 @@ const consumeSwipeQuota = async (supabase: any, userId: string, kind: SwipeQuota
   return normalizeSwipeQuotaRow(userId, row);
 };
 
-const rewardSwipeQuota = async (supabase: any, userId: string, kind: Extract<SwipeQuotaKind, "like" | "dislike">) => {
+const rewardSwipeQuota = async (supabase: SupabaseAdminClient, userId: string, kind: Extract<SwipeQuotaKind, "like" | "dislike">) => {
   const { data, error } = await supabase.rpc("reward_swipe_quota_atomic", {
     p_user_id: userId,
     p_kind: kind,
@@ -1247,7 +1116,7 @@ const rewardSwipeQuota = async (supabase: any, userId: string, kind: Extract<Swi
 };
 
 const loadDiscoveryPreferencesMap = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   userIds: string[],
 ): Promise<Map<string, DiscoveryPreferences>> => {
   if (userIds.length === 0) {
@@ -1271,12 +1140,12 @@ const loadDiscoveryPreferencesMap = async (
   }
 
   return new Map<string, DiscoveryPreferences>(
-    (data ?? []).map((row: Record<string, any>) => [row.user_id, serializeDiscoveryPreferences(row)]),
+    (data ?? []).map((row) => [row.user_id, serializeDiscoveryPreferences(row)]),
   );
 };
 
 const loadPrivateProfileLocationMap = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   userIds: string[],
 ): Promise<Map<string, { latitude: number | null; longitude: number | null; location_updated_at: string | null }>> => {
   if (userIds.length === 0) {
@@ -1319,7 +1188,7 @@ const loadPrivateProfileLocationMap = async (
 };
 
 const upsertPrivateProfileLocation = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   userId: string,
   location: {
     latitude: number | null;
@@ -1351,12 +1220,7 @@ const upsertPrivateProfileLocation = async (
   return legacyProfileLocationError ?? null;
 };
 
-const matchesGenderPreference = (
-  preference: DiscoveryPreferences,
-  gender: UserGender,
-) => preference.genderPreference === "random" || preference.genderPreference === gender;
-
-const getProfileCoordinates = (profile: Record<string, any>) => {
+const getProfileCoordinates = (profile: DatabaseRow) => {
   if (
     typeof profile.latitude !== "number" ||
     typeof profile.longitude !== "number" ||
@@ -1370,87 +1234,6 @@ const getProfileCoordinates = (profile: Record<string, any>) => {
     latitude: profile.latitude,
     longitude: profile.longitude,
   };
-};
-
-const passesDiscoveryFilters = (config: {
-  currentProfile: Record<string, any>;
-  currentPreferences: DiscoveryPreferences;
-  candidateProfile: Record<string, any>;
-  candidatePreferences: DiscoveryPreferences;
-  compatibilityScore: number;
-}) => {
-  const currentGender = isUserGender(config.currentProfile.gender) ? config.currentProfile.gender : "other";
-  const candidateGender = isUserGender(config.candidateProfile.gender) ? config.candidateProfile.gender : "other";
-
-  if (!matchesGenderPreference(config.currentPreferences, candidateGender)) {
-    return false;
-  }
-
-  if (!matchesGenderPreference(config.candidatePreferences, currentGender)) {
-    return false;
-  }
-
-  if (
-    typeof config.candidateProfile.age !== "number" ||
-    config.candidateProfile.age < config.currentPreferences.ageMin ||
-    config.candidateProfile.age > config.currentPreferences.ageMax
-  ) {
-    return false;
-  }
-
-  if (
-    config.compatibilityScore < config.currentPreferences.compatibilityMin ||
-    config.compatibilityScore > config.currentPreferences.compatibilityMax
-  ) {
-    return false;
-  }
-
-  if (
-    typeof config.currentProfile.age !== "number" ||
-    config.currentProfile.age < config.candidatePreferences.ageMin ||
-    config.currentProfile.age > config.candidatePreferences.ageMax
-  ) {
-    return false;
-  }
-
-  if (
-    config.compatibilityScore < config.candidatePreferences.compatibilityMin ||
-    config.compatibilityScore > config.candidatePreferences.compatibilityMax
-  ) {
-    return false;
-  }
-
-  const currentCoordinates = getProfileCoordinates(config.currentProfile);
-  const candidateCoordinates = getProfileCoordinates(config.candidateProfile);
-  const currentWantsDistanceFilter = hasActiveDistanceFilter(config.currentPreferences);
-  const candidateWantsDistanceFilter = hasActiveDistanceFilter(config.candidatePreferences);
-
-  if (currentWantsDistanceFilter || candidateWantsDistanceFilter) {
-    if (!currentCoordinates || !candidateCoordinates) {
-      return false;
-    }
-
-    const distanceKm = getDistanceKm(currentCoordinates, candidateCoordinates);
-
-    if (currentWantsDistanceFilter) {
-      if (
-        distanceKm < config.currentPreferences.distanceMinKm ||
-        distanceKm > config.currentPreferences.distanceMaxKm
-      ) {
-        return false;
-      }
-    }
-
-    if (
-      candidateWantsDistanceFilter &&
-      (distanceKm < config.candidatePreferences.distanceMinKm ||
-        distanceKm > config.candidatePreferences.distanceMaxKm)
-    ) {
-      return false;
-    }
-  }
-
-  return true;
 };
 
 type MatchSourceType = "watch" | "compatibility" | "like";
@@ -1471,7 +1254,7 @@ interface NotificationEventDraft {
   routeUserId?: string | null;
   title: string;
   body: string;
-  payload?: Record<string, unknown>;
+  payload?: JsonObject;
 }
 
 interface NotificationDispatchOptions {
@@ -1502,13 +1285,15 @@ const getMatchNotificationBody = (sourceType: MatchSourceType, otherUserName: st
   return `${otherUserName} ile eşleştin. +${MATCH_LIKE_REWARD_BONUS} beğeni hakkı kazandın. Hemen mesajlaşmak için dokun.`;
 };
 
-const buildLikeNotificationBody = () => "1 kullanici seni begendi. Ayrintilari gormek icin dokun.";
+const buildLikeNotificationBody = () => "1 kullanıcı seni beğendi. Ayrıntıları görmek için dokun.";
 
-const runAfterResponse = (task: Promise<unknown>) => {
-  const edgeRuntime = (globalThis as any).EdgeRuntime;
+const runAfterResponse = (task: PromiseLike<unknown>) => {
+  const edgeRuntime = (globalThis as typeof globalThis & {
+    EdgeRuntime?: { waitUntil: (pendingTask: Promise<unknown>) => void };
+  }).EdgeRuntime;
 
   if (typeof edgeRuntime?.waitUntil === "function") {
-    edgeRuntime.waitUntil(task);
+    edgeRuntime.waitUntil(Promise.resolve(task));
     return true;
   }
 
@@ -1516,7 +1301,7 @@ const runAfterResponse = (task: Promise<unknown>) => {
 };
 
 const publishUserEvents = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   userIds: string[],
   event: "discovery_changed" | "chat_changed" | "profile_changed" | "notification_changed",
   payload: Record<string, unknown> = {},
@@ -1545,7 +1330,7 @@ const publishUserEvents = async (
 };
 
 const queueUserEvents = (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   userIds: string[],
   event: "discovery_changed" | "chat_changed" | "profile_changed" | "notification_changed",
   payload: Record<string, unknown> = {},
@@ -1559,13 +1344,13 @@ const queueUserEvents = (
   }
 };
 
-const queuePairStateEvents = (supabase: any, leftUserId: string, rightUserId: string, reason: string) => {
+const queuePairStateEvents = (supabase: SupabaseAdminClient, leftUserId: string, rightUserId: string, reason: string) => {
   queueUserEvents(supabase, [leftUserId, rightUserId], "discovery_changed", { reason });
   queueUserEvents(supabase, [leftUserId, rightUserId], "chat_changed", { reason });
 };
 
 const queueWatchSessionDiscoveryEvents = (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   currentUserId: string,
   refs: Array<{ movieId?: number | null; mediaType?: unknown }>,
 ) => {
@@ -1677,18 +1462,18 @@ const getChatStatusNotificationBody = (
   otherUserName: string,
 ) => {
   if (kind === "chat_blocked") {
-    return `${otherUserName} ile sohbetin engellendi. Detaylari gormek icin dokun.`;
+    return `${otherUserName} ile sohbetin engellendi. Ayrıntıları görmek için dokun.`;
   }
 
   if (kind === "chat_unblocked") {
-    return `${otherUserName} ile sohbet engeli kaldirildi. Detaylari gormek icin dokun.`;
+    return `${otherUserName} ile sohbet engeli kaldırıldı. Ayrıntıları görmek için dokun.`;
   }
 
-  return `${otherUserName} ile sohbet sona erdi. Detaylari gormek icin dokun.`;
+  return `${otherUserName} ile sohbet sona erdi. Ayrıntıları görmek için dokun.`;
 };
 
 const buildMatchContextSnapshot = (
-  match: Record<string, any> | null,
+  match: DatabaseRow | null,
   fallbackLikeTimeline: {
     firstLikeByUserId: string | null;
     acceptedByUserId: string | null;
@@ -1729,7 +1514,7 @@ const buildMatchContextSnapshot = (
 };
 
 const loadLikeTimelineMap = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   pairs: Array<{ user1Id: string; user2Id: string }>,
 ) => {
   if (pairs.length === 0) {
@@ -1752,10 +1537,10 @@ const loadLikeTimelineMap = async (
 
   const rowsByPair = new Map<
     string,
-    Array<{ user_id: string; liked_user_id: string; created_at: string }>
+    Array<{ user_id: string; liked_user_id: string; created_at: string | null }>
   >();
 
-  (data ?? []).forEach((row: { user_id: string; liked_user_id: string; created_at: string }) => {
+  (data ?? []).forEach((row) => {
     const pairKey = getPairKey(row.user_id, row.liked_user_id);
 
     if (!pairKeys.has(pairKey)) {
@@ -1770,7 +1555,8 @@ const loadLikeTimelineMap = async (
 
   rowsByPair.forEach((rows, pairKey) => {
     const orderedRows = [...rows].sort(
-      (left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
+      (left, right) =>
+        new Date(left.created_at ?? "").getTime() - new Date(right.created_at ?? "").getTime(),
     );
     const firstLikeByUserId = orderedRows[0]?.user_id ?? null;
     const acceptedByUserId = orderedRows.length > 1 ? orderedRows[orderedRows.length - 1]?.user_id ?? null : null;
@@ -1799,7 +1585,7 @@ const createEmptyMovieCollections = (): UserMovieCollections => ({
 });
 
 const loadMovieCollectionsForUsers = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   userIds: string[],
 ): Promise<Map<string, UserMovieCollections>> => {
   const emptyCollections = new Map<string, UserMovieCollections>();
@@ -1851,7 +1637,7 @@ const loadMovieCollectionsForUsers = async (
 };
 
 const getSharedCurrentlyWatchingMovieId = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   leftUserId: string,
   rightUserId: string,
 ) => {
@@ -1878,7 +1664,7 @@ const getSharedCurrentlyWatchingMovieId = async (
 };
 
 const buildMatchSnapshot = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   currentUserId: string,
   otherUserId: string,
   sourceType: MatchSourceType,
@@ -1909,7 +1695,7 @@ const buildMatchSnapshot = async (
 };
 
 const loadChatSettingsMap = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   ownerUserId: string,
   otherUserIds: string[],
 ): Promise<Map<string, ChatSettingsState>> => {
@@ -1935,12 +1721,12 @@ const loadChatSettingsMap = async (
   }
 
   return new Map<string, ChatSettingsState>(
-    (data ?? []).map((row: Record<string, any>) => [row.other_user_id, serializeChatSettings(row)]),
+    (data ?? []).map((row) => [row.other_user_id, serializeChatSettings(row)]),
   );
 };
 
 const loadPeerChatSettingsMap = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   currentUserId: string,
   otherUserIds: string[],
 ): Promise<Map<string, ChatSettingsState>> => {
@@ -1966,20 +1752,21 @@ const loadPeerChatSettingsMap = async (
   }
 
   return new Map<string, ChatSettingsState>(
-    (data ?? []).map((row: Record<string, any>) => [row.owner_user_id, serializeChatSettings(row)]),
+    (data ?? []).map((row) => [row.owner_user_id, serializeChatSettings(row)]),
   );
 };
 
-const loadPushTokenMap = async (supabase: any, userIds: string[]) => {
+const loadPushTokenMap = async (supabase: SupabaseAdminClient, userIds: string[]) => {
   if (userIds.length === 0) {
     return new Map<string, string[]>();
   }
 
   const { data, error } = await supabase
     .from("device_push_tokens")
-    .select("user_id, token")
+    .select("user_id, token, last_seen_at")
     .in("user_id", userIds)
-    .limit(Math.min(MAX_RELATIONSHIP_ROWS, Math.max(1, userIds.length * 8)));
+    .order("last_seen_at", { ascending: false })
+    .limit(Math.min(MAX_RELATIONSHIP_ROWS, Math.max(1, userIds.length * MAX_PUSH_TOKENS_PER_USER)));
 
   if (error) {
     if (isMissingRelationError(error, "device_push_tokens")) {
@@ -1991,7 +1778,10 @@ const loadPushTokenMap = async (supabase: any, userIds: string[]) => {
 
   const tokenMap = new Map<string, string[]>();
 
-  (data ?? []).forEach((row: { user_id: string; token: string }) => {
+  (data ?? []).forEach((row) => {
+    if (!row.user_id) {
+      return;
+    }
     const normalizedToken = typeof row.token === "string" ? row.token.trim() : "";
 
     if (
@@ -2003,7 +1793,10 @@ const loadPushTokenMap = async (supabase: any, userIds: string[]) => {
     }
 
     const currentTokens = tokenMap.get(row.user_id) ?? [];
-    if (!currentTokens.includes(normalizedToken)) {
+    if (
+      currentTokens.length < MAX_PUSH_TOKENS_PER_USER
+      && !currentTokens.includes(normalizedToken)
+    ) {
       tokenMap.set(row.user_id, [...currentTokens, normalizedToken]);
     }
   });
@@ -2012,7 +1805,7 @@ const loadPushTokenMap = async (supabase: any, userIds: string[]) => {
 };
 
 const loadUnreadMessageNotificationLines = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   recipientUserId: string,
   senderUserId: string,
 ) => {
@@ -2107,60 +1900,89 @@ const fetchExpoPushWithRetry = async (url: string, init: RequestInit) => {
   throw lastError ?? new Error("Expo push request failed.");
 };
 
+type ExpoReceiptJob = {
+  ticketId: string;
+  eventId: string;
+  token: string;
+  attemptCount: number;
+};
+
+type ExpoReceiptResolution = ExpoReceiptJob & {
+  status: "delivered" | "retry" | "error";
+  error: string | null;
+};
+
 const resolveExpoPushReceipts = async (
-  ticketTokenPairs: Array<{ ticketId: string; token: string }>,
-) => {
-  const invalidTokens = new Set<string>();
+  receiptJobs: ExpoReceiptJob[],
+): Promise<ExpoReceiptResolution[]> => {
+  const resolutions: ExpoReceiptResolution[] = [];
 
-  for (const receiptChunk of chunkArray(ticketTokenPairs, 300)) {
-    const response = await fetchExpoPushWithRetry("https://exp.host/--/api/v2/push/getReceipts", {
-      method: "POST",
-      headers: getExpoPushHeaders(),
-      body: JSON.stringify({
-        ids: receiptChunk.map((item) => item.ticketId),
-      }),
-    });
-
-    if (!response.ok) {
-      console.error("Push receipt request failed:", { status: response.status });
-      continue;
-    }
-
-    const payload = await response.json().catch(() => null);
-    const receipts =
-      payload?.data && typeof payload.data === "object" ? payload.data as Record<string, any> : {};
-
-    receiptChunk.forEach(({ ticketId, token }) => {
-      const receipt = receipts[ticketId];
-
-      if (receipt?.status !== "error") {
-        return;
-      }
-
-      const errorCode = receipt?.details?.error;
-
-      if (errorCode === "DeviceNotRegistered") {
-        invalidTokens.add(token);
-        return;
-      }
-
-      console.error("Expo push receipt error:", {
-        ticketId,
-        error: errorCode ?? "unknown",
+  for (const receiptChunk of chunkArray(receiptJobs, 300)) {
+    try {
+      const response = await fetchExpoPushWithRetry("https://exp.host/--/api/v2/push/getReceipts", {
+        method: "POST",
+        headers: getExpoPushHeaders(),
+        body: JSON.stringify({
+          ids: receiptChunk.map((item) => item.ticketId),
+        }),
       });
-    });
+
+      if (!response.ok) {
+        console.error("Push receipt request failed:", { status: response.status });
+        receiptChunk.forEach((job) => resolutions.push({
+          ...job,
+          status: "retry",
+          error: `expo_receipt_http_${response.status}`,
+        }));
+        continue;
+      }
+
+      const payload = await response.json().catch(() => null);
+      const receipts = isDatabaseRow(payload) && isDatabaseRow(payload.data) ? payload.data : {};
+
+      receiptChunk.forEach((job) => {
+        const receiptValue = receipts[job.ticketId];
+        const receipt = isDatabaseRow(receiptValue) ? receiptValue : null;
+
+        if (!receipt) {
+          resolutions.push({ ...job, status: "retry", error: "expo_receipt_pending" });
+          return;
+        }
+
+        if (receipt.status === "ok") {
+          resolutions.push({ ...job, status: "delivered", error: null });
+          return;
+        }
+
+        const details = isDatabaseRow(receipt.details) ? receipt.details : null;
+        const errorCode = typeof details?.error === "string" ? details.error : "unknown";
+        resolutions.push({
+          ...job,
+          status: "error",
+          error: `expo_receipt_${errorCode}`,
+        });
+      });
+    } catch (error) {
+      const errorMessage = getErrorMessage(error, "expo_receipt_request_failed");
+      receiptChunk.forEach((job) => resolutions.push({
+        ...job,
+        status: "retry",
+        error: errorMessage,
+      }));
+    }
   }
 
-  return invalidTokens;
+  return resolutions;
 };
 
 const sendPushNotifications = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   notifications: Array<{
+    eventId: string;
     userId: string;
     title: string;
     body: string;
-    data?: Record<string, unknown>;
+    data?: JsonObject;
     channelId?: string;
     priority?: "default" | "normal" | "high";
     collapseId?: string;
@@ -2178,15 +2000,19 @@ const sendPushNotifications = async (
     );
     const messages = notifications.flatMap((notification) =>
       (tokenMap.get(notification.userId) ?? []).map((token) => ({
-        to: token,
-        sound: "default",
-        priority: notification.priority ?? "high",
-        channelId: notification.channelId ?? ANDROID_NOTIFICATION_CHANNEL_ID,
-        title: notification.title,
-        body: notification.body,
-        ...(notification.collapseId ? { collapseId: notification.collapseId } : {}),
-        ...(notification.tag ? { tag: notification.tag } : {}),
-        data: notification.data ?? {},
+        eventId: notification.eventId,
+        token,
+        payload: {
+          to: token,
+          sound: "default",
+          priority: notification.priority ?? "high",
+          channelId: notification.channelId ?? ANDROID_NOTIFICATION_CHANNEL_ID,
+          title: notification.title,
+          body: notification.body,
+          ...(notification.collapseId ? { collapseId: notification.collapseId } : {}),
+          ...(notification.tag ? { tag: notification.tag } : {}),
+          data: notification.data ?? {},
+        },
       })),
     );
 
@@ -2195,54 +2021,84 @@ const sendPushNotifications = async (
     }
 
     const invalidTokens = new Set<string>();
-    const receiptCandidates: Array<{ ticketId: string; token: string }> = [];
+    const receiptCandidates: Array<{ ticketId: string; token: string; eventId: string }> = [];
     const retryableErrors: string[] = [];
+    const permanentErrors: string[] = [];
     let acceptedCount = 0;
 
-    for (const messageChunk of chunkArray(messages, 100)) {
+    // A single stale token from an older Expo project can make an otherwise
+    // valid mixed-project batch fail with HTTP 400. Send one device per request
+    // and keep at most five event jobs concurrent in the caller.
+    for (const message of messages) {
       const response = await fetchExpoPushWithRetry("https://exp.host/--/api/v2/push/send", {
         method: "POST",
         headers: getExpoPushHeaders(),
-        body: JSON.stringify(messageChunk),
+        body: JSON.stringify(message.payload),
       });
+      const payload = await response.json().catch(() => null);
 
       if (!response.ok) {
-        retryableErrors.push(`expo_http_${response.status}`);
-        console.error("Push notification request failed:", { status: response.status });
+        const responseErrors = isDatabaseRow(payload) && Array.isArray(payload.errors)
+          ? payload.errors
+          : [];
+        const responseError = responseErrors.find(isDatabaseRow);
+        const responseErrorCode = typeof responseError?.code === "string"
+          ? responseError.code
+          : null;
+        const errorCode = `expo_http_${response.status}${responseErrorCode ? `_${responseErrorCode}` : ""}`;
+
+        if (response.status === 429 || response.status >= 500) {
+          retryableErrors.push(errorCode);
+        } else {
+          permanentErrors.push(errorCode);
+        }
+
+        console.error("Push notification request failed:", {
+          status: response.status,
+          error: responseErrorCode ?? "unknown",
+        });
         continue;
       }
 
-      const payload = await response.json().catch(() => null);
-      const tickets = Array.isArray(payload?.data)
-        ? payload.data
-        : payload?.data
-          ? [payload.data]
+      const payloadData = isDatabaseRow(payload) ? payload.data : null;
+      const tickets = Array.isArray(payloadData)
+        ? payloadData
+        : isDatabaseRow(payloadData)
+          ? [payloadData]
           : [];
 
-      tickets.forEach((ticket: any, index: number) => {
-        const failedToken = messageChunk[index]?.to;
+      if (tickets.length === 0) {
+        retryableErrors.push("expo_ticket_missing");
+        continue;
+      }
 
-        if (ticket?.id && typeof ticket.id === "string" && failedToken) {
-          receiptCandidates.push({ ticketId: ticket.id, token: failedToken });
-        }
+      tickets.forEach((ticketValue) => {
+        const ticket = isDatabaseRow(ticketValue) ? ticketValue : null;
+        const failedToken = message.token;
 
-        if (ticket?.status === "ok") {
+        if (ticket?.status === "ok" && ticket.id && typeof ticket.id === "string") {
+          receiptCandidates.push({
+            ticketId: ticket.id,
+            token: failedToken,
+            eventId: message.eventId,
+          });
           acceptedCount += 1;
           return;
         }
 
-        const errorCode = ticket?.details?.error;
-
-        if (!failedToken) {
-          return;
-        }
+        const details = isDatabaseRow(ticket?.details) ? ticket.details : null;
+        const errorCode = typeof details?.error === "string" ? details.error : null;
 
         if (errorCode === "DeviceNotRegistered") {
           invalidTokens.add(failedToken);
           return;
         }
 
-        retryableErrors.push(`expo_ticket_${errorCode ?? "unknown"}`);
+        if (errorCode === "MessageRateExceeded") {
+          retryableErrors.push(`expo_ticket_${errorCode}`);
+        } else {
+          permanentErrors.push(`expo_ticket_${errorCode ?? "unknown"}`);
+        }
 
         console.error("Expo push ticket error:", {
           error: errorCode ?? "unknown",
@@ -2250,11 +2106,44 @@ const sendPushNotifications = async (
       });
     }
 
-    const receiptInvalidTokens = await resolveExpoPushReceipts(receiptCandidates);
-    receiptInvalidTokens.forEach((token) => invalidTokens.add(token));
-
     if (invalidTokens.size > 0) {
       await supabase.from("device_push_tokens").delete().in("token", [...invalidTokens]);
+    }
+
+    let receiptPersistenceError: string | null = null;
+
+    if (receiptCandidates.length > 0) {
+      const { error: receiptError } = await supabase
+        .from("push_delivery_receipts")
+        .upsert(
+          receiptCandidates.map((receipt) => ({
+            ticket_id: receipt.ticketId,
+            event_id: receipt.eventId,
+            token: receipt.token,
+          })),
+          { onConflict: "ticket_id", ignoreDuplicates: true },
+        );
+
+      if (receiptError) {
+        receiptPersistenceError = "expo_receipt_persistence_failed";
+        console.error("Persist Expo push receipts error:", receiptError);
+      }
+    }
+
+    const partialErrors = [...new Set([
+      ...retryableErrors,
+      ...permanentErrors,
+      ...(receiptPersistenceError ? [receiptPersistenceError] : []),
+    ])];
+
+    // Once at least one device was accepted by Expo, retrying the entire event
+    // would duplicate the notification on healthy devices. Record the partial
+    // failure and let future events retry only their own device submissions.
+    if (acceptedCount > 0) {
+      return {
+        status: "submitted" as const,
+        error: partialErrors.length > 0 ? partialErrors.join(",") : null,
+      };
     }
 
     if (retryableErrors.length > 0) {
@@ -2264,8 +2153,11 @@ const sendPushNotifications = async (
       };
     }
 
-    if (acceptedCount > 0) {
-      return { status: "submitted" as const, error: null };
+    if (permanentErrors.length > 0) {
+      return {
+        status: "dead" as const,
+        error: [...new Set(permanentErrors)].join(","),
+      };
     }
 
     return { status: "no_tokens" as const, error: null };
@@ -2278,7 +2170,7 @@ const sendPushNotifications = async (
   }
 };
 
-const createNotificationEvents = async (supabase: any, notifications: NotificationEventDraft[]) => {
+const createNotificationEvents = async (supabase: SupabaseAdminClient, notifications: NotificationEventDraft[]) => {
   const results = await Promise.all(
     notifications.map(async (notification) => {
       try {
@@ -2317,7 +2209,7 @@ const createNotificationEvents = async (supabase: any, notifications: Notificati
 };
 
 const drainPushDeliveryOutbox = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   eventIds: string[] | null = null,
 ) => {
   const uniqueEventIds = eventIds ? [...new Set(eventIds.filter(Boolean))] : null;
@@ -2327,7 +2219,7 @@ const drainPushDeliveryOutbox = async (
   }
 
   const { data, error } = await supabase.rpc("claim_push_delivery_jobs", {
-    p_event_ids: uniqueEventIds,
+    p_event_ids: uniqueEventIds ?? undefined,
     p_limit: uniqueEventIds ? Math.min(uniqueEventIds.length, 100) : 25,
   });
 
@@ -2351,6 +2243,7 @@ const drainPushDeliveryOutbox = async (
   const processJob = async (job: typeof jobs[number]) => {
     const payload = job.payload && typeof job.payload === "object" ? job.payload : {};
     const result = await sendPushNotifications(supabase, [{
+      eventId: job.id,
       userId: job.user_id,
       title: job.title,
       body: job.body,
@@ -2376,8 +2269,8 @@ const drainPushDeliveryOutbox = async (
       {
         p_event_id: job.id,
         p_status: completionStatus,
-        p_error: result.error,
-        p_retry_after_seconds: retryAfterSeconds,
+        p_error: result.error ?? undefined,
+        p_retry_after_seconds: retryAfterSeconds ?? undefined,
       },
     );
 
@@ -2397,8 +2290,114 @@ const drainPushDeliveryOutbox = async (
   return jobs.length;
 };
 
+const drainPushDeliveryReceipts = async (supabase: SupabaseAdminClient) => {
+  const { data, error } = await supabase.rpc("claim_push_receipt_jobs", {
+    p_limit: 300,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  const jobs: ExpoReceiptJob[] = (data ?? []).map((job) => ({
+    ticketId: job.ticket_id,
+    eventId: job.event_id,
+    token: job.token,
+    attemptCount: job.attempt_count,
+  }));
+
+  if (jobs.length === 0) {
+    return 0;
+  }
+
+  const resolutions = await resolveExpoPushReceipts(jobs);
+  const invalidTokens = resolutions
+    .filter((resolution) => resolution.error === "expo_receipt_DeviceNotRegistered")
+    .map((resolution) => resolution.token);
+
+  if (invalidTokens.length > 0) {
+    const { error: deleteError } = await supabase
+      .from("device_push_tokens")
+      .delete()
+      .in("token", [...new Set(invalidTokens)]);
+
+    if (deleteError) {
+      console.error("Delete invalid push tokens error:", deleteError);
+    }
+  }
+
+  const completeReceipt = async (resolution: ExpoReceiptResolution) => {
+    const retryAfterSeconds = resolution.status === "retry"
+      ? Math.min(3600, 300 * (2 ** Math.max(0, resolution.attemptCount - 1)))
+      : null;
+    const { data: completed, error: completionError } = await supabase.rpc(
+      "complete_push_receipt_job",
+      {
+        p_ticket_id: resolution.ticketId,
+        p_status: resolution.status,
+        p_error: resolution.error ?? undefined,
+        p_retry_after_seconds: retryAfterSeconds ?? undefined,
+      },
+    );
+
+    if (completionError) {
+      throw completionError;
+    }
+
+    if (completed !== true) {
+      throw new Error("Push receipt job lost its processing lease.");
+    }
+
+    if (resolution.status === "error" && resolution.error) {
+      const { error: eventUpdateError } = await supabase
+        .from("notification_events")
+        .update({ push_last_error: resolution.error })
+        .eq("id", resolution.eventId);
+
+      if (eventUpdateError) {
+        console.error("Record push receipt error on event failed:", eventUpdateError);
+      }
+    }
+  };
+
+  for (const resolutionChunk of chunkArray(resolutions, 25)) {
+    await Promise.all(resolutionChunk.map(completeReceipt));
+  }
+
+  return resolutions.length;
+};
+
+const getPushDeliveryHealth = async (supabase: SupabaseAdminClient) => {
+  const { data, error } = await supabase.rpc("get_push_delivery_health");
+
+  if (error) {
+    throw error;
+  }
+
+  const health = data?.[0];
+
+  if (!health) {
+    throw new Error("Push delivery health read model returned no row.");
+  }
+
+  return {
+    pending: Number(health.pending_count ?? 0),
+    retry: Number(health.retry_count ?? 0),
+    processing: Number(health.processing_count ?? 0),
+    dead: Number(health.dead_count ?? 0),
+    stalled: Number(health.stalled_count ?? 0),
+    oldestDueAt: health.oldest_due_at,
+    oldestDueAgeSeconds: Number(health.oldest_due_age_seconds ?? 0),
+    receiptPending: Number(health.receipt_pending_count ?? 0),
+    receiptRetry: Number(health.receipt_retry_count ?? 0),
+    receiptProcessing: Number(health.receipt_processing_count ?? 0),
+    receiptFailed: Number(health.receipt_failed_count ?? 0),
+    receiptStalled: Number(health.receipt_stalled_count ?? 0),
+  };
+};
+
 const dispatchNotificationEvents = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   notifications: NotificationEventDraft[],
   options: NotificationDispatchOptions = {},
 ) => {
@@ -2434,6 +2433,7 @@ const dispatchNotificationEvents = async (
         .filter((eventId): eventId is string => typeof eventId === "string"),
     );
     await drainPushDeliveryOutbox(supabase);
+    await drainPushDeliveryReceipts(supabase);
   })();
 
   if (options.deferPush && runAfterResponse(pushTask)) {
@@ -2444,7 +2444,7 @@ const dispatchNotificationEvents = async (
 };
 
 const notifyChatStatusChange = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   config: {
     recipientUserId: string;
     actorUserId: string;
@@ -2466,14 +2466,14 @@ const notifyChatStatusChange = async (
       kind: config.kind,
       routeKind: "chat",
       routeUserId: config.actorUserId,
-      title: "Sohbet guncellendi",
+      title: "Sohbet güncellendi",
       body: getChatStatusNotificationBody(config.kind, config.otherUserName),
     },
   ], options);
 };
 
 const queueChatStatusNotification = (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   config: {
     recipientUserId: string;
     actorUserId: string;
@@ -2486,7 +2486,7 @@ const queueChatStatusNotification = (
       supabase,
       {
         ...config,
-        otherUserName: nameMap.get(config.actorUserId) ?? "Bir kullanici",
+        otherUserName: nameMap.get(config.actorUserId) ?? "Bir kullanıcı",
       },
       { deferPush: true },
     );
@@ -2500,7 +2500,7 @@ const queueChatStatusNotification = (
 };
 
 const markChatNotificationEventsRead = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   recipientUserId: string,
   otherUserId: string,
 ) => {
@@ -2538,7 +2538,7 @@ const getBlockState = (
 };
 
 const getMatchUserRolePrefix = (
-  match: Record<string, any> | null,
+  match: DatabaseRow | null,
   userId: string,
 ): "user1" | "user2" | null => {
   if (!match || !userId) {
@@ -2557,7 +2557,7 @@ const getMatchUserRolePrefix = (
 };
 
 const getMatchChatTimestamp = (
-  match: Record<string, any> | null,
+  match: DatabaseRow | null,
   userId: string,
   kind: "deleted_at" | "cleared_at",
 ) => {
@@ -2573,13 +2573,13 @@ const getMatchChatTimestamp = (
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 };
 
-const getMatchChatDeletedAt = (match: Record<string, any> | null, userId: string) =>
+const getMatchChatDeletedAt = (match: DatabaseRow | null, userId: string) =>
   getMatchChatTimestamp(match, userId, "deleted_at");
 
-const getMatchChatClearedAt = (match: Record<string, any> | null, userId: string) =>
+const getMatchChatClearedAt = (match: DatabaseRow | null, userId: string) =>
   getMatchChatTimestamp(match, userId, "cleared_at");
 
-const getChatVisibleSince = (match: Record<string, any> | null, userId: string) => {
+const getChatVisibleSince = (match: DatabaseRow | null, userId: string) => {
   const matchCreatedAt =
     typeof match?.created_at === "string" && match.created_at.trim().length > 0
       ? match.created_at
@@ -2631,7 +2631,7 @@ const buildMatchChatVisibilityPatch = (
 };
 
 const getStoredMatchStatus = (
-  match: Record<string, any> | null,
+  match: DatabaseRow | null,
   currentUserId: string,
   otherUserId: string,
   blockRows: Array<{ blocker_id: string; blocked_id: string }>,
@@ -2663,7 +2663,7 @@ const getStoredMatchStatus = (
 };
 
 const getChatState = (
-  match: Record<string, any> | null,
+  match: DatabaseRow | null,
   currentUserId: string,
   otherUserId: string,
   blockRows: Array<{ blocker_id: string; blocked_id: string }> = [],
@@ -2686,7 +2686,7 @@ const getChatState = (
   } else if (blockedByOther) {
     lockedReason = "Bu kullanıcı seni engelledi. Mesaj gönderemezsin.";
   } else if (deletedByCurrentUser) {
-    lockedReason = "Bu sohbeti sildin. Yeniden eslesmeden mesaj gonderemezsin.";
+    lockedReason = "Bu sohbeti sildin. Yeniden eşleşmeden mesaj gönderemezsin.";
   } else if (ended) {
     lockedReason = "Bu eşleşme bitirildi. Yeniden eşleşmeden mesaj gönderemezsin.";
   }
@@ -2703,11 +2703,11 @@ const getChatState = (
 };
 
 const loadUserPayloadMap = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   userIds: string[],
-): Promise<Map<string, Record<string, any>>> => {
+): Promise<Map<string, DatabaseRow>> => {
   if (userIds.length === 0) {
-    return new Map<string, Record<string, any>>();
+    return new Map<string, DatabaseRow>();
   }
 
   const [
@@ -2749,15 +2749,18 @@ const loadUserPayloadMap = async (
 
   const moviesByUserId = new Map<string, Array<{ movie_id: number; media_type?: string | null; type: string }>>();
   (allMovies ?? []).forEach((movie: { user_id: string; movie_id: number; media_type?: string | null; type: string }) => {
-    const current = moviesByUserId.get(movie.user_id) ?? [];
-    moviesByUserId.set(movie.user_id, [
-      ...current,
-      {
-        movie_id: movie.movie_id,
-        media_type: movie.media_type ?? "movie",
-        type: movie.type,
-      },
-    ]);
+    const current = moviesByUserId.get(movie.user_id);
+    const normalizedMovie = {
+      movie_id: movie.movie_id,
+      media_type: movie.media_type ?? "movie",
+      type: movie.type,
+    };
+
+    if (current) {
+      current.push(normalizedMovie);
+    } else {
+      moviesByUserId.set(movie.user_id, [normalizedMovie]);
+    }
   });
 
   const watchingByUserId = new Map<
@@ -2796,8 +2799,8 @@ const loadUserPayloadMap = async (
   );
 
   const userPayloads = (profiles ?? [])
-      .filter((profile: Record<string, any>) => isEmailConfirmedProfile(profile))
-      .map((profile: Record<string, any>) =>
+      .filter((profile) => isEmailConfirmedProfile(profile))
+      .map((profile) =>
         buildUserPayload(
           profile,
           moviesByUserId.get(profile.id) ?? [],
@@ -2806,17 +2809,17 @@ const loadUserPayloadMap = async (
         ));
   const signedPayloads = await signProfilePhotosForPayloads(supabase, userPayloads);
 
-  return new Map<string, Record<string, any>>(
-    signedPayloads.map((payload) => [payload.id, payload]),
+  return new Map<string, DatabaseRow>(
+    signedPayloads.map((payload) => [String(payload.id ?? ""), payload] as const),
   );
 };
 
 const loadRawProfileMap = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   userIds: string[],
-): Promise<Map<string, Record<string, any>>> => {
+): Promise<Map<string, DatabaseRow>> => {
   if (userIds.length === 0) {
-    return new Map<string, Record<string, any>>();
+    return new Map<string, DatabaseRow>();
   }
 
   const [
@@ -2831,19 +2834,19 @@ const loadRawProfileMap = async (
     throw error;
   }
 
-  return new Map<string, Record<string, any>>(
-    (data ?? []).map((profile: Record<string, any>) => [
+  return new Map<string, DatabaseRow>(
+    (data ?? []).map((profile) => [
       profile.id,
       {
         ...profile,
         ...(privateLocationMap.get(profile.id) ?? {}),
       },
-    ]),
+    ] as const),
   );
 };
 
 const loadProfileNameMap = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   userIds: string[],
 ): Promise<Map<string, string>> => {
   if (userIds.length === 0) {
@@ -2863,13 +2866,13 @@ const loadProfileNameMap = async (
   return new Map<string, string>(
     (data ?? []).map((profile: { id: string; name?: string | null }) => [
       profile.id,
-      typeof profile.name === "string" && profile.name.trim() ? profile.name.trim() : "bir kullanici",
+      typeof profile.name === "string" && profile.name.trim() ? profile.name.trim() : "bir kullanıcı",
     ]),
   );
 };
 
 const loadChatMessageStats = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   currentUserId: string,
   otherUserIds: string[],
   visibleSinceMap: Map<string, string | null> = new Map(),
@@ -2941,7 +2944,7 @@ const loadChatMessageStats = async (
   return statsMap;
 };
 
-const fetchMatchBetweenUsers = async (supabase: any, leftUserId: string, rightUserId: string) => {
+const fetchMatchBetweenUsers = async (supabase: SupabaseAdminClient, leftUserId: string, rightUserId: string) => {
   const [user1Id, user2Id] = getPairUserIds(leftUserId, rightUserId);
   const { data, error } = await supabase
     .from("matches")
@@ -2957,7 +2960,10 @@ const fetchMatchBetweenUsers = async (supabase: any, leftUserId: string, rightUs
   return data;
 };
 
-const upsertMatchWithFallback = async (supabase: any, payload: Record<string, unknown>) => {
+const upsertMatchWithFallback = async (
+  supabase: SupabaseAdminClient,
+  payload: TablesInsert<"matches">,
+) => {
   const optionalColumns = [
     "ended_at",
     "ended_by_user_id",
@@ -2972,7 +2978,7 @@ const upsertMatchWithFallback = async (supabase: any, payload: Record<string, un
     "user2_chat_deleted_at",
     "user1_chat_cleared_at",
     "user2_chat_cleared_at",
-  ];
+  ] satisfies Array<keyof TablesInsert<"matches">>;
   const nextPayload = { ...payload };
 
   while (true) {
@@ -2995,18 +3001,22 @@ const upsertMatchWithFallback = async (supabase: any, payload: Record<string, un
       throw error;
     }
 
-    delete nextPayload[missingColumnName];
+    if (!optionalColumns.includes(missingColumnName as (typeof optionalColumns)[number])) {
+      throw error;
+    }
+
+    delete nextPayload[missingColumnName as keyof TablesInsert<"matches">];
   }
 };
 
 const ensureActiveMatchBetweenUsers = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   currentUserId: string,
   otherUserId: string,
   sourceType: MatchSourceType,
   options: {
     hasReverseLike?: boolean;
-    existingMatch?: Record<string, any> | null;
+    existingMatch?: Tables<"matches"> | null;
   } = {},
 ) => {
   let hasReverseLike = options.hasReverseLike;
@@ -3037,7 +3047,7 @@ const ensureActiveMatchBetweenUsers = async (
       ? await fetchMatchBetweenUsers(supabase, currentUserId, otherUserId)
       : options.existingMatch;
   let likeTimelineMap = new Map<string, { firstLikeByUserId: string | null; acceptedByUserId: string | null }>();
-  let snapshot: Record<string, unknown> = {
+  let snapshot: Partial<TablesInsert<"matches">> = {
     match_source_type: normalizeMatchSourceType(sourceType),
     match_source_score: null,
     match_source_movie_id: null,
@@ -3081,7 +3091,7 @@ const ensureActiveMatchBetweenUsers = async (
   });
 };
 
-const fetchBlockRows = async (supabase: any, leftUserId: string, rightUserId: string) => {
+const fetchBlockRows = async (supabase: SupabaseAdminClient, leftUserId: string, rightUserId: string) => {
   const { data, error } = await supabase
     .from("user_blocks")
     .select("blocker_id, blocked_id")
@@ -3101,7 +3111,7 @@ const fetchBlockRows = async (supabase: any, leftUserId: string, rightUserId: st
   return data ?? [];
 };
 
-const fetchBlockedUserIdsForUser = async (supabase: any, currentUserId: string) => {
+const fetchBlockedUserIdsForUser = async (supabase: SupabaseAdminClient, currentUserId: string) => {
   const { data, error } = await supabase
     .from("user_blocks")
     .select("blocker_id, blocked_id")
@@ -3127,7 +3137,7 @@ const fetchBlockedUserIdsForUser = async (supabase: any, currentUserId: string) 
   return blockedUserIds;
 };
 
-const fetchActiveMatchedUserIdsForUser = async (supabase: any, currentUserId: string) => {
+const fetchActiveMatchedUserIdsForUser = async (supabase: SupabaseAdminClient, currentUserId: string) => {
   const { data, error } = await supabase
     .from("matches")
     .select(MATCH_SELECT)
@@ -3153,7 +3163,7 @@ const fetchActiveMatchedUserIdsForUser = async (supabase: any, currentUserId: st
 };
 
 const fetchLikeSets = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   currentUserId: string,
 ): Promise<{ likedIds: Set<string>; likedByIds: Set<string> }> => {
   const loadIncomingLikes = async (): Promise<Array<{ user_id: string }>> => {
@@ -3201,7 +3211,7 @@ const fetchLikeSets = async (
 };
 
 const reconcileMutualLikesForUser = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   currentUserId: string,
   likeSets: { likedIds: Set<string>; likedByIds: Set<string> },
   sourceType: MatchSourceType,
@@ -3236,7 +3246,7 @@ const reconcileMutualLikesForUser = async (
   return reconciledUserIds;
 };
 
-const fetchActiveRelationshipUserIdsForUser = async (supabase: any, currentUserId: string) => {
+const fetchActiveRelationshipUserIdsForUser = async (supabase: SupabaseAdminClient, currentUserId: string) => {
   const { data, error } = await supabase
     .from("matches")
     .select("user1_id,user2_id")
@@ -3255,148 +3265,8 @@ const fetchActiveRelationshipUserIdsForUser = async (supabase: any, currentUserI
   );
 };
 
-const loadCompatibilityCandidatePageFallback = async (
-  supabase: any,
-  currentUserId: string,
-  currentCollections: UserMovieCollections,
-  cursor: ReturnType<typeof decodeCompatibilityCursor>,
-  pageSize: number,
-) => {
-  const currentMedia = [
-    ...currentCollections.favoriteMedia,
-    ...currentCollections.watchedMedia,
-  ];
-  const currentMediaKeys = new Set(currentMedia.map(getMediaRefKey));
-  const movieIds = [...new Set(currentMedia.map((item) => item.id))];
-
-  if (movieIds.length === 0) {
-    return [];
-  }
-
-  const [candidateResult, blockedUserIds, likeSets, activeMatchUserIds] = await Promise.all([
-    supabase
-      .from("user_movies")
-      .select("user_id,movie_id,media_type")
-      .in("movie_id", movieIds)
-      .neq("user_id", currentUserId)
-      .limit(MAX_RELATIONSHIP_ROWS),
-    fetchBlockedUserIdsForUser(supabase, currentUserId),
-    fetchLikeSets(supabase, currentUserId),
-    fetchActiveRelationshipUserIdsForUser(supabase, currentUserId),
-  ]);
-
-  if (candidateResult.error) {
-    throw candidateResult.error;
-  }
-
-  const excludedUserIds = new Set<string>([
-    ...blockedUserIds,
-    ...likeSets.likedIds,
-    ...activeMatchUserIds,
-  ]);
-
-  const overlapByUser = new Map<string, Set<string>>();
-
-  (candidateResult.data ?? []).forEach((row: {
-    user_id: string;
-    movie_id: number;
-    media_type?: string | null;
-  }) => {
-    if (!row.user_id || excludedUserIds.has(row.user_id)) {
-      return;
-    }
-
-    const mediaKey = getMediaRefKey({
-      id: Number(row.movie_id),
-      mediaType: normalizeMediaType(row.media_type),
-    });
-
-    if (!currentMediaKeys.has(mediaKey)) {
-      return;
-    }
-
-    const userOverlap = overlapByUser.get(row.user_id) ?? new Set<string>();
-    userOverlap.add(mediaKey);
-    overlapByUser.set(row.user_id, userOverlap);
-  });
-
-  return [...overlapByUser.entries()]
-    .map(([userId, overlap]) => ({
-      user_id: userId,
-      overlap_count: overlap.size,
-    }))
-    .filter((row) =>
-      !cursor ||
-      row.overlap_count < cursor.overlapCount ||
-      (row.overlap_count === cursor.overlapCount && row.user_id > cursor.userId)
-    )
-    .sort((left, right) =>
-      right.overlap_count - left.overlap_count || left.user_id.localeCompare(right.user_id)
-    )
-    .slice(0, pageSize + 1);
-};
-
-const loadWatchCandidatePageFallback = async (
-  supabase: any,
-  currentUserId: string,
-  movieId: number,
-  mediaType: MediaType,
-  cursor: ReturnType<typeof decodeLiveNowCursor>,
-  pageSize: number,
-) => {
-  let watchingQuery = supabase
-    .from("currently_watching")
-    .select("user_id,updated_at")
-    .eq("movie_id", movieId)
-    .eq("media_type", mediaType)
-    .eq("state", "active")
-    .gt("expires_at", new Date().toISOString())
-    .neq("user_id", currentUserId)
-    .order("updated_at", { ascending: false })
-    .order("user_id", { ascending: false })
-    .limit(Math.min(MAX_RELATIONSHIP_ROWS, (pageSize + 1) * 4));
-
-  if (cursor) {
-    watchingQuery = watchingQuery.lte("updated_at", cursor.updatedAt);
-  }
-
-  const [watchingResult, blockedUserIds, likeSets, activeMatchUserIds] = await Promise.all([
-    watchingQuery,
-    fetchBlockedUserIdsForUser(supabase, currentUserId),
-    fetchLikeSets(supabase, currentUserId),
-    fetchActiveRelationshipUserIdsForUser(supabase, currentUserId),
-  ]);
-
-  if (watchingResult.error) {
-    throw watchingResult.error;
-  }
-
-  const excludedUserIds = new Set<string>([
-    ...blockedUserIds,
-    ...likeSets.likedIds,
-    ...activeMatchUserIds,
-  ]);
-  const cursorTimeMs = cursor ? new Date(cursor.updatedAt).getTime() : null;
-
-  return (watchingResult.data ?? [])
-    .filter((row: { user_id: string; updated_at: string }) => {
-      if (!row.user_id || excludedUserIds.has(row.user_id)) {
-        return false;
-      }
-
-      if (!cursor || cursorTimeMs == null) {
-        return true;
-      }
-
-      const updatedAtMs = new Date(row.updated_at).getTime();
-      return updatedAtMs < cursorTimeMs ||
-        (updatedAtMs === cursorTimeMs && row.user_id < cursor.userId);
-    })
-    .slice(0, pageSize + 1);
-};
-
 const loadChatDirectoryPageFallback = async (
-  supabase: any,
+  supabase: SupabaseAdminClient,
   currentUserId: string,
   cursor: ReturnType<typeof decodeChatDirectoryCursor>,
   pageSize: number,
@@ -3427,9 +3297,9 @@ const loadChatDirectoryPageFallback = async (
   const hiddenUserIds = new Set<string>(
     (hiddenChatsResult.data ?? []).map((row: { other_user_id: string }) => row.other_user_id),
   );
-  const matchByUserId = new Map<string, Record<string, any>>();
+  const matchByUserId = new Map<string, Tables<"matches">>();
 
-  (matchesResult.data ?? []).forEach((match: Record<string, any>) => {
+  (matchesResult.data ?? []).forEach((match) => {
     const otherUserId = match.user1_id === currentUserId ? match.user2_id : match.user1_id;
 
     if (otherUserId) {
@@ -3497,7 +3367,7 @@ const loadChatDirectoryPageFallback = async (
     .slice(0, pageSize + 1);
 };
 
-const findProfileByUsername = async (supabase: any, username: string) => {
+const findProfileByUsername = async (supabase: SupabaseAdminClient, username: string) => {
   const normalizedUsername = normalizeUsername(username);
   const { data, error } = await supabase
     .from("profiles")
@@ -3512,10 +3382,10 @@ const findProfileByUsername = async (supabase: any, username: string) => {
   return data;
 };
 
-const authMiddleware = async (c: any, next: any) => {
+const authMiddleware = async (c: AppContext, next: Next) => {
   const authHeader = c.req.header("Authorization");
   if (!authHeader?.startsWith("Bearer ")) {
-    return c.json({ error: "Unauthorized" }, 401);
+      return c.json({ error: "Oturum doğrulanamadı." }, 401);
   }
 
   const token = authHeader.split(" ")[1];
@@ -3526,14 +3396,14 @@ const authMiddleware = async (c: any, next: any) => {
   } = await supabase.auth.getUser(token);
 
   if (error || !user) {
-    return c.json({ error: "Invalid token" }, 401);
+      return c.json({ error: "Oturum anahtarı geçersiz." }, 401);
   }
 
   c.set("userId", user.id);
   await next();
 };
 
-const checkSchemaReady = async (supabase: any) => {
+const checkSchemaReady = async (supabase: SupabaseAdminClient) => {
   const emptyUserId = "00000000-0000-0000-0000-000000000000";
   const checks = await Promise.allSettled([
     supabase.from("profiles").select("email_confirmed").limit(1),
@@ -3551,8 +3421,8 @@ const checkSchemaReady = async (supabase: any) => {
     }),
     supabase.rpc("get_live_now_users", {
       p_current_user_id: emptyUserId,
-      p_cursor_updated_at: null,
-      p_cursor_user_id: null,
+      p_cursor_updated_at: undefined,
+      p_cursor_user_id: undefined,
       p_limit: 1,
     }),
     supabase.rpc("get_chat_message_stats", {
@@ -3565,22 +3435,22 @@ const checkSchemaReady = async (supabase: any) => {
     }),
     supabase.rpc("get_chat_directory_page", {
       p_current_user_id: emptyUserId,
-      p_cursor_time: null,
-      p_cursor_user_id: null,
+      p_cursor_time: undefined,
+      p_cursor_user_id: undefined,
       p_limit: 1,
     }),
     supabase.rpc("get_compatibility_candidate_page", {
       p_current_user_id: emptyUserId,
-      p_cursor_overlap: null,
-      p_cursor_user_id: null,
+      p_cursor_score: undefined,
+      p_cursor_user_id: undefined,
       p_limit: 1,
     }),
     supabase.rpc("get_watch_discovery_candidate_page", {
       p_current_user_id: emptyUserId,
       p_movie_id: 0,
       p_media_type: "movie",
-      p_cursor_updated_at: null,
-      p_cursor_user_id: null,
+      p_cursor_updated_at: undefined,
+      p_cursor_user_id: undefined,
       p_limit: 1,
     }),
     supabase.rpc("get_chat_list_stats", {
@@ -3588,12 +3458,13 @@ const checkSchemaReady = async (supabase: any) => {
       p_other_user_ids: [],
       p_visible_since: {},
     }),
+    supabase.rpc("get_push_delivery_health"),
     supabase.rpc("apply_watch_session_transition", {
       p_user_id: emptyUserId,
       p_action: "stop",
-      p_movie_id: null,
-      p_media_type: null,
-      p_expected_version: null,
+      p_movie_id: undefined,
+      p_media_type: undefined,
+      p_expected_version: undefined,
       p_duration_ms: WATCH_SESSION_DURATION_MS,
     }),
   ]);
@@ -3611,6 +3482,30 @@ const checkSchemaReady = async (supabase: any) => {
 
     return true;
   });
+};
+
+const getSchemaReady = (supabase: SupabaseAdminClient) => {
+  if (schemaReadinessCache && schemaReadinessCache.expiresAt > Date.now()) {
+    return Promise.resolve(schemaReadinessCache.ready);
+  }
+
+  if (schemaReadinessFlight) {
+    return schemaReadinessFlight;
+  }
+
+  schemaReadinessFlight = checkSchemaReady(supabase)
+    .then((ready) => {
+      schemaReadinessCache = {
+        ready,
+        expiresAt: Date.now() + SCHEMA_READINESS_CACHE_TTL_MS,
+      };
+      return ready;
+    })
+    .finally(() => {
+      schemaReadinessFlight = null;
+    });
+
+  return schemaReadinessFlight;
 };
 
 app.use("*", async (c, next) => {
@@ -3648,20 +3543,9 @@ app.use("*", async (c, next) => {
   }
 });
 
-app.use(
-  "/*",
-  cors({
-    origin: "*",
-    allowHeaders: ["Content-Type", "Authorization", "Idempotency-Key", "x-request-id"],
-    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    exposeHeaders: ["Content-Length", "x-server-time", "x-request-id", "x-api-version"],
-    maxAge: 600,
-  }),
-);
-
 app.get("/make-server-d962235e/health", async (c) => {
   const supabase = getSupabase();
-  const schemaReady = await checkSchemaReady(supabase);
+  const schemaReady = await getSchemaReady(supabase);
   const requestId = c.get("requestId") ?? crypto.randomUUID();
 
   return c.json({
@@ -3688,19 +3572,19 @@ app.post("/make-server-d962235e/tmdb/media-batch", async (c) => {
     const uniqueRefs = [...new Map(refs.map((ref) => [`${ref.mediaType}:${ref.id}`, ref])).values()].slice(0, 16);
 
     if (uniqueRefs.length === 0) {
-      return c.json({ error: "At least one valid media reference is required." }, 400);
+      return c.json({ error: "En az bir geçerli içerik seçilmelidir." }, 400);
     }
 
     const supabase = getSupabase();
     const rateLimit = await enforceRateLimit(supabase, {
       action: "tmdb_media_batch",
-      key: buildAbuseKey([getClientIp(c), "media-batch"]),
+      key: buildAbuseKey([getRequestRateLimitIdentity(c), "media-batch"]),
       limit: MAX_TMDB_PROXY_REQUESTS_PER_MINUTE,
       windowSeconds: 60,
     });
 
     if (!rateLimit.allowed) {
-      return c.json({ error: "Too many requests.", retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
+      return c.json({ error: "Çok fazla istek gönderdin. Lütfen biraz bekle.", retryAfterSeconds: rateLimit.retryAfterSeconds }, 429);
     }
 
     const items = await Promise.all(uniqueRefs.map(async (ref) => {
@@ -3719,7 +3603,7 @@ app.post("/make-server-d962235e/tmdb/media-batch", async (c) => {
   } catch (error) {
     const code = getTmdbProxyErrorCode(error);
     console.error("TMDB batch error:", { code, message: getErrorMessage(error, "unknown") });
-    return c.json({ error: "Film servisi gecici olarak kullanilamiyor.", code }, 502);
+    return c.json({ error: "Film servisi geçici olarak kullanılamıyor.", code }, 502);
   }
 });
 
@@ -3728,13 +3612,13 @@ app.get("/make-server-d962235e/tmdb/*", async (c) => {
     const { path, query } = normalizeTmdbProxyPath(c.req.url);
 
     if (!isAllowedTmdbProxyPath(path, query)) {
-      return c.json({ error: "TMDB path is not allowed." }, 400);
+      return c.json({ error: "İstenen film servisi yolu desteklenmiyor." }, 400);
     }
 
     const supabase = getSupabase();
     const rateLimit = await enforceRateLimit(supabase, {
       action: "tmdb_proxy",
-      key: buildAbuseKey([getClientIp(c), path]),
+      key: buildAbuseKey([getRequestRateLimitIdentity(c), path]),
       limit: MAX_TMDB_PROXY_REQUESTS_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -3742,7 +3626,7 @@ app.get("/make-server-d962235e/tmdb/*", async (c) => {
     if (!rateLimit.allowed) {
       return c.json(
         {
-          error: "Too many requests.",
+        error: "Çok fazla istek gönderdin. Lütfen biraz bekle.",
           retryAfterSeconds: rateLimit.retryAfterSeconds,
         },
         429,
@@ -3756,17 +3640,17 @@ app.get("/make-server-d962235e/tmdb/*", async (c) => {
   } catch (error) {
     const code = getTmdbProxyErrorCode(error);
     console.error("TMDB proxy error:", { code, message: getErrorMessage(error, "unknown") });
-    return c.json({ error: "Film servisi gecici olarak kullanilamiyor.", code }, 502);
+    return c.json({ error: "Film servisi geçici olarak kullanılamıyor.", code }, 502);
   }
 });
 
 app.post("/make-server-d962235e/auth/check-availability", async (c) => {
   try {
-    const { email, username, currentUserId } = await c.req.json();
+    const { email, username } = await c.req.json();
     const supabase = getSupabase();
     const rateLimit = await enforceRateLimit(supabase, {
       action: "auth_check_availability",
-      key: buildAbuseKey([getClientIp(c), typeof email === "string" ? normalizeEmail(email) : "", typeof username === "string" ? username : ""]),
+      key: buildAbuseKey([getRequestRateLimitIdentity(c), typeof email === "string" ? normalizeEmail(email) : "", typeof username === "string" ? username : ""]),
       limit: MAX_AVAILABILITY_CHECKS_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -3793,7 +3677,7 @@ app.post("/make-server-d962235e/auth/check-availability", async (c) => {
         !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)
       ) {
         emailAvailable = false;
-        emailMessage = "Gecerli bir e-posta gir.";
+        emailMessage = "Geçerli bir e-posta gir.";
       }
     }
 
@@ -3816,7 +3700,7 @@ app.post("/make-server-d962235e/auth/check-availability", async (c) => {
       }
 
       const existingProfile = await findProfileByUsername(supabase, normalizedUsername);
-      usernameAvailable = !existingProfile || existingProfile.id === currentUserId;
+      usernameAvailable = !existingProfile;
       if (!usernameAvailable) {
         usernameMessage = "Bu kullanıcı adı zaten kullanılıyor.";
       }
@@ -3840,24 +3724,24 @@ app.post("/make-server-d962235e/auth/password-reset", async (c) => {
     const { email, redirectTo } = await c.req.json();
     const supabase = getSupabase();
     const normalizedEmail = typeof email === "string" ? normalizeEmail(email) : "";
-    const clientIp = getClientIp(c);
+    const requestIdentity = getRequestRateLimitIdentity(c);
     const [rateLimit, lookupRateLimit] = await Promise.all([
       enforceRateLimit(supabase, {
         action: "auth_password_reset",
-        key: buildAbuseKey([clientIp, normalizedEmail]),
+        key: buildAbuseKey([requestIdentity, normalizedEmail]),
         limit: MAX_PASSWORD_RESET_REQUESTS_PER_HOUR,
         windowSeconds: 60 * 60,
       }),
       enforceRateLimit(supabase, {
         action: "auth_password_reset_lookup",
-        key: buildAbuseKey([clientIp]),
+        key: buildAbuseKey([requestIdentity]),
         limit: MAX_PASSWORD_RESET_LOOKUPS_PER_HOUR,
         windowSeconds: 60 * 60,
       }),
     ]);
 
     if (!rateLimit.allowed || !lookupRateLimit.allowed) {
-      return c.json({ error: "Cok sik sifre sifirlama istegi gonderdin. Lutfen daha sonra tekrar dene." }, 429);
+      return c.json({ error: "Çok sık şifre sıfırlama isteği gönderdin. Lütfen daha sonra tekrar dene." }, 429);
     }
 
     if (!normalizedEmail) {
@@ -3865,36 +3749,15 @@ app.post("/make-server-d962235e/auth/password-reset", async (c) => {
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      return c.json({ error: "Gecerli bir e-posta adresi gir." }, 400);
+      return c.json({ error: "Geçerli bir e-posta adresi gir." }, 400);
     }
 
-    const { data: availabilityRows, error: availabilityError } = await supabase.rpc(
-      "check_email_availability",
-      { p_email: normalizedEmail },
-    );
-
-    if (availabilityError) {
-      console.error("Password reset account lookup error:", availabilityError);
-      return c.json({ error: "Hesap kontrolu su anda yapilamiyor. Lutfen tekrar dene." }, 503);
-    }
-
-    const accountExists = Array.isArray(availabilityRows)
-      && availabilityRows[0]?.email_available === false;
-
-    if (!accountExists) {
-      return c.json(
-        {
-          error: "Bu e-posta adresiyle kayitli bir hesap bulunamadi.",
-          code: "ACCOUNT_NOT_FOUND",
-        },
-        404,
-      );
+    if (!isTrustedPasswordResetRedirect(redirectTo)) {
+      return c.json({ error: "Şifre sıfırlama yönlendirmesi geçersiz." }, 400);
     }
 
     const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-      redirectTo: typeof redirectTo === "string" && redirectTo.trim().length > 0
-        ? redirectTo.trim()
-        : undefined,
+      redirectTo,
     });
 
     if (error) {
@@ -3903,13 +3766,17 @@ app.post("/make-server-d962235e/auth/password-reset", async (c) => {
         status: (error as { status?: number })?.status,
         message: getErrorMessage(error, "delivery failed"),
       });
-      return c.json({ error: "Sifre sifirlama maili gonderilemedi. Lutfen tekrar dene." }, 502);
     }
 
-    return c.json({ success: true });
+    // Always return the same response for a syntactically valid address. Revealing
+    // provider delivery or account-existence state enables account enumeration.
+    return c.json({
+      success: true,
+      message: "E-posta adresi kayıtlıysa şifre sıfırlama bağlantısı gönderildi.",
+    }, 202);
   } catch (error) {
     console.error("Password reset request error:", error);
-    return c.json({ error: "Sifre sifirlama istegi tamamlanamadi." }, 500);
+    return c.json({ error: "Şifre sıfırlama isteği tamamlanamadı." }, 500);
   }
 });
 
@@ -3926,13 +3793,13 @@ app.post("/make-server-d962235e/auth/signup", async (c) => {
 app.get("/make-server-d962235e/profile/:userId", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const userId = c.req.param("userId");
+    const userId = getPathParam(c, "userId");
     const supabase = getSupabase();
 
     if (currentUserId !== userId) {
       const blockRows = await fetchBlockRows(supabase, currentUserId, userId);
       if (blockRows.length > 0) {
-        return c.json({ error: "Bu profile erisemiyorsun." }, 403);
+      return c.json({ error: "Bu profile erişemiyorsun." }, 403);
       }
     }
 
@@ -3947,7 +3814,7 @@ app.get("/make-server-d962235e/profile/:userId", authMiddleware, async (c) => {
     return c.json(profile);
   } catch (error) {
     console.error("Get profile error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Profil yüklenemedi." }, 500);
   }
 });
 
@@ -3982,7 +3849,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
     const requestedWatchingMutation = currentlyWatching !== undefined || currentlyWatchingAction !== undefined;
     const rateLimit = await enforceRateLimit(supabase, {
       action: requestedWatchingMutation ? "profile_watch_update" : "profile_update",
-      key: buildAbuseKey([userId, getClientIp(c)]),
+      key: buildAbuseKey([userId, getRequestRateLimitIdentity(c)]),
       limit: requestedWatchingMutation ? MAX_CURRENTLY_WATCHING_MUTATIONS_PER_MINUTE : MAX_PROFILE_UPDATES_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -3998,7 +3865,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
       .single();
 
     if (currentProfileError || !rawCurrentProfile) {
-      return c.json({ error: currentProfileError?.message ?? "Profil bulunamadı." }, 404);
+      return c.json({ error: "Profil bulunamadı." }, 404);
     }
 
     const privateLocationMap = await loadPrivateProfileLocationMap(supabase, [userId]);
@@ -4070,7 +3937,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
       }
     }
 
-    const profileUpdates: Record<string, unknown> = {};
+    const profileUpdates: TablesUpdate<"profiles"> = {};
     let privateLocationUpdate: {
       latitude: number | null;
       longitude: number | null;
@@ -4200,12 +4067,12 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
 
       if (authMetadataError) {
         console.error("Auth metadata update error:", authMetadataError);
-        return c.json({ error: authMetadataError.message }, 500);
+      return c.json({ error: "Profil doğrulama bilgileri güncellenemedi." }, 500);
       }
 
       authMetadataSynced = true;
 
-      const applyProfileUpdates = async (updates: Record<string, unknown>) =>
+      const applyProfileUpdates = async (updates: TablesUpdate<"profiles">) =>
         supabase.from("profiles").update(updates).eq("id", userId).select(PUBLIC_PROFILE_SELECT).single();
 
       let { data: updatedProfile, error: profileError } = await applyProfileUpdates(profileUpdates);
@@ -4241,14 +4108,20 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
         }
 
         console.error("Profile update error:", profileError);
-        return c.json({ error: profileError?.message ?? "Profil güncellenemedi." }, 400);
+      return c.json({ error: "Profil güncellenemedi." }, 400);
       }
 
       if (Array.isArray(photos)) {
         await cleanupRemovedManagedProfilePhotos(supabase, currentProfile.photos ?? [], updatedProfile.photos ?? []);
       }
 
-      profile = updatedProfile;
+      profile = {
+        ...updatedProfile,
+        latitude: privateLocationMap.get(userId)?.latitude ?? currentProfile.latitude ?? null,
+        longitude: privateLocationMap.get(userId)?.longitude ?? currentProfile.longitude ?? null,
+        location_updated_at:
+          privateLocationMap.get(userId)?.location_updated_at ?? currentProfile.location_updated_at ?? null,
+      };
     }
 
     if (privateLocationUpdate) {
@@ -4260,7 +4133,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
 
       if (privateLocationError) {
         console.error("Private profile location update error:", privateLocationError);
-        return c.json({ error: getErrorMessage(privateLocationError, "Konum guncellenemedi.") }, 500);
+      return c.json({ error: "Konum güncellenemedi." }, 500);
       }
 
       profile = {
@@ -4276,7 +4149,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
       const wantsDistanceFilter = hasActiveDistanceFilter(requestedDiscoveryPreferences);
 
       if (wantsDistanceFilter && !currentCoordinates) {
-        return c.json({ error: "Mesafe filtresi icin once konumunu paylasmalisin." }, 400);
+        return c.json({ error: "Mesafe filtresi için önce konumunu paylaşmalısın." }, 400);
       }
 
       const { error: preferenceError } = await supabase.from("discovery_preferences").upsert({
@@ -4292,7 +4165,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
 
       if (preferenceError) {
         console.error("Discovery preferences update error:", preferenceError);
-        return c.json({ error: preferenceError.message }, 400);
+      return c.json({ error: "Keşif tercihleri güncellenemedi." }, 400);
       }
 
       nextDiscoveryPreferences = requestedDiscoveryPreferences;
@@ -4310,7 +4183,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
 
       if (movieSyncError) {
         console.error("Sync user movies error:", movieSyncError);
-        return c.json({ error: getErrorMessage(movieSyncError, "Film koleksiyonu guncellenemedi.") }, 400);
+      return c.json({ error: "İçerik koleksiyonu güncellenemedi." }, 400);
       }
     }
 
@@ -4324,26 +4197,26 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
         currentlyWatching !== null &&
         (typeof currentlyWatching !== "number" || !Number.isInteger(currentlyWatching) || currentlyWatching <= 0)
       ) {
-        return c.json({ error: "Invalid active media request." }, 400);
+        return c.json({ error: "Etkin içerik isteği geçersiz." }, 400);
       }
 
       const { error: watchTransitionError } = await supabase.rpc("apply_watch_session_transition", {
         p_user_id: userId,
         p_action: normalizedWatchAction,
-        p_movie_id: typeof currentlyWatching === "number" ? currentlyWatching : null,
+        p_movie_id: typeof currentlyWatching === "number" ? currentlyWatching : undefined,
         p_media_type:
           currentlyWatchingMediaType !== undefined
             ? normalizedCurrentlyWatchingMediaType
-            : null,
+            : undefined,
         p_expected_version:
           Number.isInteger(currentlyWatchingVersion) && currentlyWatchingVersion > 0
             ? currentlyWatchingVersion
-            : null,
+            : undefined,
         p_duration_ms: WATCH_SESSION_DURATION_MS,
       });
 
       if (watchTransitionError) {
-        const message = getErrorMessage(watchTransitionError, "Izleme durumu guncellenemedi.");
+        const message = getErrorMessage(watchTransitionError, "İzleme durumu güncellenemedi.");
         const isVersionConflict =
           (watchTransitionError as { code?: string }).code === "40001" ||
           message.toLowerCase().includes("watch_version_conflict");
@@ -4358,7 +4231,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
             .maybeSingle();
 
           return c.json({
-            error: "Izleme durumu baska bir cihazda degisti. Lutfen yenileyip tekrar dene.",
+            error: "İzleme durumu başka bir cihazda değişti. Lütfen yenileyip tekrar dene.",
             conflict: conflictWatching
               ? {
                   movieId: conflictWatching.movie_id,
@@ -4378,7 +4251,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
         }
 
         return c.json(
-          { error: message },
+          { error: "İzleme durumu güncellenemedi." },
           400,
         );
       }
@@ -4393,7 +4266,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
 
     if (moviesError) {
       console.error("Refresh user movies error:", moviesError);
-      return c.json({ error: moviesError.message }, 500);
+        return c.json({ error: "İçerik koleksiyonu yenilenemedi." }, 500);
     }
 
     const { data: refreshedCurrentlyWatching, error: refreshedWatchingError } = await supabase
@@ -4404,7 +4277,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
 
     if (refreshedWatchingError) {
       console.error("Refresh currently watching error:", refreshedWatchingError);
-      return c.json({ error: refreshedWatchingError.message }, 500);
+        return c.json({ error: "İzleme durumu yenilenemedi." }, 500);
     }
 
     if (
@@ -4460,7 +4333,7 @@ app.put("/make-server-d962235e/profile", authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error("Update profile error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Profil güncellenemedi." }, 500);
   }
 });
 
@@ -4476,7 +4349,7 @@ app.delete("/make-server-d962235e/account", authMiddleware, async (c) => {
 
     if (currentProfileError) {
       console.error("Load profile before account delete error:", currentProfileError);
-      return c.json({ error: currentProfileError.message }, 500);
+      return c.json({ error: "Hesap bilgileri yüklenemedi." }, 500);
     }
 
     const managedPhotoPaths = extractManagedProfilePhotoPaths(currentProfile?.photos ?? []);
@@ -4499,7 +4372,7 @@ app.delete("/make-server-d962235e/account", authMiddleware, async (c) => {
       await updateDeletionJob("requested");
     } catch (jobError) {
       console.error("Create account deletion job error:", jobError);
-      return c.json({ error: getErrorMessage(jobError, "Hesap silme kaydi olusturulamadi.") }, 500);
+      return c.json({ error: "Hesap silme kaydı oluşturulamadı." }, 500);
     }
 
     const [
@@ -4522,7 +4395,7 @@ app.delete("/make-server-d962235e/account", authMiddleware, async (c) => {
         "requested",
         getErrorMessage(notificationEventCleanupResult.error, "notification cleanup failed"),
       ).catch(() => undefined);
-      return c.json({ error: getErrorMessage(notificationEventCleanupResult.error, "Bildirim kayitlari silinemedi.") }, 500);
+      return c.json({ error: "Bildirim kayıtları silinemedi." }, 500);
     }
 
     if (moderationReportCleanupResult.error) {
@@ -4531,7 +4404,7 @@ app.delete("/make-server-d962235e/account", authMiddleware, async (c) => {
         "requested",
         getErrorMessage(moderationReportCleanupResult.error, "moderation cleanup failed"),
       ).catch(() => undefined);
-      return c.json({ error: getErrorMessage(moderationReportCleanupResult.error, "Sikayet kayitlari silinemedi.") }, 500);
+      return c.json({ error: "Şikâyet kayıtları silinemedi." }, 500);
     }
 
     await updateDeletionJob("related_data_deleted");
@@ -4547,7 +4420,7 @@ app.delete("/make-server-d962235e/account", authMiddleware, async (c) => {
           "related_data_deleted",
           getErrorMessage(storageDeleteError, "storage cleanup failed"),
         ).catch(() => undefined);
-        return c.json({ error: getErrorMessage(storageDeleteError, "Profil fotograflari silinemedi.") }, 500);
+      return c.json({ error: "Profil fotoğrafları silinemedi." }, 500);
       }
     }
 
@@ -4558,7 +4431,7 @@ app.delete("/make-server-d962235e/account", authMiddleware, async (c) => {
     if (error) {
       console.error("Delete account error:", error);
       await updateDeletionJob("storage_deleted", error.message).catch(() => undefined);
-      return c.json({ error: error.message }, 500);
+        return c.json({ error: "Hesap silinemedi." }, 500);
     }
 
     await updateDeletionJob("auth_deleted").catch((jobError) => {
@@ -4604,7 +4477,7 @@ app.delete("/make-server-d962235e/account", authMiddleware, async (c) => {
     return c.json({ success: true, cleanupPending });
   } catch (error) {
     console.error("Delete account error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Hesap silinemedi." }, 500);
   }
 });
 
@@ -4619,14 +4492,14 @@ app.get("/make-server-d962235e/watch/live-now", authMiddleware, async (c) => {
     const cursor = decodeLiveNowCursor(c.req.query("cursor"));
     const { data: watchingRows, error: watchingError } = await supabase.rpc("get_live_now_users", {
       p_current_user_id: currentUserId,
-      p_cursor_updated_at: cursor?.updatedAt ?? null,
-      p_cursor_user_id: cursor?.userId ?? null,
+      p_cursor_updated_at: cursor?.updatedAt,
+      p_cursor_user_id: cursor?.userId,
       p_limit: pageSize + 1,
     });
 
     if (watchingError) {
       console.error("Live now fetch error:", watchingError);
-      return c.json({ error: watchingError.message }, 500);
+      return c.json({ error: "Canlı izleme listesi yüklenemedi." }, 500);
     }
 
     const candidateRows = (watchingRows ?? []) as Array<{
@@ -4642,7 +4515,7 @@ app.get("/make-server-d962235e/watch/live-now", authMiddleware, async (c) => {
     return c.json({
       users: userIds
         .map((userId) => payloadMap.get(userId))
-        .filter((user): user is Record<string, any> => user != null),
+        .filter((user): user is DatabaseRow => user != null),
       pageInfo: {
         hasMore: candidateRows.length > pageSize,
         nextCursor: encodeLiveNowCursor(visibleRows.at(-1) ?? {}),
@@ -4650,7 +4523,7 @@ app.get("/make-server-d962235e/watch/live-now", authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error("Live now error:", error);
-    return c.json({ error: getErrorMessage(error, "Canli izleme listesi yuklenemedi.") }, 500);
+    return c.json({ error: "Canlı izleme listesi yüklenemedi." }, 500);
   }
 });
 
@@ -4687,7 +4560,7 @@ app.get("/make-server-d962235e/users", authMiddleware, async (c) => {
 
       if (watchingError) {
         console.error("Currently watching fetch error:", watchingError);
-        return c.json({ error: watchingError.message }, 500);
+      return c.json({ error: "İzleme bilgileri yüklenemedi." }, 500);
       }
 
       const visiblePageRows = (watchingRows ?? []).slice(0, pageSize);
@@ -4712,7 +4585,7 @@ app.get("/make-server-d962235e/users", authMiddleware, async (c) => {
 
       if (profilesError) {
         console.error("Profiles fetch error:", profilesError);
-        return c.json({ error: profilesError.message }, 500);
+      return c.json({ error: "Kullanıcı profilleri yüklenemedi." }, 500);
       }
 
       const visiblePageRows = (profiles ?? []).slice(0, pageSize);
@@ -4728,7 +4601,7 @@ app.get("/make-server-d962235e/users", authMiddleware, async (c) => {
     return c.json({
       users: userIds
         .map((userId) => payloadMap.get(userId))
-        .filter((user): user is Record<string, any> => user != null),
+        .filter((user): user is DatabaseRow => user != null),
       pageInfo: {
         hasMore: directoryHasMore,
         nextCursor: nextDirectoryCursor,
@@ -4736,7 +4609,7 @@ app.get("/make-server-d962235e/users", authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error("Get users error:", error);
-    return c.json({ error: getErrorMessage(error, "Kullanicilar yuklenemedi.") }, 500);
+    return c.json({ error: "Kullanıcılar yüklenemedi." }, 500);
   }
 });
 
@@ -4748,7 +4621,7 @@ app.get("/make-server-d962235e/swipe-quota", authMiddleware, async (c) => {
     return c.json(serializeSwipeQuota(quota));
   } catch (error) {
     console.error("Get swipe quota error:", error);
-    return c.json({ error: getErrorMessage(error, "Swipe kotası yüklenemedi.") }, 500);
+    return c.json({ error: "Kaydırma kotası yüklenemedi." }, 500);
   }
 });
 
@@ -4760,7 +4633,7 @@ app.post("/make-server-d962235e/swipe-quota/consume", authMiddleware, async (c) 
     const kind = body?.kind;
 
     if (kind !== "like" && kind !== "dislike" && kind !== "undo") {
-      return c.json({ error: "Geçersiz swipe kota isteği." }, 400);
+      return c.json({ error: "Geçersiz kaydırma kotası isteği." }, 400);
     }
 
     const nextQuota = await consumeSwipeQuota(supabase, currentUserId, kind);
@@ -4778,14 +4651,14 @@ app.post("/make-server-d962235e/swipe-quota/consume", authMiddleware, async (c) 
     return c.json(serializeSwipeQuota(nextQuota));
   } catch (error) {
     console.error("Consume swipe quota error:", error);
-    return c.json({ error: getErrorMessage(error, "Swipe kotası güncellenemedi.") }, 500);
+    return c.json({ error: "Kaydırma kotası güncellenemedi." }, 500);
   }
 });
 
 app.post("/make-server-d962235e/likes/:userId", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const likedUserId = c.req.param("userId");
+    const likedUserId = getPathParam(c, "userId");
     const body = await c.req.json().catch(() => ({}));
     const sourceType = normalizeMatchSourceType(body?.source);
     const supabase = getSupabase();
@@ -4808,7 +4681,7 @@ app.post("/make-server-d962235e/likes/:userId", authMiddleware, async (c) => {
     try {
       rateLimit = await enforceRateLimit(supabase, {
         action: "like_user",
-        key: buildAbuseKey([currentUserId, getClientIp(c)]),
+        key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c)]),
         limit: MAX_LIKES_PER_MINUTE,
         windowSeconds: 60,
       });
@@ -4838,7 +4711,7 @@ app.post("/make-server-d962235e/likes/:userId", authMiddleware, async (c) => {
 
     if (atomicLikeError) {
       console.error("Atomic like error:", atomicLikeError);
-      return c.json({ error: getErrorMessage(atomicLikeError, "Beğeni kaydedilemedi.") }, 500);
+      return c.json({ error: "Beğeni kaydedilemedi." }, 500);
     }
 
     const atomicLike = Array.isArray(atomicRows) ? atomicRows[0] : atomicRows;
@@ -4858,7 +4731,8 @@ app.post("/make-server-d962235e/likes/:userId", authMiddleware, async (c) => {
     const matchBecameActive = atomicLike.match_became_active === true;
     const matched = atomicLike.matched === true;
     const createdLike = atomicLike.outcome === "liked" || matchBecameActive;
-    const idempotencyReplayed = atomicLike.idempotency_replayed === true;
+    const idempotencyReplayed =
+      "idempotency_replayed" in atomicLike && atomicLike.idempotency_replayed === true;
     const quotaRowForResponse = normalizeSwipeQuotaRow(currentUserId, atomicLike);
     if ((createdLike || matchBecameActive) && !idempotencyReplayed) {
       const discoveryEventTask = publishUserEvents(
@@ -4886,7 +4760,7 @@ app.post("/make-server-d962235e/likes/:userId", authMiddleware, async (c) => {
 
       const matchNotificationTask = (async () => {
         const nameMap = await loadProfileNameMap(supabase, [currentUserId]);
-        const currentUserName = nameMap.get(currentUserId) ?? "bir kullanici";
+        const currentUserName = nameMap.get(currentUserId) ?? "bir kullanıcı";
         const currentUser = { name: currentUserName };
 
         await dispatchNotificationEvents(supabase, [
@@ -4962,14 +4836,14 @@ app.post("/make-server-d962235e/likes/:userId", authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error("Like error:", error);
-    return c.json({ error: getErrorMessage(error, "Beğeni işlemi tamamlanamadı.") }, 500);
+    return c.json({ error: "Beğeni işlemi tamamlanamadı." }, 500);
   }
 });
 
 app.post("/make-server-d962235e/likes/:userId/undo", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const likedUserId = c.req.param("userId");
+    const likedUserId = getPathParam(c, "userId");
     const supabase = getSupabase();
 
     if (!likedUserId || likedUserId === currentUserId) {
@@ -4978,7 +4852,7 @@ app.post("/make-server-d962235e/likes/:userId/undo", authMiddleware, async (c) =
 
     const rateLimit = await enforceRateLimit(supabase, {
       action: "undo_like",
-      key: buildAbuseKey([currentUserId, getClientIp(c)]),
+      key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c)]),
       limit: MAX_CHAT_MUTATIONS_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -4996,7 +4870,7 @@ app.post("/make-server-d962235e/likes/:userId/undo", authMiddleware, async (c) =
 
     if (error) {
       console.error("Atomic like undo error:", error);
-      return c.json({ error: getErrorMessage(error, "Beğeni geri alınamadı.") }, 500);
+      return c.json({ error: "Beğeni geri alınamadı." }, 500);
     }
 
     const result = Array.isArray(data) ? data[0] : data;
@@ -5033,14 +4907,14 @@ app.post("/make-server-d962235e/likes/:userId/undo", authMiddleware, async (c) =
     });
   } catch (error) {
     console.error("Atomic like undo error:", error);
-    return c.json({ error: getErrorMessage(error, "Beğeni geri alınamadı.") }, 500);
+    return c.json({ error: "Beğeni geri alınamadı." }, 500);
   }
 });
 
   app.delete("/make-server-d962235e/likes/:userId", authMiddleware, async (c) => {
     try {
       const currentUserId = c.get("userId");
-      const likedUserId = c.req.param("userId");
+      const likedUserId = getPathParam(c, "userId");
       const supabase = getSupabase();
 
       const existingMatch = await fetchMatchBetweenUsers(supabase, currentUserId, likedUserId);
@@ -5056,7 +4930,7 @@ app.post("/make-server-d962235e/likes/:userId/undo", authMiddleware, async (c) =
 
     if (error) {
       console.error("Unlike error:", error);
-      return c.json({ error: getErrorMessage(error, "Beğeni geri alınamadı.") }, 400);
+      return c.json({ error: "Beğeni geri alınamadı." }, 400);
     }
 
       const remainingMatch = await fetchMatchBetweenUsers(supabase, currentUserId, likedUserId);
@@ -5070,7 +4944,7 @@ app.post("/make-server-d962235e/likes/:userId/undo", authMiddleware, async (c) =
 
       if (reverseLikeError) {
         console.error("Unlike reverse like check error:", reverseLikeError);
-        return c.json({ error: getErrorMessage(reverseLikeError, "Karşı beğeni kontrolü yapılamadı.") }, 400);
+      return c.json({ error: "Karşı beğeni kontrolü yapılamadı." }, 400);
       }
 
       if (!reverseLike) {
@@ -5086,7 +4960,7 @@ app.post("/make-server-d962235e/likes/:userId/undo", authMiddleware, async (c) =
 
         if (matchEndError) {
           console.error("Unlike match end error:", matchEndError);
-          return c.json({ error: getErrorMessage(matchEndError, "Eşleşme sonlandırılamadı.") }, 400);
+      return c.json({ error: "Eşleşme sonlandırılamadı." }, 400);
         }
       }
     }
@@ -5096,14 +4970,14 @@ app.post("/make-server-d962235e/likes/:userId/undo", authMiddleware, async (c) =
     return c.json({ success: true });
   } catch (error) {
     console.error("Unlike error:", error);
-    return c.json({ error: getErrorMessage(error, "Beğeni geri alma işlemi tamamlanamadı.") }, 500);
+    return c.json({ error: "Beğeni geri alma işlemi tamamlanamadı." }, 500);
   }
 });
 
 app.delete("/make-server-d962235e/likes/incoming/:userId", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const senderUserId = c.req.param("userId");
+    const senderUserId = getPathParam(c, "userId");
     const supabase = getSupabase();
 
     if (!senderUserId || senderUserId === currentUserId) {
@@ -5118,7 +4992,7 @@ app.delete("/make-server-d962235e/likes/incoming/:userId", authMiddleware, async
     try {
       rateLimit = await enforceRateLimit(supabase, {
         action: "reject_incoming_like",
-        key: buildAbuseKey([currentUserId, getClientIp(c)]),
+        key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c)]),
         limit: MAX_LIKES_PER_MINUTE,
         windowSeconds: 60,
       });
@@ -5146,7 +5020,7 @@ app.delete("/make-server-d962235e/likes/incoming/:userId", authMiddleware, async
 
         if (fallbackDelete.error) {
           console.error("Reject incoming like fallback delete error:", fallbackDelete.error);
-          return c.json({ error: getErrorMessage(fallbackDelete.error, "Gelen beğeni kaldırılamadı.") }, 400);
+      return c.json({ error: "Gelen beğeni kaldırılamadı." }, 400);
         }
 
         queueUserEvents(supabase, [currentUserId, senderUserId], "discovery_changed", {
@@ -5156,7 +5030,7 @@ app.delete("/make-server-d962235e/likes/incoming/:userId", authMiddleware, async
       }
 
       console.error("Reject incoming like error:", error);
-      return c.json({ error: getErrorMessage(error, "Gelen beğeni kaldırılamadı.") }, 400);
+    return c.json({ error: "Gelen beğeni kaldırılamadı." }, 400);
     }
 
     queueUserEvents(supabase, [currentUserId, senderUserId], "discovery_changed", {
@@ -5165,14 +5039,14 @@ app.delete("/make-server-d962235e/likes/incoming/:userId", authMiddleware, async
     return c.json({ success: true });
   } catch (error) {
     console.error("Reject incoming like error:", error);
-    return c.json({ error: getErrorMessage(error, "Gelen beğeni kaldırılamadı.") }, 500);
+    return c.json({ error: "Gelen beğeni kaldırılamadı." }, 500);
   }
 });
 
 app.put("/make-server-d962235e/likes/incoming/:userId/restore", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const senderUserId = c.req.param("userId");
+    const senderUserId = getPathParam(c, "userId");
     const supabase = getSupabase();
 
     if (!senderUserId || senderUserId === currentUserId) {
@@ -5194,7 +5068,7 @@ app.put("/make-server-d962235e/likes/incoming/:userId/restore", authMiddleware, 
       }
 
       console.error("Restore incoming like error:", error);
-      return c.json({ error: getErrorMessage(error, "Gelen beğeni geri yüklenemedi.") }, 400);
+    return c.json({ error: "Gelen beğeni geri yüklenemedi." }, 400);
     }
 
     queueUserEvents(supabase, [currentUserId, senderUserId], "discovery_changed", {
@@ -5203,7 +5077,7 @@ app.put("/make-server-d962235e/likes/incoming/:userId/restore", authMiddleware, 
     return c.json({ success: true });
   } catch (error) {
     console.error("Restore incoming like error:", error);
-    return c.json({ error: getErrorMessage(error, "Gelen beğeni geri yüklenemedi.") }, 500);
+    return c.json({ error: "Gelen beğeni geri yüklenemedi." }, 500);
   }
 });
 
@@ -5291,7 +5165,7 @@ app.get("/make-server-d962235e/likes", authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error("Get likes error:", error);
-    return c.json({ error: getErrorMessage(error, "Beğeni listesi yüklenemedi.") }, 500);
+    return c.json({ error: "Beğeni listesi yüklenemedi." }, 500);
   }
 });
 
@@ -5307,7 +5181,7 @@ app.get("/make-server-d962235e/discovery/watch", authMiddleware, async (c) => {
     const cursor = decodeLiveNowCursor(rawCursor);
 
     if (rawCursor && !cursor) {
-      return c.json({ error: "Invalid watch discovery cursor." }, 400);
+      return c.json({ error: "İzle keşif sayfası isteği geçersiz." }, 400);
     }
 
     const { data: currentWatching, error: currentWatchingError } = await supabase
@@ -5329,35 +5203,27 @@ app.get("/make-server-d962235e/discovery/watch", authMiddleware, async (c) => {
       return c.json({ users: [], pageInfo: { hasMore: false, nextCursor: null } });
     }
 
-    let { data: watchingData, error: watchingError } = await supabase.rpc(
+    const { data: watchingData, error: watchingError } = await supabase.rpc(
       "get_watch_discovery_candidate_page",
       {
         p_current_user_id: currentUserId,
         p_movie_id: movieId,
         p_media_type: mediaType,
-        p_cursor_updated_at: cursor?.updatedAt ?? null,
-        p_cursor_user_id: cursor?.userId ?? null,
+        p_cursor_updated_at: cursor?.updatedAt,
+        p_cursor_user_id: cursor?.userId,
         p_limit: pageSize + 1,
       },
     );
 
     if (watchingError) {
-      if (!isMissingFunctionError(watchingError, "get_watch_discovery_candidate_page")) {
-        throw watchingError;
-      }
-
-      watchingData = await loadWatchCandidatePageFallback(
-        supabase,
-        currentUserId,
-        movieId,
-        mediaType,
-        cursor,
-        pageSize,
-      );
-      watchingError = null;
+      throw watchingError;
     }
 
-    const watchingRows = (watchingData ?? []) as Array<{ user_id: string; updated_at: string }>;
+    const watchingRows = (watchingData ?? []) as Array<{
+      user_id: string;
+      updated_at: string;
+      compatibility_score: number;
+    }>;
     const visibleWatchingRows = watchingRows.slice(0, pageSize);
     const hasMore = watchingRows.length > pageSize;
     const userIds = visibleWatchingRows.map((row) => row.user_id);
@@ -5366,51 +5232,15 @@ app.get("/make-server-d962235e/discovery/watch", authMiddleware, async (c) => {
       return c.json({ users: [], pageInfo: { hasMore: false, nextCursor: null } });
     }
 
-    const allUserIds = [currentUserId, ...userIds];
-    const [payloadMap, rawProfileMap, preferenceMap, collections] = await Promise.all([
-      loadUserPayloadMap(supabase, userIds),
-      loadRawProfileMap(supabase, allUserIds),
-      loadDiscoveryPreferencesMap(supabase, allUserIds),
-      loadMovieCollectionsForUsers(supabase, allUserIds),
-    ]);
-    const currentProfile = rawProfileMap.get(currentUserId);
-    const currentPreferences = preferenceMap.get(currentUserId) ?? DEFAULT_DISCOVERY_PREFERENCES;
-    const currentCollections = collections.get(currentUserId) ?? createEmptyMovieCollections();
+    const payloadMap = await loadUserPayloadMap(supabase, userIds);
+    const users = userIds.map((userId) => payloadMap.get(userId));
 
-    if (!currentProfile) {
-      return c.json({ error: "Current profile could not be loaded." }, 409);
+    if (users.some((user) => !user)) {
+      throw new Error("Watch discovery read model returned an unresolvable profile.");
     }
 
-    const users = userIds
-      .map((userId) => {
-        const user = payloadMap.get(userId);
-        const candidateProfile = rawProfileMap.get(userId);
-
-        if (!user || !candidateProfile || !isEmailConfirmedProfile(candidateProfile)) {
-          return null;
-        }
-
-        const candidatePreferences = preferenceMap.get(userId) ?? DEFAULT_DISCOVERY_PREFERENCES;
-        const candidateCollections = collections.get(userId) ?? createEmptyMovieCollections();
-        const compatibilityScore = getCompatibilityBreakdown(
-          currentCollections.favoriteMedia,
-          currentCollections.watchedMedia,
-          candidateCollections.favoriteMedia,
-          candidateCollections.watchedMedia,
-        ).score;
-
-        return passesDiscoveryFilters({
-          currentProfile,
-          currentPreferences,
-          candidateProfile,
-          candidatePreferences,
-          compatibilityScore,
-        }) ? user : null;
-      })
-      .filter((user: Record<string, any> | null): user is Record<string, any> => user != null);
-
     return c.json({
-      users,
+      users: users as DatabaseRow[],
       pageInfo: {
         hasMore,
         nextCursor: hasMore ? encodeLiveNowCursor(visibleWatchingRows.at(-1) ?? {}) : null,
@@ -5418,7 +5248,7 @@ app.get("/make-server-d962235e/discovery/watch", authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error("Watch discovery error:", error);
-    return c.json({ error: getErrorMessage(error, "Izleme kesfi yuklenemedi.") }, 500);
+    return c.json({ error: "İzle keşfi yüklenemedi." }, 500);
   }
 });
 
@@ -5434,45 +5264,26 @@ app.get("/make-server-d962235e/discovery/compatibility", authMiddleware, async (
     const cursor = decodeCompatibilityCursor(rawCursor);
 
     if (rawCursor && !cursor) {
-      return c.json({ error: "Invalid compatibility cursor." }, 400);
+      return c.json({ error: "Uyum keşif sayfası isteği geçersiz." }, 400);
     }
 
-    const collections = await loadMovieCollectionsForUsers(supabase, [currentUserId]);
-    const currentCollections = collections.get(currentUserId) ?? createEmptyMovieCollections();
-
-    if (currentCollections.favoriteMedia.length === 0 && currentCollections.watchedMedia.length === 0) {
-      return c.json({ entries: [], pageInfo: { hasMore: false, nextCursor: null } });
-    }
-
-    let { data: candidateData, error: candidateError } = await supabase.rpc(
+    const { data: candidateData, error: candidateError } = await supabase.rpc(
       "get_compatibility_candidate_page",
       {
         p_current_user_id: currentUserId,
-        p_cursor_overlap: cursor?.overlapCount ?? null,
-        p_cursor_user_id: cursor?.userId ?? null,
+        p_cursor_score: cursor?.score,
+        p_cursor_user_id: cursor?.userId,
         p_limit: pageSize + 1,
       },
     );
 
     if (candidateError) {
-      if (!isMissingFunctionError(candidateError, "get_compatibility_candidate_page")) {
-        console.error("Compatibility discovery error:", candidateError);
-        return c.json({ error: "Compatibility discovery could not be loaded." }, 500);
-      }
-
-      candidateData = await loadCompatibilityCandidatePageFallback(
-        supabase,
-        currentUserId,
-        currentCollections,
-        cursor,
-        pageSize,
-      );
-      candidateError = null;
+      throw candidateError;
     }
 
     const candidateRows = (candidateData ?? []) as Array<{
       user_id: string;
-      overlap_count: number | string;
+      compatibility_score: number | string;
     }>;
     const visibleCandidateRows = candidateRows.slice(0, pageSize);
     const hasMore = candidateRows.length > pageSize;
@@ -5482,58 +5293,18 @@ app.get("/make-server-d962235e/discovery/compatibility", authMiddleware, async (
       return c.json({ entries: [], pageInfo: { hasMore: false, nextCursor: null } });
     }
 
-    const allUserIds = [currentUserId, ...candidateUserIds];
-    const [payloadMap, candidateCollections, rawProfileMap, preferenceMap] = await Promise.all([
-      loadUserPayloadMap(supabase, candidateUserIds),
-      loadMovieCollectionsForUsers(supabase, candidateUserIds),
-      loadRawProfileMap(supabase, allUserIds),
-      loadDiscoveryPreferencesMap(supabase, allUserIds),
-    ]);
-    const currentProfile = rawProfileMap.get(currentUserId);
-    const currentPreferences = preferenceMap.get(currentUserId) ?? DEFAULT_DISCOVERY_PREFERENCES;
+    const payloadMap = await loadUserPayloadMap(supabase, candidateUserIds);
+    const entries = visibleCandidateRows.map((row) => ({
+      user: payloadMap.get(row.user_id),
+      score: Number(row.compatibility_score),
+    }));
 
-    if (!currentProfile) {
-      return c.json({ error: "Current profile could not be loaded." }, 409);
+    if (entries.some((entry) => !entry.user || !Number.isInteger(entry.score))) {
+      throw new Error("Compatibility discovery read model returned an invalid row.");
     }
 
-    const entries = candidateUserIds
-      .map((userId) => {
-        const user = payloadMap.get(userId);
-        const candidateProfile = rawProfileMap.get(userId);
-        const userCollections = candidateCollections.get(userId) ?? createEmptyMovieCollections();
-
-        if (!user || !candidateProfile || !isEmailConfirmedProfile(candidateProfile)) {
-          return null;
-        }
-
-        const compatibility = getCompatibilityBreakdown(
-          currentCollections.favoriteMedia,
-          currentCollections.watchedMedia,
-          userCollections.favoriteMedia,
-          userCollections.watchedMedia,
-        );
-        const candidatePreferences = preferenceMap.get(userId) ?? DEFAULT_DISCOVERY_PREFERENCES;
-
-        if (
-          compatibility.score <= 0 ||
-          !passesDiscoveryFilters({
-            currentProfile,
-            currentPreferences,
-            candidateProfile,
-            candidatePreferences,
-            compatibilityScore: compatibility.score,
-          })
-        ) {
-          return null;
-        }
-
-        return { user, score: compatibility.score };
-      })
-      .filter((entry): entry is { user: Record<string, any>; score: number } => entry != null)
-      .sort((left, right) => right.score - left.score || left.user.id.localeCompare(right.user.id));
-
     return c.json({
-      entries,
+      entries: entries as Array<{ user: DatabaseRow; score: number }>,
       pageInfo: {
         hasMore,
         nextCursor: hasMore
@@ -5543,7 +5314,7 @@ app.get("/make-server-d962235e/discovery/compatibility", authMiddleware, async (
     });
   } catch (error) {
     console.error("Compatibility discovery error:", error);
-    return c.json({ error: getErrorMessage(error, "Uyum kesfi yuklenemedi.") }, 500);
+    return c.json({ error: "Uyum keşfi yüklenemedi." }, 500);
   }
 });
 
@@ -5579,11 +5350,11 @@ app.get("/make-server-d962235e/discovery/compatibility", authMiddleware, async (
     return c.json({
       likedUsers: likedUserIds
         .map((userId) => payloadMap.get(userId))
-        .filter((user): user is Record<string, any> => user != null),
+        .filter((user): user is DatabaseRow => user != null),
       likedByUsers: incomingLikesUnlocked
         ? likedByUserIds
             .map((userId) => payloadMap.get(userId))
-            .filter((user): user is Record<string, any> => user != null)
+            .filter((user): user is DatabaseRow => user != null)
         : [],
       likedByUserIds: incomingLikesUnlocked ? likedByUserIds : [],
       likedByCount: likedByUserIds.length,
@@ -5591,7 +5362,7 @@ app.get("/make-server-d962235e/discovery/compatibility", authMiddleware, async (
     });
   } catch (error) {
     console.error("Likes discovery error:", error);
-    return c.json({ error: getErrorMessage(error, "Begeniler yuklenemedi.") }, 500);
+    return c.json({ error: "Beğeniler yüklenemedi." }, 500);
   }
 });
 
@@ -5609,13 +5380,13 @@ app.get("/make-server-d962235e/matches", authMiddleware, async (c) => {
 
     if (error) {
       console.error("Get matches error:", error);
-      return c.json({ error: error.message }, 500);
+      return c.json({ error: "Eşleşmeler yüklenemedi." }, 500);
     }
 
     return c.json({ matches: matches ?? [] });
   } catch (error) {
     console.error("Get matches error:", error);
-    return c.json({ error: getErrorMessage(error, "Eslesmeler yuklenemedi.") }, 500);
+    return c.json({ error: "Eşleşmeler yüklenemedi." }, 500);
   }
 });
 
@@ -5626,7 +5397,7 @@ app.put("/make-server-d962235e/matches/status", authMiddleware, async (c) => {
     const supabase = getSupabase();
 
     if (!user1Id || !user2Id || !["end", "block", "unblock"].includes(action)) {
-      return c.json({ error: "Invalid match status payload" }, 400);
+      return c.json({ error: "Eşleşme durumu isteği geçersiz." }, 400);
     }
 
     if (currentUserId !== user1Id && currentUserId !== user2Id) {
@@ -5645,7 +5416,7 @@ app.put("/make-server-d962235e/matches/status", authMiddleware, async (c) => {
 
     if (relationshipError) {
       console.error("Atomic match update error:", relationshipError);
-      return c.json({ error: getErrorMessage(relationshipError, "Eşleşme güncellenemedi.") }, 500);
+      return c.json({ error: "Eşleşme güncellenemedi." }, 500);
     }
 
     const relationship = Array.isArray(relationshipRows) ? relationshipRows[0] : relationshipRows;
@@ -5674,7 +5445,7 @@ app.put("/make-server-d962235e/matches/status", authMiddleware, async (c) => {
     return c.json({ success: true });
   } catch (error) {
     console.error("Update match error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Eşleşme güncellenemedi." }, 500);
   }
 });
 
@@ -5692,7 +5463,7 @@ app.get("/make-server-d962235e/blocks", authMiddleware, async (c) => {
 
     if (error) {
       console.error("Get blocks error:", error);
-      return c.json({ error: error.message }, 500);
+      return c.json({ error: "Engellenen kullanıcılar yüklenemedi." }, 500);
     }
 
     const blockedUserIds: string[] = (blockRows ?? []).map((row: { blocked_id: string }) => row.blocked_id);
@@ -5701,18 +5472,18 @@ app.get("/make-server-d962235e/blocks", authMiddleware, async (c) => {
     return c.json({
       users: blockedUserIds
         .map((userId: string) => userMap.get(userId))
-        .filter((user: Record<string, any> | undefined): user is Record<string, any> => user != null),
+        .filter((user: DatabaseRow | undefined): user is DatabaseRow => user != null),
     });
   } catch (error) {
     console.error("Get blocks error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Engellenen kullanıcılar yüklenemedi." }, 500);
   }
 });
 
 app.post("/make-server-d962235e/blocks/:userId", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const blockedUserId = c.req.param("userId");
+    const blockedUserId = getPathParam(c, "userId");
     const supabase = getSupabase();
 
     if (!blockedUserId || blockedUserId === currentUserId) {
@@ -5721,7 +5492,7 @@ app.post("/make-server-d962235e/blocks/:userId", authMiddleware, async (c) => {
 
     const rateLimit = await enforceRateLimit(supabase, {
       action: "block_user",
-      key: buildAbuseKey([currentUserId, getClientIp(c)]),
+      key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c)]),
       limit: MAX_BLOCK_MUTATIONS_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -5741,7 +5512,7 @@ app.post("/make-server-d962235e/blocks/:userId", authMiddleware, async (c) => {
 
     if (blockError) {
       console.error("Atomic user block error:", blockError);
-      return c.json({ error: getErrorMessage(blockError, "Kullanıcı engellenemedi.") }, 500);
+      return c.json({ error: "Kullanıcı engellenemedi." }, 500);
     }
 
     const blockResult = Array.isArray(blockRows) ? blockRows[0] : blockRows;
@@ -5761,19 +5532,19 @@ app.post("/make-server-d962235e/blocks/:userId", authMiddleware, async (c) => {
     return c.json({ success: true });
   } catch (error) {
     console.error("Block user error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Kullanıcı engellenemedi." }, 500);
   }
 });
 
 app.delete("/make-server-d962235e/blocks/:userId", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const blockedUserId = c.req.param("userId");
+    const blockedUserId = getPathParam(c, "userId");
     const supabase = getSupabase();
 
     const rateLimit = await enforceRateLimit(supabase, {
       action: "unblock_user",
-      key: buildAbuseKey([currentUserId, getClientIp(c)]),
+      key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c)]),
       limit: MAX_BLOCK_MUTATIONS_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -5793,7 +5564,7 @@ app.delete("/make-server-d962235e/blocks/:userId", authMiddleware, async (c) => 
 
     if (unblockError) {
       console.error("Atomic user unblock error:", unblockError);
-      return c.json({ error: getErrorMessage(unblockError, "Kullanıcının engeli kaldırılamadı.") }, 500);
+      return c.json({ error: "Kullanıcının engeli kaldırılamadı." }, 500);
     }
 
     const unblockResult = Array.isArray(unblockRows) ? unblockRows[0] : unblockRows;
@@ -5813,14 +5584,14 @@ app.delete("/make-server-d962235e/blocks/:userId", authMiddleware, async (c) => 
     return c.json({ success: true });
   } catch (error) {
     console.error("Unblock user error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Kullanıcının engeli kaldırılamadı." }, 500);
   }
 });
 
 app.post("/make-server-d962235e/chats/:userId/hide", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const otherUserId = c.req.param("userId");
+    const otherUserId = getPathParam(c, "userId");
     const supabase = getSupabase();
 
     if (!otherUserId || otherUserId === currentUserId) {
@@ -5829,7 +5600,7 @@ app.post("/make-server-d962235e/chats/:userId/hide", authMiddleware, async (c) =
 
     const rateLimit = await enforceRateLimit(supabase, {
       action: "hide_chat",
-      key: buildAbuseKey([currentUserId, getClientIp(c)]),
+      key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c)]),
       limit: MAX_CHAT_MUTATIONS_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -5844,21 +5615,21 @@ app.post("/make-server-d962235e/chats/:userId/hide", authMiddleware, async (c) =
 
     if (error) {
       console.error("Hide chat error:", error);
-      return c.json({ error: error.message }, 400);
+      return c.json({ error: "Sohbet güncellenemedi." }, 400);
     }
 
     queueUserEvents(supabase, [currentUserId], "chat_changed", { reason: "chat_hidden" });
     return c.json({ success: true });
   } catch (error) {
     console.error("Hide chat error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Sohbet güncellenemedi." }, 500);
   }
 });
 
 app.post("/make-server-d962235e/chats/:userId/delete", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const otherUserId = c.req.param("userId");
+    const otherUserId = getPathParam(c, "userId");
     const supabase = getSupabase();
     const body = await c.req.json().catch(() => ({}));
     const mode =
@@ -5872,7 +5643,7 @@ app.post("/make-server-d962235e/chats/:userId/delete", authMiddleware, async (c)
 
     const rateLimit = await enforceRateLimit(supabase, {
       action: "delete_chat",
-      key: buildAbuseKey([currentUserId, otherUserId, getClientIp(c), mode]),
+      key: buildAbuseKey([currentUserId, otherUserId, getRequestRateLimitIdentity(c), mode]),
       limit: MAX_CHAT_MUTATIONS_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -5892,7 +5663,7 @@ app.post("/make-server-d962235e/chats/:userId/delete", authMiddleware, async (c)
 
     if (deletionError) {
       console.error("Atomic chat deletion error:", deletionError);
-      return c.json({ error: getErrorMessage(deletionError, "Sohbet silinemedi.") }, 400);
+      return c.json({ error: "Sohbet silinemedi." }, 400);
     }
 
     const deletionResult = Array.isArray(deletionRows) ? deletionRows[0] : deletionRows;
@@ -5914,14 +5685,14 @@ app.post("/make-server-d962235e/chats/:userId/delete", authMiddleware, async (c)
     });
   } catch (error) {
     console.error("Delete chat error:", error);
-    return c.json({ error: getErrorMessage(error, "Sohbet silinemedi.") }, 500);
+    return c.json({ error: "Sohbet silinemedi." }, 500);
   }
 });
 
 app.put("/make-server-d962235e/chats/:userId/settings", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const otherUserId = c.req.param("userId");
+    const otherUserId = getPathParam(c, "userId");
     const supabase = getSupabase();
 
     if (!otherUserId || otherUserId === currentUserId) {
@@ -5930,7 +5701,7 @@ app.put("/make-server-d962235e/chats/:userId/settings", authMiddleware, async (c
 
     const rateLimit = await enforceRateLimit(supabase, {
       action: "update_chat_settings",
-      key: buildAbuseKey([currentUserId, otherUserId, getClientIp(c)]),
+      key: buildAbuseKey([currentUserId, otherUserId, getRequestRateLimitIdentity(c)]),
       limit: MAX_CHAT_MUTATIONS_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -5958,7 +5729,7 @@ app.put("/make-server-d962235e/chats/:userId/settings", authMiddleware, async (c
 
     if (error) {
       console.error("Update chat settings error:", error);
-      return c.json({ error: error.message }, 400);
+      return c.json({ error: "Sohbet ayarları güncellenemedi." }, 400);
     }
 
     queueUserEvents(supabase, [currentUserId, otherUserId], "chat_changed", {
@@ -5967,7 +5738,7 @@ app.put("/make-server-d962235e/chats/:userId/settings", authMiddleware, async (c
     return c.json({ settings: nextSettings });
   } catch (error) {
     console.error("Update chat settings error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Sohbet ayarları güncellenemedi." }, 500);
   }
 });
 
@@ -5990,22 +5761,22 @@ app.post("/make-server-d962235e/reports", authMiddleware, async (c) => {
       body?.clientContext && typeof body.clientContext === "object" ? body.clientContext : {};
 
     if (targetType === "profile" && (!targetUserId || targetUserId === currentUserId)) {
-      return c.json({ error: "Gecersiz sikayet hedefi." }, 400);
+      return c.json({ error: "Geçersiz şikâyet hedefi." }, 400);
     }
 
     if (details.length < MIN_REPORT_DETAILS_LENGTH) {
-      return c.json({ error: "Sikayet detaylarini daha acik yazmalisin." }, 400);
+      return c.json({ error: "Şikâyet ayrıntılarını daha açık yazmalısın." }, 400);
     }
 
     const rateLimit = await enforceRateLimit(supabase, {
       action: "report_user",
-      key: buildAbuseKey([currentUserId, targetUserId, getClientIp(c)]),
+      key: buildAbuseKey([currentUserId, targetUserId, getRequestRateLimitIdentity(c)]),
       limit: MAX_REPORTS_PER_HOUR,
       windowSeconds: 60 * 60,
     });
 
     if (!rateLimit.allowed) {
-      return c.json({ error: "Cok sik sikayet gonderdin. Lutfen daha sonra tekrar dene." }, 429);
+      return c.json({ error: "Çok sık şikâyet gönderdin. Lütfen daha sonra tekrar dene." }, 429);
     }
 
     const userMap = await loadUserPayloadMap(
@@ -6016,7 +5787,7 @@ app.post("/make-server-d962235e/reports", authMiddleware, async (c) => {
     const targetSnapshot = buildReportUserSnapshot(userMap.get(targetUserId));
 
     if (targetType === "profile" && !targetSnapshot) {
-      return c.json({ error: "Sikayet edilen profil bulunamadi." }, 404);
+      return c.json({ error: "Şikâyet edilen profil bulunamadı." }, 404);
     }
 
     const contextSnapshot = {
@@ -6042,11 +5813,11 @@ app.post("/make-server-d962235e/reports", authMiddleware, async (c) => {
 
     if (error) {
       if (isMissingRelationError(error, "moderation_reports")) {
-        return c.json({ error: "Sikayet sistemi henuz deploy edilmedi." }, 503);
+      return c.json({ error: "Şikâyet sistemi henüz kullanıma hazır değil." }, 503);
       }
 
       console.error("Create moderation report error:", error);
-      return c.json({ error: getErrorMessage(error, "Sikayet kaydedilemedi.") }, 400);
+      return c.json({ error: "Şikâyet kaydedilemedi." }, 400);
     }
 
     let mailed = false;
@@ -6073,7 +5844,7 @@ app.post("/make-server-d962235e/reports", authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error("Create moderation report error:", error);
-    return c.json({ error: getErrorMessage(error, "Sikayet gonderilemedi.") }, 500);
+    return c.json({ error: "Şikâyet gönderilemedi." }, 500);
   }
 });
 
@@ -6082,19 +5853,32 @@ app.post("/make-server-d962235e/notifications/push-outbox/drain", async (c) => {
   const providedSecret = c.req.header("X-WMatch-Worker-Secret")?.trim();
 
   if (!configuredSecret) {
-    return c.json({ error: "Push delivery worker is not configured." }, 503);
+      return c.json({ error: "Bildirim teslim hizmeti yapılandırılmamış." }, 503);
   }
 
   if (!providedSecret || providedSecret !== configuredSecret) {
-    return c.json({ error: "Unauthorized." }, 401);
+      return c.json({ error: "Bu işlem için yetkin yok." }, 401);
   }
 
   try {
-    const processed = await drainPushDeliveryOutbox(getSupabase());
-    return c.json({ success: true, processed });
+    const supabase = getSupabase();
+    const processed = await drainPushDeliveryOutbox(supabase);
+    const receiptsProcessed = await drainPushDeliveryReceipts(supabase);
+    const health = await getPushDeliveryHealth(supabase);
+    return c.json({
+      success: true,
+      processed,
+      receiptsProcessed,
+      healthy:
+        health.dead === 0
+        && health.stalled === 0
+        && health.receiptFailed === 0
+        && health.receiptStalled === 0,
+      health,
+    });
   } catch (error) {
     console.error("Push outbox drain error:", error);
-    return c.json({ error: "Push delivery retry failed." }, 500);
+      return c.json({ error: "Bildirim teslimi yeniden denenemedi." }, 500);
   }
 });
 
@@ -6107,12 +5891,12 @@ app.post("/make-server-d962235e/notifications/push-token", authMiddleware, async
     const platform = typeof body?.platform === "string" ? body.platform.trim().toLowerCase() : "unknown";
 
     if (!token || (!token.startsWith("ExpoPushToken[") && !token.startsWith("ExponentPushToken["))) {
-      return c.json({ error: "Geçersiz push token." }, 400);
+      return c.json({ error: "Geçersiz bildirim anahtarı." }, 400);
     }
 
     const rateLimit = await enforceRateLimit(supabase, {
       action: "register_push_token",
-      key: buildAbuseKey([currentUserId, getClientIp(c)]),
+      key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c)]),
       limit: MAX_PUSH_TOKEN_REGISTRATIONS_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -6134,13 +5918,13 @@ app.post("/make-server-d962235e/notifications/push-token", authMiddleware, async
 
     if (error) {
       console.error("Register push token error:", error);
-      return c.json({ error: error.message }, 400);
+      return c.json({ error: "Bildirim anahtarı kaydedilemedi." }, 400);
     }
 
     return c.json({ success: true });
   } catch (error) {
     console.error("Register push token error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Bildirim anahtarı kaydedilemedi." }, 500);
   }
 });
 
@@ -6153,13 +5937,13 @@ app.delete("/make-server-d962235e/notifications/push-token", authMiddleware, asy
 
     const rateLimit = await enforceRateLimit(supabase, {
       action: "delete_push_token",
-      key: buildAbuseKey([currentUserId, getClientIp(c), token]),
+      key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c), token]),
       limit: MAX_PUSH_TOKEN_REGISTRATIONS_PER_MINUTE,
       windowSeconds: 60,
     });
 
     if (!rateLimit.allowed) {
-      return c.json({ error: "Cok hizli islem yaptin. Lutfen biraz bekleyip tekrar dene." }, 429);
+      return c.json({ error: "Çok hızlı işlem yaptın. Lütfen biraz bekleyip tekrar dene." }, 429);
     }
 
     let query = supabase.from("device_push_tokens").delete().eq("user_id", currentUserId);
@@ -6172,20 +5956,20 @@ app.delete("/make-server-d962235e/notifications/push-token", authMiddleware, asy
 
     if (error) {
       console.error("Delete push token error:", error);
-      return c.json({ error: error.message }, 400);
+      return c.json({ error: "Bildirim anahtarı kaldırılamadı." }, 400);
     }
 
     return c.json({ success: true });
   } catch (error) {
     console.error("Delete push token error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Bildirim anahtarı kaldırılamadı." }, 500);
   }
 });
 
 app.put("/make-server-d962235e/notifications/events/:eventId/read", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const eventId = c.req.param("eventId");
+    const eventId = getPathParam(c, "eventId");
     const supabase = getSupabase();
 
     const { error } = await supabase
@@ -6201,20 +5985,20 @@ app.put("/make-server-d962235e/notifications/events/:eventId/read", authMiddlewa
       }
 
       console.error("Mark notification event read error:", error);
-      return c.json({ error: error.message }, 400);
+      return c.json({ error: "Bildirim okundu olarak işaretlenemedi." }, 400);
     }
 
     return c.json({ success: true });
   } catch (error) {
     console.error("Mark notification event read error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Bildirim okundu olarak işaretlenemedi." }, 500);
   }
 });
 
 app.get("/make-server-d962235e/messages/:userId", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const otherUserId = c.req.param("userId");
+    const otherUserId = getPathParam(c, "userId");
     const supabase = getSupabase();
     const requestedLimit = Number(c.req.query("limit") ?? DEFAULT_CHAT_THREAD_PAGE_SIZE);
     const pageSize = Number.isFinite(requestedLimit)
@@ -6272,12 +6056,12 @@ app.get("/make-server-d962235e/messages/:userId", authMiddleware, async (c) => {
 
     if (messagesError) {
       console.error("Get messages error:", messagesError);
-      return c.json({ error: messagesError.message }, 500);
+      return c.json({ error: "Mesajlar yüklenemedi." }, 500);
     }
 
     const fetchedMessages = messages ?? [];
     if (!match && fetchedMessages.length === 0) {
-      return c.json({ error: "Sohbet bulunamadi." }, 404);
+      return c.json({ error: "Sohbet bulunamadı." }, 404);
     }
 
     const hasMoreMessages = fetchedMessages.length > pageSize;
@@ -6317,7 +6101,7 @@ app.get("/make-server-d962235e/messages/:userId", authMiddleware, async (c) => {
         hasConversationActivity,
         unread: Boolean(
           visibleMessages.some(
-            (message: { sender_id: string; receiver_id: string; read: boolean }) =>
+            (message) =>
               message.sender_id === otherUserId &&
               message.receiver_id === currentUserId &&
               !message.read,
@@ -6331,14 +6115,14 @@ app.get("/make-server-d962235e/messages/:userId", authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error("Get messages error:", error);
-    return c.json({ error: getErrorMessage(error, "Mesajlar yuklenemedi.") }, 500);
+    return c.json({ error: "Mesajlar yüklenemedi." }, 500);
   }
 });
 
 app.post("/make-server-d962235e/messages/:userId", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const receiverId = c.req.param("userId");
+    const receiverId = getPathParam(c, "userId");
     const { text, clientMessageId } = await c.req.json();
     const supabase = getSupabase();
 
@@ -6354,7 +6138,7 @@ app.post("/make-server-d962235e/messages/:userId", authMiddleware, async (c) => 
 
     const rateLimit = await enforceRateLimit(supabase, {
       action: "send_message",
-      key: buildAbuseKey([currentUserId, receiverId, getClientIp(c)]),
+      key: buildAbuseKey([currentUserId, receiverId, getRequestRateLimitIdentity(c)]),
       limit: MAX_MESSAGES_PER_MINUTE,
       windowSeconds: 60,
     });
@@ -6375,7 +6159,7 @@ app.post("/make-server-d962235e/messages/:userId", authMiddleware, async (c) => 
     }
 
     const insertMessage = (includeClientMessageId: boolean) => {
-      const payload: Record<string, unknown> = {
+      const payload: TablesInsert<"messages"> = {
         sender_id: currentUserId,
         receiver_id: receiverId,
         text: normalizedText,
@@ -6419,7 +6203,7 @@ app.post("/make-server-d962235e/messages/:userId", authMiddleware, async (c) => 
 
     if (error) {
       console.error("Send message error:", error);
-      return c.json({ error: error.message }, 400);
+      return c.json({ error: "Mesaj gönderilemedi." }, 400);
     }
 
     await supabase
@@ -6486,14 +6270,14 @@ app.post("/make-server-d962235e/messages/:userId", authMiddleware, async (c) => 
     return c.json({ message });
   } catch (error) {
     console.error("Send message error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Mesaj gönderilemedi." }, 500);
   }
 });
 
 app.put("/make-server-d962235e/messages/thread/:userId/read", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const otherUserId = c.req.param("userId");
+    const otherUserId = getPathParam(c, "userId");
     const supabase = getSupabase();
 
     const { error } = await supabase
@@ -6505,7 +6289,7 @@ app.put("/make-server-d962235e/messages/thread/:userId/read", authMiddleware, as
 
     if (error) {
       console.error("Mark thread read error:", error);
-      return c.json({ error: error.message }, 400);
+      return c.json({ error: "Sohbet okundu olarak işaretlenemedi." }, 400);
     }
 
     await markChatNotificationEventsRead(supabase, currentUserId, otherUserId);
@@ -6514,14 +6298,14 @@ app.put("/make-server-d962235e/messages/thread/:userId/read", authMiddleware, as
     return c.json({ success: true });
   } catch (error) {
     console.error("Mark thread read error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Sohbet okundu olarak işaretlenemedi." }, 500);
   }
 });
 
 app.put("/make-server-d962235e/messages/:messageId/read", authMiddleware, async (c) => {
   try {
     const currentUserId = c.get("userId");
-    const messageId = c.req.param("messageId");
+    const messageId = getPathParam(c, "messageId");
     const supabase = getSupabase();
 
     const { data: readMessage, error } = await supabase
@@ -6534,7 +6318,7 @@ app.put("/make-server-d962235e/messages/:messageId/read", authMiddleware, async 
 
     if (error) {
       console.error("Mark read error:", error);
-      return c.json({ error: error.message }, 400);
+      return c.json({ error: "Mesaj okundu olarak işaretlenemedi." }, 400);
     }
 
     if (readMessage?.sender_id) {
@@ -6546,7 +6330,7 @@ app.put("/make-server-d962235e/messages/:messageId/read", authMiddleware, async 
     return c.json({ success: true });
   } catch (error) {
     console.error("Mark read error:", error);
-    return c.json({ error: String(error) }, 500);
+    return c.json({ error: "Mesaj okundu olarak işaretlenemedi." }, 500);
   }
 });
 
@@ -6562,20 +6346,20 @@ app.get("/make-server-d962235e/chats", authMiddleware, async (c) => {
     const cursor = decodeChatDirectoryCursor(rawCursor);
 
     if (rawCursor && !cursor) {
-      return c.json({ error: "Invalid chat directory cursor." }, 400);
+      return c.json({ error: "Sohbet listesi sayfa isteği geçersiz." }, 400);
     }
 
     let { data: directoryData, error: directoryError } = await supabase.rpc("get_chat_directory_page", {
       p_current_user_id: currentUserId,
-      p_cursor_time: cursor?.activityAt ?? null,
-      p_cursor_user_id: cursor?.userId ?? null,
+      p_cursor_time: cursor?.activityAt,
+      p_cursor_user_id: cursor?.userId,
       p_limit: pageSize + 1,
     });
 
     if (directoryError) {
       if (!isMissingFunctionError(directoryError, "get_chat_directory_page")) {
         console.error("Get chat directory error:", directoryError);
-        return c.json({ error: getErrorMessage(directoryError, "Sohbetler yuklenemedi.") }, 500);
+      return c.json({ error: "Sohbetler yüklenemedi." }, 500);
       }
 
       directoryData = await loadChatDirectoryPageFallback(
@@ -6637,13 +6421,13 @@ app.get("/make-server-d962235e/chats", authMiddleware, async (c) => {
 
     if (relatedError) {
       console.error("Get chat relationships error:", relatedError);
-      return c.json({ error: getErrorMessage(relatedError, "Sohbetler yuklenemedi.") }, 500);
+      return c.json({ error: "Sohbetler yüklenemedi." }, 500);
     }
 
     const visibleMatches = [
       ...(user1MatchesResult.data ?? []),
       ...(user2MatchesResult.data ?? []),
-    ] as Array<Record<string, any>>;
+    ];
     const matchMap = new Map(
       visibleMatches.map((match) => [
         match.user1_id === currentUserId ? match.user2_id : match.user1_id,
@@ -6670,7 +6454,7 @@ app.get("/make-server-d962235e/chats", authMiddleware, async (c) => {
       loadUserPayloadMap(supabase, otherUserIds),
       loadLikeTimelineMap(
         supabase,
-        visibleMatches.map((match: Record<string, any>) => ({
+        visibleMatches.map((match) => ({
           user1Id: match.user1_id,
           user2Id: match.user2_id,
         })),
@@ -6733,7 +6517,7 @@ app.get("/make-server-d962235e/chats", authMiddleware, async (c) => {
     });
   } catch (error) {
     console.error("Get chats error:", error);
-    return c.json({ error: getErrorMessage(error, "Sohbetler yuklenemedi.") }, 500);
+    return c.json({ error: "Sohbetler yüklenemedi." }, 500);
   }
 });
 

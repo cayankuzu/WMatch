@@ -8,7 +8,6 @@ import {
 import { CHAT_THREAD_INITIAL_PAGE_SIZE } from '../shared/constants';
 import { BoundedMap } from '../shared/utils/boundedMap';
 import { registerSessionCache } from '../shared/utils/sessionCache';
-import { prefetchProfilePhotos } from './profileImagePrefetch';
 
 export const CHAT_LIST_CACHE_TTL_MS = 5 * 60 * 1000;
 export const CHAT_THREAD_CACHE_TTL_MS = 15 * 60 * 1000;
@@ -86,7 +85,6 @@ export async function preloadChatList(userId: string, force = false) {
       const normalizedResponse = { ...response, chats };
       if (requestGeneration === chatCacheGeneration) {
         writeChatListCache(userId, chats, response.pageInfo);
-        void prefetchProfilePhotos(chats.map((chat) => chat.user.photos), 6);
       }
       return normalizedResponse;
     })
@@ -164,7 +162,6 @@ export async function preloadChatThread(
     .then((thread) => {
       if (thread && requestGeneration === chatCacheGeneration) {
         writeChatThreadCache(currentUserId, otherUserId, thread);
-        void prefetchProfilePhotos([thread.chat.user.photos], 1);
       }
 
       return thread;

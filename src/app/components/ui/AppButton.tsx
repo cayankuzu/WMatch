@@ -84,7 +84,7 @@ const styles = StyleSheet.create({
     paddingVertical: theme.spacing.sm,
   },
   large: {
-    minHeight: 46,
+    minHeight: theme.layout.controlMinUnified,
   },
   content: {
     flexDirection: 'row',

@@ -15,7 +15,11 @@ let activePushToken: string | null = null;
 let activePushUserId: string | null = null;
 let lastPushSyncAt = 0;
 let lastPushSkipReason: string | null = null;
-let pushSyncInFlight: { userId: string | null; promise: Promise<PushNotificationSyncResult> } | null = null;
+let pushSyncInFlight: {
+  userId: string | null;
+  requestPermission: boolean;
+  promise: Promise<PushNotificationSyncResult>;
+} | null = null;
 let pushRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let pushRetryAttempt = 0;
 
@@ -196,8 +200,8 @@ async function ensureAndroidChannel() {
   }
 
   await Notifications.setNotificationChannelAsync(ANDROID_NOTIFICATION_CHANNEL_ID, {
-    name: 'WMatch Alerts',
-    description: 'Messages, matches, likes and account activity',
+    name: 'WMatch Bildirimleri',
+    description: 'Mesajlar, eşleşmeler, beğeniler ve hesap etkinliği',
     importance: Notifications.AndroidImportance.MAX,
     sound: 'default',
     enableVibrate: true,
@@ -207,8 +211,8 @@ async function ensureAndroidChannel() {
   });
 
   await Notifications.setNotificationChannelAsync('default', {
-    name: 'default',
-    description: 'WMatch notifications',
+    name: 'WMatch Bildirimleri',
+    description: 'WMatch bildirimleri',
     importance: Notifications.AndroidImportance.MAX,
     sound: 'default',
     enableVibrate: true,
@@ -389,7 +393,7 @@ async function presentLocalNotification(config: {
   data: Record<string, unknown>;
   fallbackKey: string;
 }) {
-  if (Platform.OS === 'web' || !isAppActive()) {
+  if (!isAppActive()) {
     return;
   }
 
@@ -449,7 +453,7 @@ export function subscribeToForegroundNotificationPresentation() {
 }
 
 export function subscribeToNotificationEventInserts(userId: string | null | undefined) {
-  if (!userId || Platform.OS === 'web') {
+  if (!userId) {
     return () => undefined;
   }
 
@@ -539,16 +543,15 @@ export async function clearPushNotifications() {
   resetPushNotificationSyncState();
 }
 
-async function syncPushNotificationsOnce(userId: string | null): Promise<PushNotificationSyncResult> {
+async function syncPushNotificationsOnce(
+  userId: string | null,
+  requestPermission: boolean,
+): Promise<PushNotificationSyncResult> {
   try {
     await configureNotificationPresentation();
 
     if (!userId) {
       lastPushSkipReason = null;
-      return { status: 'skipped' };
-    }
-
-    if (Platform.OS === 'web') {
       return { status: 'skipped' };
     }
 
@@ -564,7 +567,7 @@ async function syncPushNotificationsOnce(userId: string | null): Promise<PushNot
 
     let finalPermissions = await Notifications.getPermissionsAsync();
 
-    if (shouldRequestNotificationPermission(finalPermissions)) {
+    if (requestPermission && shouldRequestNotificationPermission(finalPermissions)) {
       finalPermissions = await requestNotificationPermission();
     }
 
@@ -644,7 +647,7 @@ async function syncPushNotificationsOnce(userId: string | null): Promise<PushNot
 }
 
 export function subscribeToPushTokenChanges(userId: string | null | undefined) {
-  if (!userId || Platform.OS === 'web') {
+  if (!userId) {
     return () => undefined;
   }
 
@@ -663,25 +666,38 @@ export function subscribeToPushTokenChanges(userId: string | null | undefined) {
   };
 }
 
-export function syncPushNotifications(
+function runPushNotificationSync(
   userId: string | null | undefined,
+  requestPermission: boolean,
 ): Promise<PushNotificationSyncResult> {
   const normalizedUserId = userId ?? null;
 
   if (pushSyncInFlight) {
-    if (pushSyncInFlight.userId === normalizedUserId) {
+    if (
+      pushSyncInFlight.userId === normalizedUserId &&
+      (!requestPermission || pushSyncInFlight.requestPermission)
+    ) {
       return pushSyncInFlight.promise;
     }
 
-    return pushSyncInFlight.promise.then(() => syncPushNotifications(normalizedUserId));
+    return pushSyncInFlight.promise.then(() => runPushNotificationSync(normalizedUserId, requestPermission));
   }
 
-  const promise = syncPushNotificationsOnce(normalizedUserId).finally(() => {
+  const promise = syncPushNotificationsOnce(normalizedUserId, requestPermission).finally(() => {
     if (pushSyncInFlight?.promise === promise) {
       pushSyncInFlight = null;
     }
   });
 
-  pushSyncInFlight = { userId: normalizedUserId, promise };
+  pushSyncInFlight = { userId: normalizedUserId, requestPermission, promise };
   return promise;
+}
+
+export function syncPushNotifications(userId: string | null | undefined) {
+  return runPushNotificationSync(userId, false);
+}
+
+export function requestPushNotifications(userId: string) {
+  lastPushSyncAt = 0;
+  return runPushNotificationSync(userId, true);
 }

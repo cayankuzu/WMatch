@@ -13,6 +13,7 @@ interface BottomNavItemProps {
   icon: keyof typeof MaterialCommunityIcons.glyphMap;
   activeIcon: keyof typeof MaterialCommunityIcons.glyphMap;
   label: string;
+  testID: string;
   badge?: number;
   onIntent?: () => void;
   onPress: () => void;
@@ -24,6 +25,7 @@ export default function BottomNavItem({
   icon,
   activeIcon,
   label,
+  testID,
   badge = 0,
   onIntent,
   onPress,
@@ -45,6 +47,7 @@ export default function BottomNavItem({
   return (
     <Animated.View style={[styles.shell, animatedStyle]}>
       <Pressable
+        testID={testID}
         accessibilityRole="tab"
         accessibilityLabel={label}
         accessibilityState={{ selected: active }}

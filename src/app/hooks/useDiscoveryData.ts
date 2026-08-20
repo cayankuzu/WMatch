@@ -11,7 +11,7 @@ import type { CompatibilityDiscoveryEntry } from '../../shared/types';
 import { BoundedMap } from '../../shared/utils/boundedMap';
 import { registerSessionCache } from '../../shared/utils/sessionCache';
 import { subscribeToForeground } from '../../shared/utils/appLifecycle';
-import { prefetchProfilePhotos } from '../../services/profileImagePrefetch';
+import { isOffline, subscribeToConnectivity } from '../../services/connectivity';
 import { subscribeToUserEvent } from '../../services/userEventBus';
 
 const REALTIME_DEBOUNCE_MS = 500;
@@ -202,7 +202,6 @@ export async function preloadDiscoveryData(
         likedByCount: likesDiscovery.likedByCount,
         likedByLocked: likesDiscovery.likedByLocked,
       };
-      void prefetchProfilePhotos(watchResponse.users.map((user) => user.photos), 4);
     } else if (mode === 'compatibility') {
       const [compatibilityResponse, likesDiscovery] = await Promise.all([
         getCompatibilityDiscoveryEntries({ force }),
@@ -218,10 +217,6 @@ export async function preloadDiscoveryData(
         likedByCount: likesDiscovery.likedByCount,
         likedByLocked: likesDiscovery.likedByLocked,
       };
-      void prefetchProfilePhotos(
-        compatibilityResponse.entries.map((entry) => entry.user.photos),
-        4,
-      );
     } else {
       const likesDiscovery = await preloadLikesSlice(userId, force);
       state = {
@@ -232,10 +227,6 @@ export async function preloadDiscoveryData(
         likedByCount: likesDiscovery.likedByCount,
         likedByLocked: likesDiscovery.likedByLocked,
       };
-      void prefetchProfilePhotos(
-        [...likesDiscovery.likedUsers, ...likesDiscovery.likedByUsers].map((user) => user.photos),
-        6,
-      );
     }
 
     const snapshot = { state, pageInfo, updatedAt: Date.now() };
@@ -643,6 +634,23 @@ export default function useDiscoveryData(mode: DiscoveryMode, currentUserId?: st
     });
 
     return unsubscribeForeground;
+  }, [currentUserId, loadData]);
+
+  useEffect(() => {
+    if (!currentUserId) {
+      return;
+    }
+
+    let wasOffline = isOffline();
+    return subscribeToConnectivity(() => {
+      const offline = isOffline();
+      const recovered = wasOffline && !offline;
+      wasOffline = offline;
+
+      if (recovered) {
+        void loadData({ force: true });
+      }
+    });
   }, [currentUserId, loadData]);
 
   useEffect(() => {

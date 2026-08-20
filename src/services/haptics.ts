@@ -1,4 +1,3 @@
-import { Platform } from 'react-native';
 import * as Haptics from 'expo-haptics';
 
 export type HapticFeedback = 'none' | 'selection' | 'success' | 'warning' | 'error';
@@ -8,7 +7,7 @@ const MIN_FEEDBACK_INTERVAL_MS = 45;
 
 /** Keeps tactile feedback intentional, non-blocking, and resistant to rapid double firing. */
 export function triggerHaptic(feedback: HapticFeedback = 'selection') {
-  if (feedback === 'none' || Platform.OS === 'web') {
+  if (feedback === 'none') {
     return;
   }
 

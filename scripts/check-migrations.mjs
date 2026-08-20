@@ -7,7 +7,7 @@ const fail = (message) => {
 };
 
 const migrationsDir = 'supabase/migrations';
-const expectedLatest = '20260720012500_watch_session_media_type_ambiguity_fix.sql';
+const expectedLatest = '20260819190000_push_delivery_receipts.sql';
 const historicalNoopMigrations = new Set([
   '20260703131500_per_user_chat_deletion_state.sql',
 ]);
@@ -20,6 +20,14 @@ if (migrations.at(-1) !== expectedLatest) {
 }
 
 const latestSource = readFileSync(join(migrationsDir, expectedLatest), 'utf8');
+const discoveryCorrectnessSource = readFileSync(
+  join(migrationsDir, '20260819090000_discovery_correctness_read_models.sql'),
+  'utf8',
+);
+const watchSessionSource = readFileSync(
+  join(migrationsDir, '20260720012500_watch_session_media_type_ambiguity_fix.sql'),
+  'utf8',
+);
 const appPresenceSource = readFileSync(
   join(migrationsDir, '20260719113000_app_presence_private_topics.sql'),
   'utf8',
@@ -49,6 +57,10 @@ const requiredTokens = [
   'CREATE TABLE IF NOT EXISTS public.notification_events',
   'CREATE OR REPLACE FUNCTION public.claim_push_delivery_jobs',
   'CREATE OR REPLACE FUNCTION public.complete_push_delivery_job',
+  'CREATE OR REPLACE FUNCTION public.get_push_delivery_health',
+  'CREATE TABLE IF NOT EXISTS public.push_delivery_receipts',
+  'CREATE OR REPLACE FUNCTION public.claim_push_receipt_jobs',
+  'CREATE OR REPLACE FUNCTION public.complete_push_receipt_job',
   'CREATE OR REPLACE FUNCTION public.undo_like_action_atomic',
   'CREATE OR REPLACE FUNCTION public.update_pair_relationship_atomic',
   'CREATE OR REPLACE FUNCTION public.delete_chat_for_user_atomic',
@@ -81,6 +93,9 @@ const requiredTokens = [
   'GRANT EXECUTE ON FUNCTION public.get_watch_discovery_candidate_page(UUID, INTEGER, TEXT, TIMESTAMPTZ, UUID, INTEGER)',
   'GRANT EXECUTE ON FUNCTION public.claim_push_delivery_jobs(UUID[], INTEGER) TO service_role',
   'GRANT EXECUTE ON FUNCTION public.complete_push_delivery_job(UUID, TEXT, TEXT, INTEGER) TO service_role',
+  'GRANT EXECUTE ON FUNCTION public.get_push_delivery_health() TO service_role',
+  'GRANT EXECUTE ON FUNCTION public.claim_push_receipt_jobs(INTEGER) TO service_role',
+  'GRANT EXECUTE ON FUNCTION public.complete_push_receipt_job(TEXT, TEXT, TEXT, INTEGER) TO service_role',
   'GRANT EXECUTE ON FUNCTION public.update_pair_relationship_atomic(UUID, UUID, TEXT)',
   'GRANT EXECUTE ON FUNCTION public.delete_chat_for_user_atomic(UUID, UUID, TEXT)',
   'GRANT EXECUTE ON FUNCTION public.process_like_action_idempotent(UUID, UUID, TEXT, INTEGER, INTEGER, TEXT, TEXT)',
@@ -95,17 +110,28 @@ for (const token of requiredTokens) {
   }
 }
 
-if (!latestSource.includes("'20260720012500'")) {
+if (!latestSource.includes("'20260819190000'")) {
   fail('latest migration does not advance the schema contract');
 }
 
 if (
-  !latestSource.includes('CREATE OR REPLACE FUNCTION public.apply_watch_session_transition')
-  || !latestSource.includes('#variable_conflict use_column')
-  || !latestSource.includes('cw.media_type::TEXT')
-  || !latestSource.includes('currently_watching.state::TEXT')
+  !watchSessionSource.includes('CREATE OR REPLACE FUNCTION public.apply_watch_session_transition')
+  || !watchSessionSource.includes('#variable_conflict use_column')
+  || !watchSessionSource.includes('cw.media_type::TEXT')
+  || !watchSessionSource.includes('currently_watching.state::TEXT')
 ) {
-  fail('latest migration does not pin watch session return types');
+  fail('watch session migration does not pin return types');
+}
+
+if (
+  !discoveryCorrectnessSource.includes('CREATE OR REPLACE FUNCTION public.calculate_discovery_compatibility_score')
+  || !discoveryCorrectnessSource.includes('CREATE FUNCTION public.get_compatibility_candidate_page')
+  || !discoveryCorrectnessSource.includes('p_cursor_score INTEGER')
+  || !discoveryCorrectnessSource.includes('ORDER BY eligible.compatibility_score DESC, eligible.user_id ASC')
+  || !discoveryCorrectnessSource.includes('CREATE FUNCTION public.get_watch_discovery_candidate_page')
+  || !discoveryCorrectnessSource.includes('ORDER BY eligible.updated_at DESC, eligible.user_id DESC')
+) {
+  fail('latest migration does not enforce eligible, authoritative discovery pagination');
 }
 
 if (

@@ -1,8 +1,6 @@
 import type { ReactNode, RefObject } from 'react';
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import {
-  AccessibilityInfo,
-  findNodeHandle,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -19,6 +17,7 @@ import { theme } from '../../../shared/theme';
 import { useLocalization } from '../../../context/LocalizationContext';
 import { resolveDeviceEdgeInset } from '../../../shared/utils/safeArea';
 import useWindowClass from '../../hooks/useWindowClass';
+import useReducedMotion from '../../hooks/useReducedMotion';
 import AppIconButton from './AppIconButton';
 import AccessibleModal from './AccessibleModal';
 
@@ -54,6 +53,7 @@ export default function AppModal({
   const { t } = useLocalization();
   const insets = useSafeAreaInsets();
   const layout = useWindowClass();
+  const reduceMotion = useReducedMotion();
   const titleRef = useRef<Text>(null);
   const safeTopInset = resolveDeviceEdgeInset(insets.top);
   const safeBottomInset = resolveDeviceEdgeInset(insets.bottom);
@@ -72,29 +72,6 @@ export default function AppModal({
       : resolvedPresentation === 'dialog'
         ? styles.dialogShell
         : styles.fullscreenShell;
-
-  useEffect(() => {
-    if (!visible) {
-      const returnNode = returnFocusRef?.current ? findNodeHandle(returnFocusRef.current) : null;
-
-      if (returnNode) {
-        AccessibilityInfo.setAccessibilityFocus(returnNode);
-      }
-
-      return;
-    }
-
-    const frame = requestAnimationFrame(() => {
-      const focusTarget = initialFocusRef?.current ?? titleRef.current;
-      const node = focusTarget ? findNodeHandle(focusTarget) : null;
-
-      if (node) {
-        AccessibilityInfo.setAccessibilityFocus(node);
-      }
-    });
-
-    return () => cancelAnimationFrame(frame);
-  }, [initialFocusRef, returnFocusRef, visible]);
 
   const content = scrollable ? (
     <ScrollView
@@ -119,7 +96,6 @@ export default function AppModal({
         { maxWidth: resolvedMaxWidth },
       ]}
     >
-      {resolvedPresentation === 'sheet' ? <View accessible={false} style={styles.dragHandle} /> : null}
       <View style={styles.header}>
         <Text ref={titleRef} accessibilityRole="header" style={styles.title}>
           {title}
@@ -148,7 +124,9 @@ export default function AppModal({
     <AccessibleModal
       transparent
       visible={visible}
-      animationType={resolvedPresentation === 'fullscreen' ? 'slide' : 'fade'}
+      animationType={reduceMotion ? 'none' : resolvedPresentation === 'fullscreen' ? 'slide' : 'fade'}
+      initialFocusRef={initialFocusRef ?? titleRef}
+      returnFocusRef={returnFocusRef}
       onRequestClose={dismissible ? onClose : undefined}
     >
       <KeyboardAvoidingView
@@ -227,14 +205,6 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.roles.sectionTitle.fontSize,
     lineHeight: theme.typography.roles.sectionTitle.lineHeight,
     fontFamily: theme.fonts.bold,
-  },
-  dragHandle: {
-    alignSelf: 'center',
-    width: 40,
-    height: 4,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.borderStrong,
-    marginTop: theme.spacing.sm,
   },
   body: {
     padding: theme.spacing.lg,

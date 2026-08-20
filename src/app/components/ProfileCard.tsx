@@ -1,61 +1,34 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, {
-  runOnJS,
-  useAnimatedScrollHandler,
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-  withTiming,
-} from 'react-native-reanimated';
+import { GestureDetector } from 'react-native-gesture-handler';
+import Animated from 'react-native-reanimated';
 import {
   FlatList,
-  Linking,
   Pressable,
   StyleSheet,
   Text,
   useWindowDimensions,
   View,
-  type LayoutChangeEvent,
 } from 'react-native';
 import type { ScrollView as ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useLocalization } from '../../context/LocalizationContext';
 import { PROFILE_CARD_BOTTOM_SPACING, SCREEN_SIDE_SPACING } from '../../shared/constants';
-import { getLetterboxdDisplayText, getLetterboxdProfileUrl } from '../../shared/config/externalLinks';
-import { getLocalizedMediaFilterLabel, getLocalizedUserGenderLabel } from '../../shared/i18n/helpers';
 import { theme } from '../../shared/theme';
-import { getCompatibilityStyle } from '../../shared/theme/compatibility';
-import { type UserGender } from '../../shared/utils/discovery';
-import { getFixedGridItemWidth } from '../../shared/utils/grid';
 import type { Movie } from '../../services/tmdb';
-import MovieCard from './MovieCard';
 import ImagePreviewModal from './ui/ImagePreviewModal';
 import AppImage from './ui/AppImage';
-import SegmentedControl from './ui/SegmentedControl';
-import OptionChips from './ui/OptionChips';
-import DataState from './ui/DataState';
 import AppRefreshControl from './ui/AppRefreshControl';
 import useTabReselect from '../hooks/useTabReselect';
 import SwipeActionRail from './SwipeActionRail';
 import ProfileTopBar from './ProfileTopBar';
-
-export interface ProfileCardUser {
-  id?: string;
-  name: string;
-  age?: number;
-  showAgeOnProfile?: boolean;
-  gender?: UserGender;
-  showGenderOnProfile?: boolean;
-  username: string;
-  photos: string[];
-  bio?: string;
-  letterboxd?: string;
-  favoriteMovies?: number[];
-  watchedMovies?: number[];
-}
+import ProfileIdentitySection from './profile/ProfileIdentitySection';
+import ProfileCompatibilityCard from './profile/ProfileCompatibilityCard';
+import ProfileMediaLibrary from './profile/ProfileMediaLibrary';
+import type { ProfileCardUser } from './profile/types';
+import { useProfileCardGesture } from './profile/useProfileCardGesture';
+export type { ProfileCardUser } from './profile/types';
 
 interface ProfileCardProps {
   user: ProfileCardUser;
@@ -87,9 +60,6 @@ interface ProfileCardProps {
   headerSubtitle?: string;
   onEditProfile?: () => void;
 }
-
-const SWIPE_THRESHOLD = 110;
-const DOWN_SWIPE_THRESHOLD = 88;
 
 export default function ProfileCard({
   user,
@@ -125,17 +95,9 @@ export default function ProfileCard({
   const insets = useSafeAreaInsets();
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0);
-  const [selectedTab, setSelectedTab] = useState<'favorites' | 'watched'>('favorites');
-  const [contentFilter, setContentFilter] = useState<'all' | 'movie' | 'tv'>('all');
   const [showImagePreview, setShowImagePreview] = useState(false);
-  const translateX = useSharedValue(0);
-  const translateY = useSharedValue(0);
-  const gestureStartX = useSharedValue(0);
-  const gestureStartY = useSharedValue(0);
-  const scrollOffset = useSharedValue(0);
   const photoListRef = useRef<FlatList<string> | null>(null);
   const contentScrollRef = useRef<ScrollViewInstance | null>(null);
-  const [profileGridWidth, setProfileGridWidth] = useState(0);
 
   const photos = user.photos.filter((photo) => photo.trim().length > 0);
   const resolvedPhotoNavigationMode = photoNavigationMode ?? (swipeable ? 'buttons' : 'swipe');
@@ -146,50 +108,44 @@ export default function ProfileCard({
     1,
     Math.min(usableViewportWidth, theme.layout.contentMaxReading) - SCREEN_SIDE_SPACING * 2,
   );
-  const profileGridColumns = 3;
-  const profileMovieWidth = getFixedGridItemWidth(
-    profileGridWidth || profileContentWidth,
-    profileGridColumns,
-    theme.layout.cardGap,
-  );
   const activePhoto = photos[currentPhotoIndex] ?? photos[0] ?? null;
-  const showAge = user.showAgeOnProfile !== false && Boolean(user.age);
-  const showGender = user.showGenderOnProfile !== false && Boolean(user.gender) && user.gender !== 'other';
-  const normalizedLetterboxd = user.letterboxd?.trim() ?? '';
-  const letterboxdProfileUrl = getLetterboxdProfileUrl(normalizedLetterboxd);
-  const hasLetterboxd = letterboxdProfileUrl != null;
-  const letterboxdDisplayText = getLetterboxdDisplayText(letterboxdProfileUrl, t('profile.card.letterboxdMissing'));
-  const compatibilityStyle = getCompatibilityStyle(compatibilityScore ?? 0);
-  const genderLabel = showGender && user.gender ? getLocalizedUserGenderLabel(t, user.gender) : null;
   const resolvedHeaderRightPress = onHeaderRightPress ?? (swipeable ? onRefresh : undefined);
   const resolvedHeaderRightIcon = headerRightIcon ?? (swipeable && onRefresh ? 'reload' : undefined);
   const showHeaderBar = Boolean(headerTitle || onHeaderBack || resolvedHeaderRightPress || onSecondaryHeaderRightPress);
   const canSwipeDown = Boolean(onSwipeDown);
+  const {
+    cardStyle: cardAnimatedStyle,
+    downCueStyle,
+    gesture: panGesture,
+    handleScroll,
+    leftCueStyle,
+    reset: resetGesture,
+    rightCueStyle,
+  } = useProfileCardGesture({
+    enabled: swipeable,
+    allowLeft: allowSwipeLeft,
+    allowRight: allowSwipeRight,
+    allowDown: canSwipeDown,
+    onLeft: onSwipeLeft,
+    onRight: onSwipeRight,
+    onDown: onSwipeDown,
+  });
   const scrollToTop = useCallback(() => {
     if (isOwnProfile) {
       contentScrollRef.current?.scrollTo({ y: 0, animated: true });
     }
   }, [isOwnProfile]);
-  const handleProfileGridLayout = useCallback((event: LayoutChangeEvent) => {
-    const nextWidth = event.nativeEvent.layout.width;
-
-    setProfileGridWidth((currentWidth) =>
-      Math.abs(currentWidth - nextWidth) < 0.5 ? currentWidth : nextWidth,
-    );
-  }, []);
 
   useTabReselect('profile', scrollToTop);
 
   useEffect(() => {
     setCurrentPhotoIndex(0);
-    translateX.value = 0;
-    translateY.value = 0;
-    scrollOffset.value = 0;
+    resetGesture();
     setShowImagePreview(false);
     requestAnimationFrame(() => {
       photoListRef.current?.scrollToIndex({ index: 0, animated: false });
     });
-  }, [scrollOffset, translateX, translateY, user.id, user.name]);
+  }, [resetGesture, user.id, user.name]);
 
   useEffect(() => {
     if (photos.length === 0 || currentPhotoIndex <= photos.length - 1) {
@@ -201,148 +157,6 @@ export default function ProfileCard({
       photoListRef.current?.scrollToIndex({ index: 0, animated: false });
     });
   }, [currentPhotoIndex, photos.length]);
-
-  const commitSwipeLeft = useCallback(() => onSwipeLeft?.(), [onSwipeLeft]);
-  const commitSwipeRight = useCallback(() => onSwipeRight?.(), [onSwipeRight]);
-  const commitSwipeDown = useCallback(() => onSwipeDown?.(), [onSwipeDown]);
-
-  const panGesture = useMemo(
-    () => Gesture.Pan()
-      .enabled(swipeable)
-      .manualActivation(true)
-      .onTouchesDown((event) => {
-        const touch = event.allTouches[0];
-        if (touch) {
-          gestureStartX.value = touch.absoluteX;
-          gestureStartY.value = touch.absoluteY;
-        }
-      })
-      .onTouchesMove((event, stateManager) => {
-        const touch = event.allTouches[0];
-        if (!touch) {
-          return;
-        }
-
-        const deltaX = touch.absoluteX - gestureStartX.value;
-        const deltaY = touch.absoluteY - gestureStartY.value;
-        const horizontalIntent = Math.abs(deltaX) > 12 && Math.abs(deltaX) > Math.abs(deltaY);
-        const downwardIntent = deltaY > 14 && deltaY > Math.abs(deltaX);
-
-        if (horizontalIntent) {
-          const directionAllowed = deltaX > 0 ? allowSwipeRight : allowSwipeLeft;
-          directionAllowed ? stateManager.activate() : stateManager.fail();
-          return;
-        }
-
-        if (downwardIntent) {
-          canSwipeDown && scrollOffset.value <= 0 ? stateManager.activate() : stateManager.fail();
-          return;
-        }
-
-        if (Math.abs(deltaY) > 14) {
-          stateManager.fail();
-        }
-      })
-      .onUpdate((event) => {
-        if (event.translationY > 0 && event.translationY > Math.abs(event.translationX) && canSwipeDown && scrollOffset.value <= 0) {
-          translateX.value = 0;
-          translateY.value = event.translationY;
-          return;
-        }
-
-        translateY.value = 0;
-        translateX.value = event.translationX;
-      })
-      .onEnd((event) => {
-        if (translateY.value > DOWN_SWIPE_THRESHOLD && canSwipeDown) {
-          translateY.value = withTiming(180, { duration: 120 }, (finished) => {
-            if (finished) {
-              translateY.value = 0;
-              runOnJS(commitSwipeDown)();
-            }
-          });
-          return;
-        }
-
-        if (translateX.value > SWIPE_THRESHOLD && allowSwipeRight) {
-          translateX.value = withTiming(420, { duration: 110 }, (finished) => {
-            if (finished) {
-              translateX.value = 0;
-              runOnJS(commitSwipeRight)();
-            }
-          });
-          return;
-        }
-
-        if (translateX.value < -SWIPE_THRESHOLD && allowSwipeLeft) {
-          translateX.value = withTiming(-420, { duration: 110 }, (finished) => {
-            if (finished) {
-              translateX.value = 0;
-              runOnJS(commitSwipeLeft)();
-            }
-          });
-          return;
-        }
-
-        translateX.value = withSpring(0, { damping: 18, stiffness: 220, velocity: event.velocityX });
-        translateY.value = withSpring(0, { damping: 18, stiffness: 220, velocity: event.velocityY });
-      })
-      .onFinalize((_event, success) => {
-        if (!success) {
-          translateX.value = withSpring(0, { damping: 18, stiffness: 220 });
-          translateY.value = withSpring(0, { damping: 18, stiffness: 220 });
-        }
-      }),
-    [
-      allowSwipeLeft,
-      allowSwipeRight,
-      canSwipeDown,
-      commitSwipeDown,
-      commitSwipeLeft,
-      commitSwipeRight,
-      gestureStartX,
-      gestureStartY,
-      scrollOffset,
-      swipeable,
-      translateX,
-      translateY,
-    ],
-  );
-
-  const cardAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: swipeable ? translateX.value : 0 },
-      { translateY: swipeable ? translateY.value : 0 },
-      { rotate: swipeable ? `${Math.max(-8, Math.min(8, translateX.value / 27.5))}deg` : '0deg' },
-    ],
-  }));
-  const leftCueStyle = useAnimatedStyle(() => ({
-    opacity: Math.max(0, Math.min(1, -translateX.value / 90)),
-  }));
-  const rightCueStyle = useAnimatedStyle(() => ({
-    opacity: Math.max(0, Math.min(1, translateX.value / 90)),
-  }));
-  const downCueStyle = useAnimatedStyle(() => ({
-    opacity: Math.max(0, Math.min(1, translateY.value / 80)),
-  }));
-  const handleScroll = useAnimatedScrollHandler((event) => {
-    scrollOffset.value = event.contentOffset.y;
-  });
-
-  const currentList = selectedTab === 'favorites' ? favorites : watched;
-  const filteredList = currentList.filter((item) => {
-    if (contentFilter === 'movie') return item.media_type === 'movie' || Boolean(item.title);
-    if (contentFilter === 'tv') return item.media_type === 'tv' || Boolean(item.name);
-    return true;
-  });
-
-  const openLetterboxd = () => {
-    if (!letterboxdProfileUrl) {
-      return;
-    }
-
-    void Linking.openURL(letterboxdProfileUrl);
-  };
 
   const scrollToPhoto = (nextIndex: number, animated = true) => {
     if (photos.length === 0) {
@@ -371,15 +185,6 @@ export default function ProfileCard({
 
     scrollToPhoto(currentPhotoIndex - 1);
   };
-
-  const emptyText =
-    selectedTab === 'favorites'
-      ? isOwnProfile
-        ? t('profile.card.empty.favorites.own')
-        : t('profile.card.empty.favorites.other')
-      : isOwnProfile
-        ? t('profile.card.empty.watched.own')
-        : t('profile.card.empty.watched.other');
 
   return (
     <GestureDetector gesture={panGesture}>
@@ -530,120 +335,26 @@ export default function ProfileCard({
         ) : null}
 
         <View style={styles.body}>
-          <View style={styles.identityCard}>
-            <View style={styles.nameRow}>
-              <Text style={styles.name}>{user.name}</Text>
-              {showAge && user.age ? (
-                <View style={styles.ageChip}>
-                  <Text style={styles.ageText}>{user.age}</Text>
-                </View>
-              ) : null}
-              {genderLabel ? (
-                <View style={styles.genderChip}>
-                  <Text style={styles.genderText}>{genderLabel}</Text>
-                </View>
-              ) : null}
-            </View>
-            <Text style={styles.username}>{user.username}</Text>
-
-            {hasLetterboxd || isOwnProfile ? <View style={styles.linkRow}>
-              <MaterialCommunityIcons
-                name="link-variant"
-                size={14}
-                color={hasLetterboxd ? theme.colors.primarySoft : theme.colors.textSoft}
-              />
-              <Text style={styles.linkLabel}>Letterboxd:</Text>
-              {hasLetterboxd ? (
-                <Pressable onPress={openLetterboxd} style={styles.linkValueWrap}>
-                  <Text numberOfLines={1} style={styles.letterboxd}>
-                    {letterboxdDisplayText}
-                  </Text>
-                </Pressable>
-              ) : (
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={!onEditProfile}
-                  onPress={onEditProfile}
-                  style={styles.linkValueWrap}
-                >
-                  <Text numberOfLines={1} style={styles.linkPlaceholder}>
-                    {t('profile.card.letterboxdAdd')}
-                  </Text>
-                </Pressable>
-              )}
-            </View> : null}
-
-            {user.bio ? <Text style={styles.bio}>{user.bio}</Text> : null}
-          </View>
+          <ProfileIdentitySection
+            isOwnProfile={isOwnProfile}
+            user={user}
+            onEditProfile={onEditProfile}
+          />
 
           {beforeCompatibilitySection}
 
           {showCompatibility && compatibilityScore != null ? (
-            <Pressable onPress={onCompatibilityClick} style={styles.compatibilityCard}>
-              <View style={styles.compatibilityHeader}>
-                <Text style={styles.compatibilityLabel}>{t('profile.card.compatibility.label')}</Text>
-                <Text style={styles.compatibilityHint}>{t('profile.card.compatibility.hint')}</Text>
-              </View>
-              <View style={styles.compatibilityBarWrap}>
-                <View style={[styles.compatibilityBarTrack, { backgroundColor: compatibilityStyle.track }]}>
-                  <View
-                    style={[
-                      styles.compatibilityBarFill,
-                      {
-                        width: `${Math.min(compatibilityScore, 100)}%`,
-                        backgroundColor: compatibilityStyle.color,
-                      },
-                    ]}
-                  />
-                </View>
-                <Text style={[styles.compatibilityScore, { color: compatibilityStyle.color }]}>%{compatibilityScore}</Text>
-              </View>
-            </Pressable>
+            <ProfileCompatibilityCard score={compatibilityScore} onPress={onCompatibilityClick} />
           ) : null}
 
-          {libraryLoading ? (
-            <DataState state="initial-loading" title={t('profile.loading')} />
-          ) : (
-            <>
-              <SegmentedControl
-                size="compact"
-                value={selectedTab}
-                onChange={setSelectedTab}
-                options={[
-                  { label: t('profile.card.segment.favorites', { count: favorites.length }), value: 'favorites' },
-                  { label: t('profile.card.segment.watched', { count: watched.length }), value: 'watched' },
-                ]}
-              />
-
-              <OptionChips
-                value={contentFilter}
-                onChange={setContentFilter}
-                options={[
-                  { label: getLocalizedMediaFilterLabel(t, 'all'), value: 'all' },
-                  { label: getLocalizedMediaFilterLabel(t, 'movie'), value: 'movie' },
-                  { label: getLocalizedMediaFilterLabel(t, 'tv'), value: 'tv' },
-                ]}
-              />
-
-              {filteredList.length === 0 ? (
-                <View style={styles.empty}>
-                  <Text style={styles.emptyText}>{emptyText}</Text>
-                </View>
-              ) : (
-                <View onLayout={handleProfileGridLayout} style={styles.movieGrid}>
-                  {filteredList.map((movie) => (
-                    <MovieCard
-                      key={`${movie.id}-${movie.media_type ?? 'media'}`}
-                      movie={movie}
-                      size="small"
-                      width={profileMovieWidth}
-                      onClick={() => onMovieClick?.(movie)}
-                    />
-                  ))}
-                </View>
-              )}
-            </>
-          )}
+          <ProfileMediaLibrary
+            fallbackWidth={profileContentWidth}
+            favorites={favorites}
+            isOwnProfile={isOwnProfile}
+            loading={libraryLoading}
+            watched={watched}
+            onMovieClick={onMovieClick}
+          />
         </View>
       </Animated.ScrollView>
 
@@ -796,156 +507,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: SCREEN_SIDE_SPACING,
     paddingTop: 12,
     gap: 10,
-  },
-  identityCard: {
-    borderRadius: theme.radius.personCard,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.backgroundElevated,
-    padding: 12,
-    gap: 6,
-  },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  name: {
-    color: theme.colors.text,
-    ...theme.typography.roles.screenTitle,
-    letterSpacing: 0,
-  },
-  ageChip: {
-    minWidth: 28,
-    minHeight: 24,
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.primarySurface,
-    borderWidth: 1,
-    borderColor: theme.alpha.brand26,
-  },
-  ageText: {
-    color: theme.colors.primarySoft,
-    ...theme.typography.roles.meta,
-    fontFamily: theme.fonts.semibold,
-  },
-  genderChip: {
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.surfaceStrong,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-  },
-  genderText: {
-    color: theme.colors.text,
-    ...theme.typography.roles.meta,
-  },
-  username: {
-    color: theme.colors.textMuted,
-    ...theme.typography.roles.meta,
-  },
-  linkRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    marginTop: 1,
-  },
-  linkLabel: {
-    color: theme.colors.textMuted,
-    ...theme.typography.roles.meta,
-    flexShrink: 0,
-  },
-  linkValueWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
-  letterboxd: {
-    color: theme.colors.primarySoft,
-    ...theme.typography.roles.meta,
-    fontFamily: theme.fonts.semibold,
-    textDecorationLine: 'underline',
-    flexShrink: 1,
-  },
-  linkPlaceholder: {
-    flex: 1,
-    color: theme.colors.textSoft,
-    ...theme.typography.roles.meta,
-    fontFamily: theme.fonts.semibold,
-    flexShrink: 1,
-  },
-  bio: {
-    color: theme.colors.text,
-    ...theme.typography.roles.body,
-    marginTop: 3,
-  },
-  compatibilityCard: {
-    minHeight: 56,
-    borderRadius: theme.radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.backgroundElevated,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    gap: 6,
-  },
-  compatibilityHeader: {
-    gap: 2,
-  },
-  compatibilityLabel: {
-    color: theme.colors.text,
-    ...theme.typography.roles.cardTitle,
-  },
-  compatibilityHint: {
-    color: theme.colors.textMuted,
-    ...theme.typography.roles.meta,
-    marginTop: 1,
-  },
-  compatibilityBarWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  compatibilityBarTrack: {
-    flex: 1,
-    height: 7,
-    borderRadius: theme.radius.pill,
-    overflow: 'hidden',
-  },
-  compatibilityBarFill: {
-    height: '100%',
-    borderRadius: theme.radius.pill,
-  },
-  compatibilityScore: {
-    minWidth: 40,
-    ...theme.typography.roles.sectionTitle,
-    fontVariant: ['tabular-nums'],
-    textAlign: 'right',
-  },
-  movieGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: theme.layout.cardGap,
-  },
-  empty: {
-    minHeight: 68,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.radius.card,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    padding: 12,
-  },
-  emptyText: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.body,
-    textAlign: 'center',
   },
 });

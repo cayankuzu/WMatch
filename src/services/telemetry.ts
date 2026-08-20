@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/react-native';
+import * as Application from 'expo-application';
 
 import { performanceBudgets } from '../shared/constants/performance';
 
@@ -64,12 +65,19 @@ function normalizeSampleRate(value: string | undefined) {
 
 export function initializeTelemetry() {
   const dsn = process.env.EXPO_PUBLIC_SENTRY_DSN?.trim();
+  const applicationId = Application.applicationId ?? 'com.wmatch.app';
+  const version = Application.nativeApplicationVersion ?? '0.0.0';
+  const build = Application.nativeBuildVersion ?? '0';
+  const release = `${applicationId}@${version}`;
+  const environment = process.env.EXPO_PUBLIC_APP_ENV?.trim() || (__DEV__ ? 'development' : 'production');
   telemetryEnabled = Boolean(dsn);
 
   Sentry.init({
     dsn,
     enabled: telemetryEnabled,
-    environment: process.env.EXPO_PUBLIC_APP_ENV?.trim() || (__DEV__ ? 'development' : 'production'),
+    environment,
+    release,
+    dist: build,
     tracesSampleRate: normalizeSampleRate(process.env.EXPO_PUBLIC_SENTRY_TRACES_SAMPLE_RATE),
     sendDefaultPii: false,
     attachStacktrace: true,
@@ -79,6 +87,12 @@ export function initializeTelemetry() {
     enableStallTracking: true,
     debug: false,
   });
+
+  if (telemetryEnabled) {
+    Sentry.setTag('app.id', applicationId);
+    Sentry.setTag('app.version', version);
+    Sentry.setTag('app.build', build);
+  }
 }
 
 export const telemetry = {

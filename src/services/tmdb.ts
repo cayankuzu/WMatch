@@ -1,6 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_BASE, fetchWithRetry } from '../../utils/supabase/client';
-import { publicAnonKey } from '../../utils/supabase/info';
+import { API_BASE, fetchWithRetry, getPublicApiHeaders } from '../../utils/supabase/client';
 import type { MediaRef, MediaType } from '../shared/types';
 import {
   scheduleMediaPrefetch,
@@ -245,12 +244,8 @@ function requestTMDB<T>(path: string, signal?: AbortSignal): Promise<T> {
     return inflightRequest as Promise<T>;
   }
 
-  const request = fetchWithRetry(`${API_BASE}/tmdb${path}`, {
-    signal,
-    headers: {
-      Authorization: `Bearer ${publicAnonKey}`,
-    },
-  })
+  const request = getPublicApiHeaders()
+    .then((headers) => fetchWithRetry(`${API_BASE}/tmdb${path}`, { signal, headers }))
     .then(async (response) => {
       if (!response.ok) {
         throw new Error(`TMDB request failed with status ${response.status}`);
@@ -510,11 +505,11 @@ async function fetchDetailsWithFallback(kind: MediaKind, id: number): Promise<Mo
 }
 
 async function fetchMediaBatch(refs: Array<{ id: number; mediaType: MediaKind }>) {
+  const publicHeaders = await getPublicApiHeaders();
   const response = await fetchWithRetry(`${API_BASE}/tmdb/media-batch`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${publicAnonKey}`,
-      'Content-Type': 'application/json',
+      ...publicHeaders,
       'Idempotency-Key': `tmdb-batch:${refs.map((ref) => `${ref.mediaType}:${ref.id}`).join(',')}`,
     },
     body: JSON.stringify({ refs }),

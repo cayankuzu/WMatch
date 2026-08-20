@@ -48,7 +48,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   chip: {
-    minHeight: 36,
+    minHeight: theme.layout.controlMinUnified,
     borderRadius: theme.radius.pill,
     borderWidth: 1,
     borderColor: theme.colors.borderStrong,

@@ -17,7 +17,6 @@ import {
 import { readSignupDraft, writeSignupDraft, type StoredSignupDraft } from '../../services/signupDraft';
 import { getLocalizedUserGenderLabel } from '../../shared/i18n/helpers';
 import { theme } from '../../shared/theme';
-import AppImage from './ui/AppImage';
 import {
   USER_GENDERS,
   type UserGender,
@@ -28,12 +27,13 @@ import { validateAge, validateDisplayName, validateLetterboxd, validatePassword 
 import AppButton from './ui/AppButton';
 import AppTextField from './ui/AppTextField';
 import AuthFooter from './ui/AuthFooter';
-import AuthLegalConsent from './ui/AuthLegalConsent';
 import AuthWordmark from './ui/AuthWordmark';
 import OptionChips from './ui/OptionChips';
 import Screen from './ui/Screen';
 import SignUpProgress from './ui/SignUpProgress';
 import SortablePhotoGrid from './ui/SortablePhotoGrid';
+import PasswordStrength from './signup/PasswordStrength';
+import SignUpReview from './signup/SignUpReview';
 
 interface SignUpScreenProps {
   onSignUp: (userData: SignUpData) => Promise<void>;
@@ -668,54 +668,7 @@ export default function SignUpScreen({
                 onRightIconPress={() => setShowPassword((current) => !current)}
               />
               {password ? (
-                <View style={styles.passwordStrength}>
-                  <View style={styles.passwordStrengthHeader}>
-                    <Text style={styles.passwordStrengthTitle}>{t('auth.signup.passwordStrength.title')}</Text>
-                    <Text
-                      style={[
-                        styles.passwordStrengthLabel,
-                        passwordStrengthScore >= 3
-                          ? styles.passwordStrengthStrong
-                          : passwordStrengthScore >= 2
-                            ? styles.passwordStrengthMedium
-                            : styles.passwordStrengthWeak,
-                      ]}
-                    >
-                      {passwordStrengthLabel}
-                    </Text>
-                  </View>
-                  <View style={styles.passwordMeter}>
-                    {[0, 1, 2].map((item) => (
-                      <View
-                        key={item}
-                        style={[
-                          styles.passwordMeterSegment,
-                          item < passwordStrengthScore && styles.passwordMeterSegmentActive,
-                          item < passwordStrengthScore &&
-                            passwordStrengthScore >= 3 &&
-                            styles.passwordMeterSegmentStrong,
-                          item < passwordStrengthScore &&
-                            passwordStrengthScore === 2 &&
-                            styles.passwordMeterSegmentMedium,
-                        ]}
-                      />
-                    ))}
-                  </View>
-                  <View style={styles.passwordCheckList}>
-                    {passwordChecks.map((item) => (
-                      <View key={item.key} style={styles.passwordCheckRow}>
-                        <MaterialCommunityIcons
-                          name={item.passed ? 'check-circle' : 'circle-outline'}
-                          size={16}
-                          color={item.passed ? theme.colors.successText : theme.colors.textSoft}
-                        />
-                        <Text style={[styles.passwordCheckText, item.passed && styles.passwordCheckTextPassed]}>
-                          {item.label}
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
-                </View>
+                <PasswordStrength checks={passwordChecks} label={passwordStrengthLabel} score={passwordStrengthScore} />
               ) : null}
             </View>
           ) : null}
@@ -827,55 +780,21 @@ export default function SignUpScreen({
           ) : null}
 
           {step === 4 ? (
-            <View style={styles.reviewStack}>
-              <View style={styles.reviewCard}>
-                {reviewPhoto ? (
-                  <AppImage
-                    contentFit="cover"
-                    fallbackIcon="account-outline"
-                    recyclingKey={reviewPhoto}
-                    uri={reviewPhoto}
-                    style={styles.reviewPhoto}
-                  />
-                ) : (
-                  <View style={styles.reviewPhotoFallback}>
-                    <MaterialCommunityIcons name="account-outline" size={20} color={theme.colors.primarySoft} />
-                  </View>
-                )}
-
-                <View style={styles.reviewBody}>
-                  <Text numberOfLines={1} style={styles.reviewName}>{reviewName}</Text>
-                  <Text numberOfLines={1} style={styles.reviewUsername}>{reviewUsername}</Text>
-                  <Text numberOfLines={3} style={styles.reviewBio}>{reviewBio}</Text>
-                </View>
-              </View>
-
-              <View style={styles.reviewGrid}>
-                <View style={styles.reviewMetric}>
-                  <Text style={styles.reviewMetricLabel}>{t('common.age')}</Text>
-                  <Text style={styles.reviewMetricValue}>{Number(age) || '-'}</Text>
-                </View>
-                <View style={styles.reviewMetric}>
-                  <Text style={styles.reviewMetricLabel}>{t('common.gender')}</Text>
-                  <Text style={styles.reviewMetricValue}>{reviewGenderLabel}</Text>
-                </View>
-                <View style={styles.reviewMetric}>
-                  <Text style={styles.reviewMetricLabel}>{t('profile.edit.photos')}</Text>
-                  <Text style={styles.reviewMetricValue}>{photos.length}/{MAX_PROFILE_PHOTOS}</Text>
-                </View>
-              </View>
-
-              <AuthLegalConsent
-                checked={acceptedLegal}
-                onToggle={() => {
-                  clearFieldError('legal');
-                  setAcceptedLegal((current) => !current);
-                }}
-              />
-              {fieldErrors.legal ? (
-                <Text accessibilityLiveRegion="polite" style={styles.fieldErrorText}>{fieldErrors.legal}</Text>
-              ) : null}
-            </View>
+            <SignUpReview
+              acceptedLegal={acceptedLegal}
+              age={age}
+              bio={reviewBio}
+              genderLabel={reviewGenderLabel}
+              legalError={fieldErrors.legal}
+              name={reviewName}
+              photo={reviewPhoto}
+              photoCount={photos.length}
+              username={reviewUsername}
+              onToggleLegal={() => {
+                clearFieldError('legal');
+                setAcceptedLegal((current) => !current);
+              }}
+            />
           ) : null}
 
           {error ? <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text> : null}
@@ -946,75 +865,6 @@ const styles = StyleSheet.create({
   formFields: {
     gap: 8,
   },
-  passwordStrength: {
-    gap: 7,
-    borderRadius: theme.radius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    padding: 12,
-  },
-  passwordStrengthHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  passwordStrengthTitle: {
-    color: theme.colors.text,
-    fontSize: theme.typography.caption,
-    fontFamily: theme.fonts.extraBold,
-  },
-  passwordStrengthLabel: {
-    fontSize: theme.typography.caption,
-    fontFamily: theme.fonts.extraBold,
-  },
-  passwordStrengthWeak: {
-    color: theme.colors.dangerText,
-  },
-  passwordStrengthMedium: {
-    color: theme.colors.warningText,
-  },
-  passwordStrengthStrong: {
-    color: theme.colors.successText,
-  },
-  passwordMeter: {
-    flexDirection: 'row',
-    gap: 4,
-  },
-  passwordMeterSegment: {
-    flex: 1,
-    height: 4,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.surfaceStrong,
-  },
-  passwordMeterSegmentActive: {
-    backgroundColor: theme.colors.dangerText,
-  },
-  passwordMeterSegmentMedium: {
-    backgroundColor: theme.colors.warningText,
-  },
-  passwordMeterSegmentStrong: {
-    backgroundColor: theme.colors.successText,
-  },
-  passwordCheckList: {
-    gap: 5,
-  },
-  passwordCheckRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  passwordCheckText: {
-    flex: 1,
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.caption,
-    lineHeight: 17,
-    fontFamily: theme.fonts.semibold,
-  },
-  passwordCheckTextPassed: {
-    color: theme.colors.text,
-  },
   inlineSection: {
     gap: 6,
   },
@@ -1038,80 +888,6 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.caption,
     lineHeight: 17,
     fontFamily: theme.fonts.semibold,
-  },
-  reviewStack: {
-    gap: 10,
-  },
-  reviewCard: {
-    minHeight: 96,
-    borderRadius: theme.radius.card,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    flexDirection: 'row',
-    gap: 10,
-    padding: 12,
-  },
-  reviewPhoto: {
-    width: 72,
-    height: 80,
-    borderRadius: 14,
-    backgroundColor: theme.colors.surfaceStrong,
-  },
-  reviewPhotoFallback: {
-    width: 72,
-    height: 80,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.primarySurface,
-  },
-  reviewBody: {
-    flex: 1,
-    gap: 4,
-    justifyContent: 'center',
-    minWidth: 0,
-  },
-  reviewName: {
-    color: theme.colors.text,
-    fontSize: theme.typography.section,
-    fontFamily: theme.fonts.extraBold,
-  },
-  reviewUsername: {
-    color: theme.colors.primarySoft,
-    fontSize: theme.typography.body,
-    fontFamily: theme.fonts.bold,
-  },
-  reviewBio: {
-    color: theme.colors.textMuted,
-    fontSize: theme.typography.caption,
-    lineHeight: 17,
-  },
-  reviewGrid: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  reviewMetric: {
-    flex: 1,
-    minHeight: 46,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-    gap: 4,
-  },
-  reviewMetricLabel: {
-    color: theme.colors.textSoft,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontFamily: theme.fonts.bold,
-  },
-  reviewMetricValue: {
-    color: theme.colors.text,
-    fontSize: theme.typography.body,
-    fontFamily: theme.fonts.extraBold,
   },
   error: {
     color: theme.colors.dangerText,

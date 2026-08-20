@@ -51,6 +51,12 @@ VALUES
     NOW()
   );
 
+UPDATE public.profiles
+SET email_confirmed = TRUE
+WHERE id BETWEEN
+  '00000000-0000-0000-0000-000000000101'::UUID AND
+  '00000000-0000-0000-0000-000000000103'::UUID;
+
 SELECT is(
   (SELECT COUNT(*) FROM public.profiles WHERE id BETWEEN
     '00000000-0000-0000-0000-000000000101'::UUID AND
@@ -352,21 +358,21 @@ SELECT is(
     '00000000-0000-0000-0000-000000000101', NULL, NULL, 2
   ) LIMIT 1),
   '00000000-0000-0000-0000-000000000102'::UUID,
-  'compatibility candidates are ranked by deterministic media overlap'
+  'compatibility candidates are ranked by the authoritative final score'
 );
 
 SELECT is(
-  (SELECT overlap_count FROM public.get_compatibility_candidate_page(
+  (SELECT compatibility_score FROM public.get_compatibility_candidate_page(
     '00000000-0000-0000-0000-000000000101', NULL, NULL, 2
   ) LIMIT 1),
-  2::BIGINT,
-  'compatibility overlap keeps movie and TV identities distinct'
+  100,
+  'compatibility score keeps movie and TV identities distinct'
 );
 
 SELECT is(
   (SELECT user_id FROM public.get_compatibility_candidate_page(
     '00000000-0000-0000-0000-000000000101',
-    2,
+    100,
     '00000000-0000-0000-0000-000000000102',
     2
   ) LIMIT 1),

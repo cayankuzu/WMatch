@@ -1,0 +1,27 @@
+appId: com.wmatch.app
+name: Signed-in navigation smoke
+---
+- launchApp:
+    clearState: false
+    stopApp: true
+- assertVisible: "İzle"
+- assertVisible: "Eşleş"
+- assertVisible: "Uyum"
+- assertVisible: "Beğeni"
+- assertVisible: "Sohbet"
+- assertVisible: "Profil"
+- tapOn:
+    id: "bottom-nav-watch"
+- assertVisible: "İzlediğin içerikten yeni eşleşmelere ulaş"
+- tapOn:
+    id: "bottom-nav-compatibility"
+- assertVisible: "Uyum"
+- tapOn:
+    id: "bottom-nav-likes"
+- assertVisible: "Beğeniler"
+- tapOn:
+    id: "bottom-nav-chat"
+- assertVisible: "Mesajlar"
+- tapOn:
+    id: "bottom-nav-profile"
+- assertVisible: "Profili düzenle"

@@ -29,6 +29,7 @@ import {
   readChatListCache,
   writeChatListCache,
 } from '../../services/chatCache';
+import { isOffline, subscribeToConnectivity } from '../../services/connectivity';
 import {
   patchChat,
   patchChatList,
@@ -38,11 +39,15 @@ import {
 } from '../../services/chatState';
 import { subscribeToUserEvent } from '../../services/userEventBus';
 import { setTabBadge } from '../../services/tabBadges';
+import {
+  hydrateScreenSessionState,
+  patchScreenSessionState,
+  readScreenSessionState,
+} from '../../services/screenSessionState';
 import { SCREEN_BOTTOM_SPACING, SCREEN_SIDE_SPACING } from '../../shared/constants';
 import type { Movie } from '../../services/tmdb';
 import { theme } from '../../shared/theme';
 import type { FilterType } from '../../shared/types';
-import { formatRelativeTime } from '../../shared/utils/time';
 import ChatModal from './ChatModal';
 import EmptyState from './EmptyState';
 import ProfileModal from './ProfileModal';
@@ -50,13 +55,12 @@ import DataState from './ui/DataState';
 import DataWarningBanner from './ui/DataWarningBanner';
 import { ChatListSkeleton } from './ui/Skeleton';
 import AppRefreshControl from './ui/AppRefreshControl';
-import useChatPresence from '../hooks/useChatPresence';
 import useTabReselect from '../hooks/useTabReselect';
 import ChatAvatar from './chat/ChatAvatar';
+import ChatListItem from './chat/ChatListItem';
 import ScreenHeader from './ui/ScreenHeader';
 import {
   applyMessageInsertToChats,
-  getChatPreview,
   hasVisibleConversationActivity,
   matchesChatFilter,
 } from './chat/chatListModel';
@@ -67,111 +71,6 @@ interface ChatScreenProps {
   onRequestedOpenUserIdHandled?: (userId: string) => void;
 }
 
-function getChatTags(chat: ApiChat, t: ReturnType<typeof useLocalization>['t']) {
-  const tags: Array<{ key: string; label: string; style: object; textStyle: object }> = [];
-
-  if (chat.isBlocked) {
-    tags.push({
-      key: 'blocked',
-      label: chat.blockedByMe ? t('chat.screen.tag.blockedByMe') : t('chat.screen.tag.blockedByOther'),
-      style: styles.tagDanger,
-      textStyle: styles.tagDangerText,
-    });
-  }
-
-  if (chat.ended) {
-    tags.push({
-      key: 'ended',
-      label: t('chat.screen.tag.ended'),
-      style: styles.tagMuted,
-      textStyle: styles.tagMutedText,
-    });
-  }
-
-  return tags;
-}
-
-function ChatListItem({
-  chat,
-  currentUserId,
-  presenceEnabled,
-  onIntent,
-  onPress,
-  t,
-}: {
-  chat: ApiChat;
-  currentUserId: string;
-  presenceEnabled: boolean;
-  onIntent: () => void;
-  onPress: () => void;
-  t: ReturnType<typeof useLocalization>['t'];
-}) {
-  const photo = chat.user.photos.find((item) => item.trim().length > 0) ?? null;
-  const tags = getChatTags(chat, t);
-  const peerPresence = useChatPresence({
-    currentUserId,
-    otherUserId: chat.userId,
-    peerSettings: chat.peerSettings,
-    isTyping: false,
-    publishTyping: false,
-    enabled: presenceEnabled,
-  });
-  const isPeerTyping = !chat.ended && !chat.isBlocked && peerPresence.isTyping;
-  const preview = isPeerTyping ? t('chat.screen.preview.typing') : getChatPreview(chat, t);
-
-  return (
-    <Pressable
-      key={chat.userId}
-      accessibilityRole="button"
-      accessibilityLabel={`${chat.user.name}. ${preview}. ${chat.unread ? t('chat.screen.tag.unread') : ''}`}
-      accessibilityState={{ selected: chat.unread }}
-      onPressIn={onIntent}
-      onPress={onPress}
-      style={({ pressed }) => [styles.chatRow, chat.unread && styles.chatRowUnread, pressed && styles.chatRowPressed]}
-    >
-      <View style={styles.avatarWrap}>
-        <ChatAvatar uri={photo} size={34} />
-        {chat.unread ? <View style={styles.unreadDot} /> : null}
-      </View>
-
-      <View style={styles.chatBody}>
-        <View style={styles.chatTopRow}>
-          <View style={styles.chatPrimaryColumn}>
-            <Text numberOfLines={2} style={styles.chatName}>
-              {chat.user.name}
-            </Text>
-
-            <Text
-              numberOfLines={2}
-              style={[
-                styles.lastMessage,
-                chat.unread && styles.lastMessageUnread,
-                isPeerTyping && styles.lastMessageTyping,
-              ]}
-            >
-              {preview}
-            </Text>
-          </View>
-
-          <View style={styles.chatMetaColumn}>
-            <Text style={styles.chatTime}>{formatRelativeTime(chat.lastMessageTime)}</Text>
-
-            {tags.length > 0 ? (
-              <View style={styles.tagRow}>
-                {tags.map((tag) => (
-                  <View key={tag.key} style={[styles.tagBase, tag.style]}>
-                    <Text style={[styles.tagBaseText, tag.textStyle]}>{tag.label}</Text>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-          </View>
-        </View>
-      </View>
-    </Pressable>
-  );
-}
-
 export default function ChatScreen({
   onMovieClick,
   requestedOpenUserId,
@@ -180,6 +79,9 @@ export default function ChatScreen({
   const { user: currentUser } = useAuth();
   const { t } = useLocalization();
   const initialChatCacheEntry = currentUser ? readChatListCache(currentUser.id) : undefined;
+  const initialScreenState = currentUser
+    ? readScreenSessionState(currentUser.id, 'chat')
+    : null;
   const initialCachedChats = initialChatCacheEntry?.chats ?? [];
   const [chats, setChats] = useState<ApiChat[]>(initialCachedChats);
   const [loading, setLoading] = useState(() => Boolean(currentUser && !initialChatCacheEntry));
@@ -190,14 +92,20 @@ export default function ChatScreen({
   );
   const [loadError, setLoadError] = useState<ApiRequestError | Error | null>(null);
   const [stale, setStale] = useState(false);
-  const [filter, setFilter] = useState<FilterType>('all');
+  const [filter, setFilter] = useState<FilterType>(initialScreenState?.filter ?? 'all');
   const [activeChat, setActiveChat] = useState<ApiChat | null>(null);
   const listRef = useRef<FlatList<ApiChat> | null>(null);
+  const scrollOffsetRef = useRef(initialScreenState?.scrollOffset ?? 0);
+  const restoredScrollScopeRef = useRef<string | null>(null);
   const scrollToTop = useCallback(() => {
     if (!activeChat) {
       listRef.current?.scrollToOffset({ offset: 0, animated: true });
+      scrollOffsetRef.current = 0;
+      if (currentUser) {
+        patchScreenSessionState(currentUser.id, 'chat', { scrollOffset: 0 });
+      }
     }
-  }, [activeChat]);
+  }, [activeChat, currentUser?.id]);
 
   useTabReselect('chat', scrollToTop);
   const [profileChat, setProfileChat] = useState<ApiChat | null>(null);
@@ -354,12 +262,38 @@ export default function ChatScreen({
 
   useEffect(() => {
     if (!currentUser) {
+      return;
+    }
+
+    let cancelled = false;
+    void hydrateScreenSessionState(currentUser.id, 'chat').then((screenState) => {
+      if (cancelled) {
+        return;
+      }
+
+      setFilter(screenState.filter);
+      scrollOffsetRef.current = screenState.scrollOffset;
+      restoredScrollScopeRef.current = null;
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser) {
       loadRequestSequenceRef.current += 1;
       chatsRef.current = [];
       setChats([]);
       setChatPageInfo({ hasMore: false, nextCursor: null });
       return;
     }
+
+    const screenState = readScreenSessionState(currentUser.id, 'chat');
+    setFilter(screenState.filter);
+    scrollOffsetRef.current = screenState.scrollOffset;
+    restoredScrollScopeRef.current = null;
 
     loadRequestSequenceRef.current += 1;
     loadingMoreRef.current = false;
@@ -387,6 +321,23 @@ export default function ChatScreen({
     setChats([]);
     setLoading(true);
     void loadChats();
+  }, [currentUser?.id, loadChats]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
+
+    let wasOffline = isOffline();
+    return subscribeToConnectivity(() => {
+      const offline = isOffline();
+      const recovered = wasOffline && !offline;
+      wasOffline = offline;
+
+      if (recovered) {
+        void loadChats('silent');
+      }
+    });
   }, [currentUser?.id, loadChats]);
 
   useEffect(() => {
@@ -534,6 +485,27 @@ export default function ChatScreen({
   );
 
   useEffect(() => {
+    if (
+      !currentUser ||
+      loading ||
+      filteredChats.length === 0 ||
+      restoredScrollScopeRef.current === currentUser.id
+    ) {
+      return;
+    }
+
+    restoredScrollScopeRef.current = currentUser.id;
+    const frame = requestAnimationFrame(() => {
+      listRef.current?.scrollToOffset({
+        offset: scrollOffsetRef.current,
+        animated: false,
+      });
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [currentUser?.id, filteredChats.length, loading]);
+
+  useEffect(() => {
     setTabBadge('chat', chats.filter((chat) => chat.unread).length);
   }, [chats]);
 
@@ -543,6 +515,14 @@ export default function ChatScreen({
     }
 
     setFilter(nextFilter);
+    listRef.current?.scrollToOffset({ offset: 0, animated: false });
+    scrollOffsetRef.current = 0;
+    if (currentUser) {
+      patchScreenSessionState(currentUser.id, 'chat', {
+        filter: nextFilter,
+        scrollOffset: 0,
+      });
+    }
   };
 
   const handleThreadRead = (userId: string) => {
@@ -553,6 +533,16 @@ export default function ChatScreen({
       current && current.userId === userId && current.unread ? { ...current, unread: false } : current,
     );
   };
+
+  const handleChatIntent = useCallback((chat: ApiChat) => {
+    if (currentUser) {
+      void preloadChatThread(currentUser.id, chat.userId);
+    }
+  }, [currentUser?.id]);
+
+  const handleChatPress = useCallback((chat: ApiChat) => {
+    setActiveChat(chat);
+  }, []);
 
   const handleToggleProfileBlock = () => {
     if (!profileChat) {
@@ -659,6 +649,14 @@ export default function ChatScreen({
         }
         data={filteredChats}
         keyExtractor={(item) => item.userId}
+        onScroll={(event) => {
+          const scrollOffset = Math.max(0, event.nativeEvent.contentOffset.y);
+          scrollOffsetRef.current = scrollOffset;
+          if (currentUser) {
+            patchScreenSessionState(currentUser.id, 'chat', { scrollOffset });
+          }
+        }}
+        scrollEventThrottle={160}
         onViewableItemsChanged={onViewableItemsChangedRef.current}
         viewabilityConfig={viewabilityConfigRef.current}
         initialNumToRender={12}
@@ -758,12 +756,8 @@ export default function ChatScreen({
             chat={item}
             currentUserId={currentUser!.id}
             presenceEnabled={visibleChatIds.has(item.userId)}
-            onIntent={() => {
-              if (currentUser) {
-                void preloadChatThread(currentUser.id, item.userId);
-              }
-            }}
-            onPress={() => setActiveChat(item)}
+            onIntent={handleChatIntent}
+            onPress={handleChatPress}
             t={t}
           />
         )}
@@ -823,18 +817,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.background,
-  },
-  loadingText: {
-    color: theme.colors.textMuted,
-    marginTop: 8,
-    ...theme.typography.roles.meta,
-    fontFamily: theme.fonts.semibold,
-  },
   header: {
     gap: 4,
     paddingHorizontal: 12,
@@ -891,122 +873,7 @@ const styles = StyleSheet.create({
   filterTextActive: {
     color: theme.colors.white,
   },
-  chatList: {
-    gap: 8,
-    paddingHorizontal: 12,
-  },
   chatSeparator: {
     height: 10,
-  },
-  chatRow: {
-    minHeight: 56,
-    borderRadius: theme.radius.card,
-    backgroundColor: theme.colors.surface,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    padding: 8,
-  },
-  chatRowPressed: {
-    opacity: 0.86,
-  },
-  chatRowUnread: {
-    borderLeftWidth: 3,
-    borderLeftColor: theme.colors.primary,
-    backgroundColor: theme.colors.backgroundElevated,
-  },
-  avatarWrap: {
-    position: 'relative',
-  },
-  unreadDot: {
-    position: 'absolute',
-    top: 1,
-    right: 1,
-    width: 10,
-    height: 10,
-    borderRadius: theme.radius.pill,
-    borderWidth: 2,
-    borderColor: theme.colors.surface,
-    backgroundColor: theme.colors.primarySoft,
-  },
-  chatBody: {
-    flex: 1,
-  },
-  chatTopRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 6,
-  },
-  chatPrimaryColumn: {
-    flex: 1,
-    minWidth: 0,
-    gap: 5,
-  },
-  chatMetaColumn: {
-    alignItems: 'flex-end',
-    gap: 5,
-    minWidth: 58,
-  },
-  chatName: {
-    color: theme.colors.text,
-    ...theme.typography.roles.cardTitle,
-  },
-  chatTime: {
-    color: theme.colors.textSoft,
-    ...theme.typography.roles.micro,
-    fontVariant: ['tabular-nums'],
-  },
-  lastMessage: {
-    color: theme.colors.textMuted,
-    ...theme.typography.roles.meta,
-  },
-  lastMessageUnread: {
-    color: theme.colors.text,
-    fontFamily: theme.fonts.bold,
-  },
-  lastMessageTyping: {
-    color: theme.colors.successText,
-    fontFamily: theme.fonts.bold,
-  },
-  tagRow: {
-    alignItems: 'flex-end',
-    gap: 5,
-  },
-  tagBase: {
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-  },
-  tagBaseText: {
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
-    fontFamily: theme.fonts.bold,
-  },
-  tagMuted: {
-    backgroundColor: theme.colors.surfaceStrong,
-  },
-  tagMutedText: {
-    color: theme.colors.textMuted,
-  },
-  tagSuccess: {
-    backgroundColor: theme.colors.successSurface,
-  },
-  tagSuccessText: {
-    color: theme.colors.successText,
-  },
-  tagInfo: {
-    backgroundColor: theme.colors.infoSurface,
-  },
-  tagInfoText: {
-    color: theme.colors.infoText,
-  },
-  tagDanger: {
-    backgroundColor: theme.colors.dangerSurface,
-  },
-  tagDangerText: {
-    color: theme.colors.dangerText,
   },
 });

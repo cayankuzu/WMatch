@@ -11,31 +11,31 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLibrary } from '../../context/AppContext';
 import { useAuth } from '../../context/AuthContext';
 import { useLocalization } from '../../context/LocalizationContext';
-import { likeUser, rejectIncomingLike, unlikeUser, type ApiUser } from '../../services/api';
+import { likeUser, rejectIncomingLike, unlikeUser } from '../../services/api';
 import { setTabBadge } from '../../services/tabBadges';
 import {
-  SCREEN_BOTTOM_SPACING,
-  SCREEN_SIDE_SPACING,
-} from '../../shared/constants';
+  hydrateScreenSessionState,
+  patchScreenSessionState,
+  readScreenSessionState,
+} from '../../services/screenSessionState';
+import { SCREEN_SIDE_SPACING } from '../../shared/constants';
 import { movieToMediaRef, type Movie } from '../../services/tmdb';
 import { theme } from '../../shared/theme';
 import { calculateCompatibilityScore } from '../../shared/utils/compatibility';
 import { getFixedGridItemWidth } from '../../shared/utils/grid';
-import EmptyState from './EmptyState';
 import useDiscoveryData from '../hooks/useDiscoveryData';
 import useTransientPopup from '../hooks/useTransientPopup';
 import useSwipeQuota from '../hooks/useSwipeQuota';
 import SwipeModal from './SwipeModal';
 import SwipeQuotaBar from './SwipeQuotaBar';
-import UserMiniCard from './UserMiniCard';
 import DataState from './ui/DataState';
 import DataWarningBanner from './ui/DataWarningBanner';
 import SegmentedControl from './ui/SegmentedControl';
 import { UserGridSkeleton } from './ui/Skeleton';
 import TransientPopup from './ui/TransientPopup';
-import AppRefreshControl from './ui/AppRefreshControl';
 import ScreenHeader from './ui/ScreenHeader';
 import useTabReselect from '../hooks/useTabReselect';
+import LikesGridPage, { type ScoredUser } from './likes/LikesGridPage';
 
 interface LikesScreenProps {
   onMovieClick?: (movie: Movie) => void;
@@ -43,12 +43,8 @@ interface LikesScreenProps {
   preferredTab?: 'liked' | 'likedme' | null;
 }
 
-interface ScoredUser {
-  user: ApiUser;
-  score: number;
-}
-
 const LIKES_GRID_COLUMNS = 3;
+const LIKES_COMPACT_BREAKPOINT = 350;
 
 export default function LikesScreen({
   onMovieClick,
@@ -58,8 +54,12 @@ export default function LikesScreen({
   const { t } = useLocalization();
   const { width: windowWidth } = useWindowDimensions();
   const [measuredWidth, setMeasuredWidth] = useState(0);
-  const gridColumns = LIKES_GRID_COLUMNS;
+  const pageWidth = measuredWidth || windowWidth;
+  const gridColumns = pageWidth < LIKES_COMPACT_BREAKPOINT ? 2 : LIKES_GRID_COLUMNS;
   const { user: currentUser } = useAuth();
+  const initialScreenState = currentUser
+    ? readScreenSessionState(currentUser.id, 'likes')
+    : null;
   const { favorites, watched } = useLibrary();
   const {
     likedUsers,
@@ -80,13 +80,18 @@ export default function LikesScreen({
     currentUser?.id,
   );
   const quota = useSwipeQuota(currentUser?.id);
-  const [activeTab, setActiveTab] = useState<'liked' | 'likedme'>('liked');
+  const [activeTab, setActiveTab] = useState<'liked' | 'likedme'>(
+    initialScreenState?.activeTab ?? 'liked',
+  );
   const [swipeStartIndex, setSwipeStartIndex] = useState<number | null>(null);
   const pagerRef = useRef<FlatList<{ key: 'liked' | 'likedme'; users: ScoredUser[] }> | null>(null);
   const gridRefs = useRef<Partial<Record<'liked' | 'likedme', FlatList<ScoredUser> | null>>>({});
+  const gridScrollOffsetsRef = useRef({
+    liked: initialScreenState?.likedScrollOffset ?? 0,
+    likedme: initialScreenState?.likedMeScrollOffset ?? 0,
+  });
   const premiumPopup = useTransientPopup();
   const { showPopup } = premiumPopup;
-  const pageWidth = measuredWidth || windowWidth;
   const gridContentWidth = Math.max(1, pageWidth - SCREEN_SIDE_SPACING * 2);
   const gridItemWidth = getFixedGridItemWidth(
     gridContentWidth,
@@ -105,7 +110,13 @@ export default function LikesScreen({
   const isLikedMeLocked = activeTab === 'likedme' && likedByLocked;
   const scrollActiveListToTop = useCallback(() => {
     gridRefs.current[activeTab]?.scrollToOffset({ offset: 0, animated: true });
-  }, [activeTab]);
+    gridScrollOffsetsRef.current[activeTab] = 0;
+    if (currentUser) {
+      patchScreenSessionState(currentUser.id, 'likes', {
+        [activeTab === 'liked' ? 'likedScrollOffset' : 'likedMeScrollOffset']: 0,
+      });
+    }
+  }, [activeTab, currentUser?.id]);
   const handleScreenLayout = useCallback((event: LayoutChangeEvent) => {
     const nextWidth = event.nativeEvent.layout.width;
 
@@ -113,12 +124,65 @@ export default function LikesScreen({
       Math.abs(currentWidth - nextWidth) < 0.5 ? currentWidth : nextWidth,
     );
   }, []);
+  const handleGridScroll = useCallback((page: 'liked' | 'likedme', scrollOffset: number) => {
+    gridScrollOffsetsRef.current[page] = scrollOffset;
+    if (currentUser) {
+      patchScreenSessionState(currentUser.id, 'likes', {
+        [page === 'liked' ? 'likedScrollOffset' : 'likedMeScrollOffset']: scrollOffset,
+      });
+    }
+  }, [currentUser?.id]);
+  const handleGridItemPress = useCallback((page: 'liked' | 'likedme', index: number) => {
+    if (page === 'likedme' && likedByLocked) {
+      showPopup(t('premium.popup.message'));
+      return;
+    }
+
+    setActiveTab(page);
+    setSwipeStartIndex(index);
+  }, [likedByLocked, showPopup, t]);
 
   useTabReselect('likes', scrollActiveListToTop);
 
   useEffect(() => {
     setTabBadge('likes', likedByCount);
   }, [likedByCount]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setActiveTab('liked');
+      gridScrollOffsetsRef.current = { liked: 0, likedme: 0 };
+      return;
+    }
+
+    let cancelled = false;
+    const applyScreenState = (screenState: ReturnType<typeof readScreenSessionState<'likes'>>) => {
+      setActiveTab(screenState.activeTab);
+      gridScrollOffsetsRef.current = {
+        liked: screenState.likedScrollOffset,
+        likedme: screenState.likedMeScrollOffset,
+      };
+      requestAnimationFrame(() => {
+        if (!cancelled) {
+          pagerRef.current?.scrollToIndex({
+            index: screenState.activeTab === 'liked' ? 0 : 1,
+            animated: false,
+          });
+        }
+      });
+    };
+
+    applyScreenState(readScreenSessionState(currentUser.id, 'likes'));
+    void hydrateScreenSessionState(currentUser.id, 'likes').then((screenState) => {
+      if (!cancelled) {
+        applyScreenState(screenState);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.id]);
 
   const getUsersWithScore = useMemo(
     () => (users: typeof likedUsers) =>
@@ -165,11 +229,14 @@ export default function LikesScreen({
     }
 
     setActiveTab(preferredTab);
+    if (currentUser) {
+      patchScreenSessionState(currentUser.id, 'likes', { activeTab: preferredTab });
+    }
     pagerRef.current?.scrollToIndex({
       index: preferredTab === 'liked' ? 0 : 1,
       animated: false,
     });
-  }, [activeTab, preferredTab]);
+  }, [activeTab, currentUser?.id, preferredTab]);
 
   if (loading && usersWithScore.length === 0) {
     return (
@@ -199,6 +266,9 @@ export default function LikesScreen({
     }
 
     setActiveTab(nextTab);
+    if (currentUser) {
+      patchScreenSessionState(currentUser.id, 'likes', { activeTab: nextTab });
+    }
     pagerRef.current?.scrollToIndex({
       index: nextTab === 'liked' ? 0 : 1,
       animated: true,
@@ -247,64 +317,29 @@ export default function LikesScreen({
           if (nextTab && nextTab !== activeTab) {
             setActiveTab(nextTab);
             setSwipeStartIndex(null);
+            if (currentUser) {
+              patchScreenSessionState(currentUser.id, 'likes', { activeTab: nextTab });
+            }
           }
         }}
-        renderItem={({ item }) => {
-          const pageLocked = item.key === 'likedme' && likedByLocked;
-
-          return (
-            <View style={[styles.page, { width: pageWidth }]}>
-              <FlatList
-                ref={(instance) => {
-                  gridRefs.current[item.key] = instance;
-                }}
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={[styles.content, { paddingBottom: SCREEN_BOTTOM_SPACING + 82 }]}
-                refreshControl={
-                  <AppRefreshControl
-                    refreshing={refreshing}
-                    onRefresh={() => void refresh(true)}
-                  />
-                }
-                data={item.users}
-                key={`${item.key}-grid-${gridColumns}`}
-                keyExtractor={(entry) => entry.user.id}
-                numColumns={gridColumns}
-                columnWrapperStyle={gridColumns > 1 ? styles.gridRow : undefined}
-                initialNumToRender={9}
-                maxToRenderPerBatch={9}
-                windowSize={7}
-                ListEmptyComponent={
-                  <EmptyState
-                    icon="heart-outline"
-                    title={item.key === 'liked' ? t('likes.empty.liked.title') : t('likes.empty.likedBy.title')}
-                    description={t('likes.empty.description')}
-                  />
-                }
-                renderItem={({ item: entry, index }) => (
-                  <UserMiniCard
-                    user={entry.user}
-                    score={entry.score}
-                    concealed={pageLocked}
-                    concealLabel={t('common.premium')}
-                    disabled={false}
-                    layout="portrait"
-                    style={gridItemStyle}
-                    onPress={() => {
-                      if (pageLocked) {
-                        showPopup(t('premium.popup.message'));
-                        return;
-                      }
-
-                      setActiveTab(item.key);
-                      setSwipeStartIndex(index);
-                    }}
-                  />
-                )}
-              />
-            </View>
-          );
-        }}
+        renderItem={({ item }) => (
+          <LikesGridPage
+            columns={gridColumns}
+            concealed={item.key === 'likedme' && likedByLocked}
+            initialOffset={gridScrollOffsetsRef.current[item.key]}
+            itemStyle={gridItemStyle}
+            listRef={(instance) => {
+              gridRefs.current[item.key] = instance;
+            }}
+            pageKey={item.key}
+            pageWidth={pageWidth}
+            refreshing={refreshing}
+            users={item.users}
+            onItemPress={handleGridItemPress}
+            onRefresh={() => void refresh(true)}
+            onScrollOffset={handleGridScroll}
+          />
+        )}
       />
 
       <SwipeQuotaBar
@@ -351,34 +386,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
-  content: {
-    paddingHorizontal: SCREEN_SIDE_SPACING,
-    paddingTop: 10,
-    gap: 10,
-  },
-  page: {
-    flex: 1,
-  },
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.background,
-  },
-  loadingText: {
-    color: theme.colors.textMuted,
-    marginTop: 8,
-    ...theme.typography.roles.meta,
-    fontFamily: theme.fonts.semibold,
-  },
   header: {
     paddingHorizontal: SCREEN_SIDE_SPACING,
     paddingTop: 10,
     gap: 4,
-  },
-  gridRow: {
-    flexDirection: 'row',
-    gap: theme.layout.cardGap,
-    marginBottom: 8,
   },
 });

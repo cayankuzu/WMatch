@@ -69,15 +69,14 @@ function Read-SimpleProperties {
 $projectRoot = Resolve-FullPath -Path $ProjectRoot
 $targetRoot = [System.IO.Path]::GetFullPath($TargetRoot)
 
-if (Test-Path -LiteralPath $targetRoot) {
-    Remove-Item -LiteralPath $targetRoot -Recurse -Force
-}
-
 New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
 
 $filesToCopy = @(
     @{ Source = '.env'; Destination = '.env'; Optional = $false },
     @{ Source = 'credentials.json'; Destination = 'credentials.json'; Optional = $false },
+    @{ Source = 'credentials\ios\dist-cert.p12'; Destination = 'credentials\ios\dist-cert.p12'; Optional = $true },
+    @{ Source = 'credentials\ios\profile.mobileprovision'; Destination = 'credentials\ios\profile.mobileprovision'; Optional = $true },
+    @{ Source = 'credentials\ios\profile-associated-domains.mobileprovision'; Destination = 'credentials\ios\profile-associated-domains.mobileprovision'; Optional = $true },
     @{ Source = 'android\keystore.properties'; Destination = 'android\keystore.properties'; Optional = $false },
     @{ Source = 'android\app\debug.keystore'; Destination = 'android\app\debug.keystore'; Optional = $false },
     @{ Source = 'android\app\google-services.json'; Destination = 'android\app\google-services.json'; Optional = $true },
@@ -212,6 +211,9 @@ $projectRoot = [System.IO.Path]::GetFullPath((Resolve-Path $ProjectRoot).Path)
 $filesToRestore = @(
     @{ Source = '.env'; Destination = '.env'; Optional = $false },
     @{ Source = 'credentials.json'; Destination = 'credentials.json'; Optional = $false },
+    @{ Source = 'credentials\ios\dist-cert.p12'; Destination = 'credentials\ios\dist-cert.p12'; Optional = $true },
+    @{ Source = 'credentials\ios\profile.mobileprovision'; Destination = 'credentials\ios\profile.mobileprovision'; Optional = $true },
+    @{ Source = 'credentials\ios\profile-associated-domains.mobileprovision'; Destination = 'credentials\ios\profile-associated-domains.mobileprovision'; Optional = $true },
     @{ Source = 'android\keystore.properties'; Destination = 'android\keystore.properties'; Optional = $false },
     @{ Source = 'android\app\debug.keystore'; Destination = 'android\app\debug.keystore'; Optional = $false },
     @{ Source = 'android\app\google-services.json'; Destination = 'android\app\google-services.json'; Optional = $true },
@@ -291,12 +293,16 @@ WMatch recovery checklist
 4. Verify these files now exist inside the repo:
    - .env
    - credentials.json
+   - credentials\ios\dist-cert.p12
+   - credentials\ios\profile.mobileprovision
+   - credentials\ios\profile-associated-domains.mobileprovision
    - android\keystore.properties
    - android\keystores\*.jks
    - android\app\google-services.json
    - firebase\google-services.json
    - firebase\GoogleService-Info.plist
    - .secrets\firebase-admin\*.json
+   - .secrets\AuthKey_*.p8
 5. Run npm ci
 6. For Android release verification:
    - cd android
@@ -305,12 +311,19 @@ WMatch recovery checklist
 7. For Supabase deploy continuity, verify SUPABASE_ACCESS_TOKEN and SUPABASE_DB_PASSWORD as needed.
 '@
 
+$envProperties = Read-SimpleProperties -Path (Join-Path $projectRoot '.env')
+$serviceRolePresent = -not [string]::IsNullOrWhiteSpace($envProperties['SUPABASE_SERVICE_ROLE_KEY'])
+$databasePasswordPresent = -not [string]::IsNullOrWhiteSpace($envProperties['SUPABASE_DB_PASSWORD'])
+
 $criticalNotes = @(
     'WMatch continuity backup bundle',
     '',
     'Included in this backup:',
     '- .env',
     '- credentials.json',
+    '- credentials/ios/dist-cert.p12',
+    '- credentials/ios/profile.mobileprovision',
+    '- credentials/ios/profile-associated-domains.mobileprovision',
     '- android/keystore.properties',
     '- android/keystores/*',
     '- android/app/debug.keystore',
@@ -319,6 +332,7 @@ $criticalNotes = @(
     '- firebase/GoogleService-Info.plist',
     '- .secrets/firebase-admin/*',
     '- .secrets/eas/*',
+    '- .secrets/AuthKey_*.p8',
     '- scripts/deploy-supabase.ps1',
     '- app.json',
     '- eas.json',
@@ -332,14 +346,14 @@ $criticalNotes = @(
     '- Private GitHub repo expected: cayankuzu/WMatch',
     '- Keep this folder private and copy it to USB before any risky machine change.',
     '- Google Play App Signing app-signing key remains provider-side.',
-    '- As of 2026-07-10, SUPABASE_SERVICE_ROLE_KEY is present in local .env.',
-    '- As of 2026-07-10, SUPABASE_DB_PASSWORD is blank in local .env.',
+    "- SUPABASE_SERVICE_ROLE_KEY present in local .env: $serviceRolePresent",
+    "- SUPABASE_DB_PASSWORD present in local .env: $databasePasswordPresent",
     '- The current EAS FCM V1 key id is documented and local validated Google service account backups are included under .secrets/firebase-admin/.',
     '- If any secret changes later, rerun scripts/export-wmatch-secrests.ps1.'
 )
 
 $remainingMissingItems = @()
-if ([string]::IsNullOrWhiteSpace((Read-SimpleProperties -Path (Join-Path $projectRoot '.env'))['SUPABASE_DB_PASSWORD'])) {
+if (-not $databasePasswordPresent) {
     $remainingMissingItems += 'SUPABASE_DB_PASSWORD is still empty. It is required for `supabase db push --linked` and remote migration continuity.'
 }
 
@@ -353,7 +367,9 @@ Set-Content -LiteralPath (Join-Path $targetRoot 'CRITICAL_NOTES.txt') -Value $cr
 Set-Content -LiteralPath (Join-Path $targetRoot 'RESTORE-CHECKLIST.txt') -Value $restoreChecklist -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $targetRoot 'REMAINING-MISSING-ITEMS.txt') -Value $remainingMissingItems -Encoding ASCII
 
+$hashFilePath = Join-Path $targetRoot 'SHA256SUMS.txt'
 $hashLines = Get-ChildItem -LiteralPath $targetRoot -Recurse -File |
+    Where-Object { $_.FullName -ne $hashFilePath } |
     Sort-Object FullName |
     ForEach-Object {
         $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
@@ -361,6 +377,6 @@ $hashLines = Get-ChildItem -LiteralPath $targetRoot -Recurse -File |
         "$($hash.Hash)  $relativePath"
     }
 
-Set-Content -LiteralPath (Join-Path $targetRoot 'SHA256SUMS.txt') -Value $hashLines -Encoding ASCII
+Set-Content -LiteralPath $hashFilePath -Value $hashLines -Encoding ASCII
 
 Write-Host "WMatch desktop backup refreshed at $targetRoot"

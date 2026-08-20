@@ -1,21 +1,68 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
-import { Platform } from 'react-native';
 
 import { projectId, publicAnonKey } from './info';
 
 export const SUPABASE_URL = `https://${projectId}.supabase.co`;
 
-const NETWORK_RETRY_DELAYS_MS = [500, 1200, 2500];
-const DEFAULT_REQUEST_TIMEOUT_MS = 10000;
+const REQUEST_POLICIES = {
+  interactive: { retryDelaysMs: [250, 650], timeoutMs: 6_000 },
+  mutation: { retryDelaysMs: [500, 1_200, 2_500], timeoutMs: 10_000 },
+  background: { retryDelaysMs: [800, 2_000, 4_000], timeoutMs: 15_000 },
+} as const;
+export type RequestPolicy = keyof typeof REQUEST_POLICIES;
 const RETRIABLE_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const IS_TEST_RUNTIME = process.env.NODE_ENV === 'test';
+const INSTALLATION_ID_KEY = 'wmatch.installation-id.v1';
 const SECURE_STORE_OPTIONS = {
   keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
   keychainService: 'wmatch.auth',
 } satisfies SecureStore.SecureStoreOptions;
+let installationIdPromise: Promise<string> | null = null;
+
+export class RequestTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Request timed out after ${timeoutMs}ms.`);
+    this.name = 'TimeoutError';
+  }
+}
+
+function createInstallationId() {
+  const bytes = new Uint8Array(16);
+
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function loadInstallationId() {
+  if (!(await SecureStore.isAvailableAsync())) {
+    return createInstallationId();
+  }
+
+  const storedId = await SecureStore.getItemAsync(INSTALLATION_ID_KEY, SECURE_STORE_OPTIONS);
+
+  if (storedId && /^[a-f0-9]{32}$/.test(storedId)) {
+    return storedId;
+  }
+
+  const installationId = createInstallationId();
+  await SecureStore.setItemAsync(INSTALLATION_ID_KEY, installationId, SECURE_STORE_OPTIONS);
+  return installationId;
+}
+
+export function getInstallationId() {
+  installationIdPromise ??= loadInstallationId().catch(() => createInstallationId());
+  return installationIdPromise;
+}
 
 function wait(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -82,14 +129,14 @@ function getRetryAfterMs(response: Response) {
   return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : null;
 }
 
-function getRetryDelay(attempt: number, response?: Response) {
+function getRetryDelay(retryDelaysMs: readonly number[], attempt: number, response?: Response) {
   const retryAfterMs = response ? getRetryAfterMs(response) : null;
 
   if (retryAfterMs != null) {
     return Math.min(retryAfterMs, 8000);
   }
 
-  const baseDelay = NETWORK_RETRY_DELAYS_MS[attempt] ?? NETWORK_RETRY_DELAYS_MS.at(-1) ?? 1000;
+  const baseDelay = retryDelaysMs[attempt] ?? retryDelaysMs.at(-1) ?? 1000;
   return baseDelay + Math.round(Math.random() * 180);
 }
 
@@ -114,15 +161,30 @@ function isTransientNetworkError(error: unknown) {
   );
 }
 
-export async function fetchWithRetry(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+export async function fetchWithRetry(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  requestedPolicy?: RequestPolicy,
+): Promise<Response> {
   let lastError: unknown = null;
   const retryAllowed = canRetryRequest(init);
+  const method = getRequestMethod(init);
+  const policyName = requestedPolicy ?? (IDEMPOTENT_METHODS.has(method) ? 'interactive' : 'mutation');
+  const policy = REQUEST_POLICIES[policyName];
 
-  for (let attempt = 0; attempt <= NETWORK_RETRY_DELAYS_MS.length; attempt += 1) {
+  for (let attempt = 0; attempt <= policy.retryDelaysMs.length; attempt += 1) {
     const timeoutController = new AbortController();
-    const timeoutId = setTimeout(() => timeoutController.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+    let timedOut = false;
+    let callerAborted = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      timeoutController.abort();
+    }, policy.timeoutMs);
     const callerSignal = init?.signal;
-    const abortFromCaller = () => timeoutController.abort();
+    const abortFromCaller = () => {
+      callerAborted = true;
+      timeoutController.abort();
+    };
 
     if (callerSignal) {
       if (callerSignal.aborted) {
@@ -141,25 +203,29 @@ export async function fetchWithRetry(input: RequestInfo | URL, init?: RequestIni
       if (
         !retryAllowed ||
         !RETRIABLE_HTTP_STATUSES.has(response.status) ||
-        attempt === NETWORK_RETRY_DELAYS_MS.length
+        attempt === policy.retryDelaysMs.length
       ) {
         return response;
       }
 
-      await wait(getRetryDelay(attempt, response), callerSignal ?? undefined);
+      await wait(getRetryDelay(policy.retryDelaysMs, attempt, response), callerSignal ?? undefined);
     } catch (error) {
-      lastError = error;
+      const requestError = timedOut && isAbortError(error)
+        ? new RequestTimeoutError(policy.timeoutMs)
+        : error;
+      lastError = requestError;
 
       if (
-        isAbortError(error) ||
+        callerAborted ||
+        callerSignal?.aborted ||
         !retryAllowed ||
-        !isTransientNetworkError(error) ||
-        attempt === NETWORK_RETRY_DELAYS_MS.length
+        (!timedOut && !isTransientNetworkError(error)) ||
+        attempt === policy.retryDelaysMs.length
       ) {
-        throw error;
+        throw requestError;
       }
 
-      await wait(getRetryDelay(attempt), callerSignal ?? undefined);
+      await wait(getRetryDelay(policy.retryDelaysMs, attempt), callerSignal ?? undefined);
     } finally {
       clearTimeout(timeoutId);
       callerSignal?.removeEventListener('abort', abortFromCaller);
@@ -171,10 +237,6 @@ export async function fetchWithRetry(input: RequestInfo | URL, init?: RequestIni
 
 const secureAuthStorage = {
   async getItem(key: string) {
-    if (Platform.OS === 'web') {
-      return AsyncStorage.getItem(key);
-    }
-
     if (!(await SecureStore.isAvailableAsync())) {
       await AsyncStorage.removeItem(key).catch(() => undefined);
       return null;
@@ -196,11 +258,6 @@ const secureAuthStorage = {
     return legacyValue;
   },
   async setItem(key: string, value: string) {
-    if (Platform.OS === 'web') {
-      await AsyncStorage.setItem(key, value);
-      return;
-    }
-
     if (!(await SecureStore.isAvailableAsync())) {
       await AsyncStorage.removeItem(key).catch(() => undefined);
       throw new Error('Secure auth storage is unavailable on this device.');
@@ -212,7 +269,7 @@ const secureAuthStorage = {
   async removeItem(key: string) {
     await AsyncStorage.removeItem(key).catch(() => undefined);
 
-    if (Platform.OS !== 'web' && (await SecureStore.isAvailableAsync())) {
+    if (await SecureStore.isAvailableAsync()) {
       await SecureStore.deleteItemAsync(key, SECURE_STORE_OPTIONS);
     }
   },
@@ -241,5 +298,18 @@ export async function getAuthHeaders() {
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${session?.access_token ?? ''}`,
+    'X-WMatch-Install-Id': await getInstallationId(),
+  };
+}
+
+export async function getPublicApiHeaders() {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${session?.access_token ?? publicAnonKey}`,
+    'X-WMatch-Install-Id': await getInstallationId(),
   };
 }

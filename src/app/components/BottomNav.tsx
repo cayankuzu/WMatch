@@ -88,6 +88,7 @@ function BottomNav({
               compact={compactLabels}
               icon={item.icon}
               label={t(item.labelKey)}
+              testID={`bottom-nav-${item.id}`}
               onIntent={() => onTabIntent?.(item.id)}
               onPress={() => {
                 if (isActive) {

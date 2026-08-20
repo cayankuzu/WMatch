@@ -77,7 +77,7 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
   },
   optionCompact: {
-    minHeight: 36,
+    minHeight: theme.layout.controlMinUnified,
     paddingHorizontal: 8,
   },
   optionActive: {

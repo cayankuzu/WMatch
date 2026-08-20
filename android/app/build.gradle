@@ -143,6 +143,8 @@ def enableMinifyInReleaseBuilds = (findProperty('android.enableMinifyInReleaseBu
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+apply from: new File(["node", "--print", "require('path').dirname(require.resolve('@sentry/react-native/package.json'))"].execute().text.trim(), "sentry.gradle")
+
 android {
     ndkVersion rootProject.ext.ndkVersion
 
@@ -154,8 +156,8 @@ android {
         applicationId 'com.wmatch.app'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 46
-        versionName "1.0.45"
+        versionCode 51
+        versionName "1.0.50"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -180,10 +182,6 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            if (resolveReleaseStoreFile() == null || !resolveReleaseStoreFile().exists()) {
-                throw new GradleException("Release signing config is missing. Create android/keystore.properties before building release.")
-            }
-
             signingConfig signingConfigs.release
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()

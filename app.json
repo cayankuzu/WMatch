@@ -2,14 +2,14 @@
   "expo": {
     "name": "WMatch",
     "slug": "wmatch",
-    "version": "1.0.45",
+    "version": "1.0.50",
     "icon": "./assets/branding/icon-wm-normalized.png",
     "orientation": "default",
     "userInterfaceStyle": "dark",
     "scheme": "wmatch",
     "ios": {
       "bundleIdentifier": "com.wmatch.app",
-      "buildNumber": "48",
+      "buildNumber": "53",
       "googleServicesFile": "./firebase/GoogleService-Info.plist",
       "supportsTablet": true,
       "associatedDomains": [
@@ -39,7 +39,7 @@
     },
     "android": {
       "package": "com.wmatch.app",
-      "versionCode": 46,
+      "versionCode": 51,
       "googleServicesFile": "./firebase/google-services.json",
       "predictiveBackGestureEnabled": true,
       "adaptiveIcon": {
@@ -69,9 +69,6 @@
         }
       ]
     },
-    "web": {
-      "favicon": "./assets/branding/icon-wm-normalized.png"
-    },
     "plugins": [
       [
         "expo-image-picker",
@@ -96,7 +93,18 @@
         }
       ],
       "expo-dev-client",
-      "expo-font",
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "./node_modules/@expo-google-fonts/inter/400Regular/Inter_400Regular.ttf",
+            "./node_modules/@expo-google-fonts/inter/500Medium/Inter_500Medium.ttf",
+            "./node_modules/@expo-google-fonts/inter/600SemiBold/Inter_600SemiBold.ttf",
+            "./node_modules/@expo-google-fonts/inter/700Bold/Inter_700Bold.ttf",
+            "./node_modules/@expo-google-fonts/inter/800ExtraBold/Inter_800ExtraBold.ttf"
+          ]
+        }
+      ],
       [
         "expo-splash-screen",
         {

@@ -1,12 +1,12 @@
 import { useEffect } from 'react';
 
-import { preloadChatList, preloadChatThread } from '../../services/chatCache';
+import { preloadChatList } from '../../services/chatCache';
+import { hydrateScreenSessionState } from '../../services/screenSessionState';
 import {
   cancelQueuedLaunchTasks,
   scheduleLaunchTask,
   type LaunchTaskPriority,
 } from '../../services/launchScheduler';
-import { prefetchProfilePhotos } from '../../services/profileImagePrefetch';
 import { loadTabWarmupOrder } from '../../services/tabUsage';
 import { telemetry } from '../../services/telemetry';
 import type { AppTab, AppUser } from '../../shared/types';
@@ -14,7 +14,7 @@ import { getAppState, subscribeToForeground } from '../../shared/utils/appLifecy
 import { preloadDiscoveryData } from './useDiscoveryData';
 import { preloadSwipeQuota } from './useSwipeQuota';
 
-const FIRST_FRAME_GRACE_MS = 250;
+const FIRST_USEFUL_CONTENT_GRACE_MS = 450;
 
 function waitForIdle() {
   return new Promise<void>((resolve) => {
@@ -27,53 +27,57 @@ function waitForIdle() {
   });
 }
 
-async function preloadTabResources(user: AppUser, tab: AppTab) {
+async function preloadTabResources(userId: string, tab: AppTab) {
   if (tab === 'match') {
-    await preloadDiscoveryData('watch', user.id);
-    await preloadSwipeQuota(user.id);
+    await Promise.all([
+      preloadDiscoveryData('watch', userId),
+      preloadSwipeQuota(userId),
+    ]);
     return;
   }
 
   if (tab === 'chat') {
-    const { chats } = await preloadChatList(user.id);
-    for (const chat of chats.slice(0, 1)) {
-      await preloadChatThread(user.id, chat.userId);
-    }
+    await Promise.all([
+      preloadChatList(userId),
+      hydrateScreenSessionState(userId, 'chat'),
+    ]);
     return;
   }
 
   if (tab === 'likes') {
-    await preloadDiscoveryData('likes', user.id);
-    await preloadSwipeQuota(user.id);
+    await Promise.all([
+      preloadDiscoveryData('likes', userId),
+      preloadSwipeQuota(userId),
+      hydrateScreenSessionState(userId, 'likes'),
+    ]);
     return;
   }
 
   if (tab === 'compatibility') {
-    await preloadDiscoveryData('compatibility', user.id);
-    await preloadSwipeQuota(user.id);
+    await Promise.all([
+      preloadDiscoveryData('compatibility', userId),
+      preloadSwipeQuota(userId),
+    ]);
     return;
-  }
-
-  if (tab === 'profile') {
-    await prefetchProfilePhotos([user.photos], 2, 'predictive');
   }
 }
 
 export function preloadTabData(
-  user: AppUser,
+  userId: string,
   tab: AppTab,
   priority: LaunchTaskPriority = 'intent',
 ) {
   return scheduleLaunchTask({
-    key: `tab:${user.id}:${tab}`,
+    key: `tab:${userId}:${tab}`,
     priority,
-    run: () => preloadTabResources(user, tab),
+    run: () => preloadTabResources(userId, tab),
   });
 }
 
 export default function useAppDataWarmup(user: AppUser | null, currentTab: AppTab) {
   useEffect(() => {
-    if (!user) {
+    const userId = user?.id;
+    if (!userId) {
       return;
     }
 
@@ -86,41 +90,43 @@ export default function useAppDataWarmup(user: AppUser | null, currentTab: AppTa
       }
 
       running = true;
-      const warmupOrder = await loadTabWarmupOrder(user.id, currentTab);
+      try {
+        const warmupOrder = await loadTabWarmupOrder(userId, currentTab);
 
-      for (const tab of warmupOrder) {
-        await waitForIdle();
-        if (cancelled || getAppState() !== 'active') {
-          break;
+        for (const tab of warmupOrder) {
+          await waitForIdle();
+          if (cancelled || getAppState() !== 'active') {
+            break;
+          }
+
+          const span = telemetry.startSpan('app.data_warmup');
+          try {
+            await preloadTabData(userId, tab, 'idle');
+            span.end({ tab, outcome: 'success' });
+          } catch (error) {
+            span.end({ tab, outcome: 'error' });
+            telemetry.captureException(error, { operation: 'background_screen_warmup', tab });
+          }
         }
 
-        const span = telemetry.startSpan('app.data_warmup');
-        try {
-          await preloadTabData(user, tab, 'predictive');
-          span.end({ tab, outcome: 'success' });
-        } catch (error) {
-          span.end({ tab, outcome: 'error' });
-          console.warn('Background screen warmup failed', {
-            tab,
-            message: error instanceof Error ? error.message : 'Unknown warmup error',
-          });
+        if (!cancelled) {
+          telemetry.markStartupMilestone('background_warmup_ready');
         }
-      }
-
-      running = false;
-      if (!cancelled) {
-        telemetry.markStartupMilestone('background_warmup_ready');
+      } catch (error) {
+        telemetry.captureException(error, { operation: 'background_warmup_order' });
+      } finally {
+        running = false;
       }
     };
 
-    const startTimer = setTimeout(() => void run(), FIRST_FRAME_GRACE_MS);
+    const startTimer = setTimeout(() => void run(), FIRST_USEFUL_CONTENT_GRACE_MS);
     const unsubscribeForeground = subscribeToForeground(() => void run());
 
     return () => {
       cancelled = true;
       clearTimeout(startTimer);
-      cancelQueuedLaunchTasks(`tab:${user.id}:`);
+      cancelQueuedLaunchTasks(`tab:${userId}:`);
       unsubscribeForeground();
     };
-  }, [currentTab, user]);
+  }, [currentTab, user?.id]);
 }

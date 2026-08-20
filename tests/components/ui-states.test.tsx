@@ -79,7 +79,7 @@ describe('shared UI states', () => {
         </LocalizationProvider>
       </SafeAreaProvider>,
     );
-    let tabList = screen.getByRole('tab', { name: 'Watch' }).parent;
+    let tabList = screen.getByRole('tab', { name: 'İzle' }).parent;
     while (tabList && tabList.props.accessibilityRole !== 'tablist') {
       tabList = tabList.parent;
     }

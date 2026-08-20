@@ -169,7 +169,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    minHeight: 46,
+    minHeight: theme.layout.controlMinUnified,
   },
   rowPressed: {
     backgroundColor: theme.colors.surfaceStrong,

@@ -1,11 +1,10 @@
 export const performanceBudgets = {
-  reactFirstLayoutMs: 1200,
-  sessionReadyMs: 1800,
-  firstUsefulContentMs: 2500,
-  cachedScreenReadyMs: 300,
-  networkScreenReadyMs: 1000,
-  tabCommitMs: 300,
-  pressFeedbackMs: 50,
+  reactFirstLayoutMs: 900,
+  sessionReadyMs: 1200,
+  firstUsefulContentMs: 1800,
+  warmResumeMs: 500,
+  apiRequestMs: 600,
+  tabCommitMs: 150,
 } as const;
 
 export type PerformanceBudgetName = keyof typeof performanceBudgets;

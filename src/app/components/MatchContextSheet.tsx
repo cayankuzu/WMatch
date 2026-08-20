@@ -22,10 +22,6 @@ interface MatchContextSheetProps {
   onMovieClick?: (movie: Movie) => void;
 }
 
-function getDateLocale(locale: 'tr' | 'en') {
-  return locale === 'tr' ? 'tr-TR' : 'en-US';
-}
-
 export default function MatchContextSheet({
   visible,
   context,
@@ -34,7 +30,7 @@ export default function MatchContextSheet({
   onClose,
   onMovieClick,
 }: MatchContextSheetProps) {
-  const { locale, t } = useLocalization();
+  const { t } = useLocalization();
   const [matchedMovie, setMatchedMovie] = useState<Movie | null>(null);
   const [commonFavorites, setCommonFavorites] = useState<Movie[]>([]);
   const [commonWatched, setCommonWatched] = useState<Movie[]>([]);
@@ -124,7 +120,7 @@ export default function MatchContextSheet({
       return t('match.context.dateMissing');
     }
 
-    return date.toLocaleString(getDateLocale(locale), {
+    return date.toLocaleString('tr-TR', {
       day: '2-digit',
       month: 'long',
       year: 'numeric',

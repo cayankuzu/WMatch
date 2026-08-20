@@ -28,7 +28,7 @@ assertEqual(appConfig?.version, packageJson.version, 'Expo version');
 assertEqual(gradleVersionName, packageJson.version, 'Android Gradle versionName');
 assertEqual(edgeReleaseVersion, packageJson.version, 'Edge release version');
 assertEqual(String(appConfig?.android?.versionCode), gradleVersionCode, 'Android versionCode');
-assertEqual(requiredSchemaVersion, '20260720012500', 'required schema version');
+assertEqual(requiredSchemaVersion, '20260819190000', 'required schema version');
 
 if (!appConfig?.ios?.buildNumber || !/^\d+$/.test(String(appConfig.ios.buildNumber))) {
   fail('iOS buildNumber must be numeric and present');

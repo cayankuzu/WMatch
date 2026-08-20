@@ -8,6 +8,7 @@ import { useLocalization } from '../../context/LocalizationContext';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
+  surface?: string;
 }
 
 interface ErrorBoundaryState {
@@ -48,7 +49,7 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
   componentDidCatch(error: Error, info: ErrorInfo) {
     telemetry.captureException(error, {
       componentStack: info.componentStack,
-      surface: 'react-error-boundary',
+      surface: this.props.surface ?? 'react-error-boundary',
     });
   }
 

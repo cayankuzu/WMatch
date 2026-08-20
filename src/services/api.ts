@@ -7,189 +7,64 @@ import type {
   ApiUser,
   ChatSettings,
   CompatibilityDiscoveryEntry,
-  MatchContextSnapshot,
   MatchSourceType,
   MatchStatus,
   SwipeQuotaKind,
   SwipeQuotaState,
 } from '../shared/types';
 import { syncServerTimeFromHeaders } from '../shared/utils/serverTime';
+import {
+  isApiChat,
+  isApiChatThread,
+  isApiMatch,
+  isApiMessage,
+  isApiUser,
+  isCompatibilityDiscoveryEntry,
+} from '../shared/utils/apiValidation';
 import { BoundedMap } from '../shared/utils/boundedMap';
 import { registerSessionCache } from '../shared/utils/sessionCache';
+import { performanceBudgets } from '../shared/constants/performance';
 import { telemetry } from './telemetry';
 import { normalizeChat } from './chatState';
+import {
+  ApiRequestError,
+  ContractViolationError,
+  NetworkUnavailableError,
+  RequestTimeoutError,
+  SessionExpiredError,
+  type ApiErrorCode,
+} from './api/errors';
+import type {
+  ChatListResponse,
+  CompatibilityDiscoveryResponse,
+  HealthStatus,
+  LikeUserResult,
+  LikesDiscoveryResponse,
+  LiveNowResponse,
+  SubmitUserReportPayload,
+  WatchDiscoveryResponse,
+} from './api/contracts';
+import { assertArrayField, assertObjectPayload, assertValidatedPayload } from './api/validation';
 
 export type { ApiChat, ApiChatThread, ApiMatch, ApiMessage, ApiUser } from '../shared/types';
-
-export interface SubmitUserReportPayload {
-  targetUserId: string;
-  reasonCode: string;
-  details: string;
-  matchContext?: MatchContextSnapshot | null;
-  clientContext?: Record<string, unknown>;
-}
-
-export interface LikeUserResult {
-  matched: boolean;
-  success: boolean;
-  errorMessage?: string;
-  rewardLikes?: number;
-  quota?: SwipeQuotaState;
-  matchedUser?: ApiUser | null;
-}
-
-export interface LikesDiscoveryResponse {
-  likedUsers: ApiUser[];
-  likedByUsers: ApiUser[];
-  likedByUserIds: string[];
-  likedByCount: number;
-  likedByLocked: boolean;
-}
-
-export interface LiveNowResponse {
-  users: ApiUser[];
-  pageInfo: {
-    hasMore: boolean;
-    nextCursor: string | null;
-  };
-}
-
-export interface CompatibilityDiscoveryResponse {
-  entries: CompatibilityDiscoveryEntry[];
-  pageInfo: {
-    hasMore: boolean;
-    nextCursor: string | null;
-  };
-}
-
-export interface WatchDiscoveryResponse {
-  users: ApiUser[];
-  pageInfo: {
-    hasMore: boolean;
-    nextCursor: string | null;
-  };
-}
-
-export interface ChatListResponse {
-  chats: ApiChat[];
-  pageInfo: {
-    hasMore: boolean;
-    nextCursor: string | null;
-  };
-}
-
-export type ApiErrorCode =
-  | 'HTTP_ERROR'
-  | 'NETWORK_UNAVAILABLE'
-  | 'REQUEST_TIMEOUT'
-  | 'SESSION_EXPIRED'
-  | 'CONTRACT_VIOLATION';
-
-export interface ApiRequestErrorOptions {
-  status?: number;
-  message: string;
-  code?: ApiErrorCode;
-  requestId?: string | null;
-  retryable?: boolean;
-  userMessageKey?: string;
-  cause?: unknown;
-}
-
-export class ApiRequestError extends Error {
-  status: number;
-  code: ApiErrorCode;
-  requestId: string | null;
-  retryable: boolean;
-  userMessageKey: string;
-  cause?: unknown;
-
-  constructor({
-    status = 0,
-    message,
-    code = 'HTTP_ERROR',
-    requestId = null,
-    retryable,
-    userMessageKey,
-    cause,
-  }: ApiRequestErrorOptions) {
-    super(message);
-    this.name = 'ApiRequestError';
-    this.status = status;
-    this.code = code;
-    this.requestId = requestId;
-    this.retryable = retryable ?? (status >= 500 || code === 'NETWORK_UNAVAILABLE' || code === 'REQUEST_TIMEOUT');
-    this.userMessageKey = userMessageKey ?? getDefaultUserMessageKey(code, status);
-    this.cause = cause;
-  }
-}
-
-export class NetworkUnavailableError extends ApiRequestError {
-  constructor(message: string, requestId: string, cause?: unknown) {
-    super({
-      message,
-      code: 'NETWORK_UNAVAILABLE',
-      requestId,
-      retryable: true,
-      userMessageKey: 'data.error.network',
-      cause,
-    });
-    this.name = 'NetworkUnavailableError';
-  }
-}
-
-export class RequestTimeoutError extends ApiRequestError {
-  constructor(message: string, requestId: string, cause?: unknown) {
-    super({
-      message,
-      code: 'REQUEST_TIMEOUT',
-      requestId,
-      retryable: true,
-      userMessageKey: 'data.error.timeout',
-      cause,
-    });
-    this.name = 'RequestTimeoutError';
-  }
-}
-
-export class SessionExpiredError extends ApiRequestError {
-  constructor(message: string, requestId: string | null, cause?: unknown) {
-    super({
-      status: 401,
-      message,
-      code: 'SESSION_EXPIRED',
-      requestId,
-      retryable: false,
-      userMessageKey: 'data.error.sessionExpired',
-      cause,
-    });
-    this.name = 'SessionExpiredError';
-  }
-}
-
-export class ContractViolationError extends ApiRequestError {
-  constructor(message: string, requestId: string | null, cause?: unknown) {
-    super({
-      status: 502,
-      message,
-      code: 'CONTRACT_VIOLATION',
-      requestId,
-      retryable: false,
-      userMessageKey: 'data.error.contract',
-      cause,
-    });
-    this.name = 'ContractViolationError';
-  }
-}
-
-export interface HealthStatus {
-  ok: boolean;
-  apiVersion: string;
-  release: string;
-  requiredSchema: string;
-  serverTime: string;
-  requestId: string;
-  schemaReady: boolean;
-}
+export {
+  ApiRequestError,
+  ContractViolationError,
+  NetworkUnavailableError,
+  RequestTimeoutError,
+  SessionExpiredError,
+} from './api/errors';
+export type { ApiErrorCode, ApiRequestErrorOptions } from './api/errors';
+export type {
+  ChatListResponse,
+  CompatibilityDiscoveryResponse,
+  HealthStatus,
+  LikeUserResult,
+  LikesDiscoveryResponse,
+  LiveNowResponse,
+  SubmitUserReportPayload,
+  WatchDiscoveryResponse,
+} from './api/contracts';
 
 const mutationFlightMap = new BoundedMap<string, Promise<unknown>>(128);
 const mutationCooldownMap = new BoundedMap<string, number>(256);
@@ -205,7 +80,7 @@ const READ_CACHE_TTL_MS = 3500;
 function buildFallbackApiUser(userId: string): ApiUser {
   return {
     id: userId,
-    name: 'Kullanici',
+    name: 'Kullanıcı',
     age: 18,
     showAgeOnProfile: false,
     gender: 'other',
@@ -333,32 +208,35 @@ function createClientRequestId() {
   return `client-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
-function getRequestMethod(init?: RequestInit) {
-  return (init?.method ?? 'GET').toUpperCase();
+function getMetricPath(path: string) {
+  return path
+    .split('?')[0]
+    .replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, ':id')
+    .replace(/\/\d+(?=\/|$)/g, '/:id');
 }
 
-function getDefaultUserMessageKey(code: ApiErrorCode, status: number) {
-  if (code === 'NETWORK_UNAVAILABLE') {
-    return 'data.error.network';
-  }
+function recordApiDuration(
+  path: string,
+  method: string,
+  startedAt: number,
+  outcome: 'success' | 'http_error' | 'transport_error' | 'contract_error',
+  status?: number,
+) {
+  telemetry.recordDuration(
+    'api.request',
+    Date.now() - startedAt,
+    performanceBudgets.apiRequestMs,
+    {
+      method,
+      outcome,
+      path: getMetricPath(path),
+      status,
+    },
+  );
+}
 
-  if (code === 'REQUEST_TIMEOUT') {
-    return 'data.error.timeout';
-  }
-
-  if (code === 'SESSION_EXPIRED' || status === 401 || status === 403) {
-    return 'data.error.sessionExpired';
-  }
-
-  if (code === 'CONTRACT_VIOLATION') {
-    return 'data.error.contract';
-  }
-
-  if (status >= 500 || status === 429) {
-    return 'data.error.server';
-  }
-
-  return 'data.error.generic';
+function getRequestMethod(init?: RequestInit) {
+  return (init?.method ?? 'GET').toUpperCase();
 }
 
 function getApiErrorCode(status: number): ApiErrorCode {
@@ -411,33 +289,6 @@ function parseJsonPayload<T>(rawPayload: string, requestId: string | null, path:
   }
 }
 
-function assertObjectPayload<T extends Record<string, unknown>>(
-  payload: unknown,
-  requestId: string | null,
-  path: string,
-): T {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new ContractViolationError(`Invalid response payload for ${path}`, requestId);
-  }
-
-  return payload as T;
-}
-
-function assertArrayField<T>(
-  payload: Record<string, unknown>,
-  field: string,
-  requestId: string | null,
-  path: string,
-): T[] {
-  const value = payload[field];
-
-  if (!Array.isArray(value)) {
-    throw new ContractViolationError(`Missing array field "${field}" in ${path}`, requestId);
-  }
-
-  return value as T[];
-}
-
 function redactPayload(payload: string) {
   if (!payload.trim()) {
     return '<empty>';
@@ -484,6 +335,7 @@ function redactPayload(payload: string) {
 }
 
 async function request<T>(path: string, init?: RequestInit, authHeaders?: HeadersInit): Promise<T> {
+  const startedAt = Date.now();
   const headers = authHeaders ?? await getAuthHeaders();
   const method = getRequestMethod(init);
   const requestHeaders = new Headers(headers);
@@ -508,6 +360,7 @@ async function request<T>(path: string, init?: RequestInit, authHeaders?: Header
       headers: requestHeaders,
     });
   } catch (error) {
+    recordApiDuration(path, method, startedAt, 'transport_error');
     throw normalizeTransportError(error, path, method, clientRequestId);
   }
 
@@ -558,11 +411,21 @@ async function request<T>(path: string, init?: RequestInit, authHeaders?: Header
       requestId: responseRequestId,
     });
 
+    recordApiDuration(path, method, startedAt, 'http_error', response.status);
+
     throw apiError;
   }
 
   const rawPayload = await response.text();
-  return parseJsonPayload<T>(rawPayload, responseRequestId, path);
+  let payload: T;
+  try {
+    payload = parseJsonPayload<T>(rawPayload, responseRequestId, path);
+  } catch (error) {
+    recordApiDuration(path, method, startedAt, 'contract_error', response.status);
+    throw error;
+  }
+  recordApiDuration(path, method, startedAt, 'success', response.status);
+  return payload;
 }
 
 function invalidateReadCache(prefixes: string[]) {
@@ -693,7 +556,7 @@ function isWithinCooldown(key: string, cooldownMs: number) {
 export async function getUsers(activeOnly = false): Promise<ApiUser[]> {
   const path = `/users${activeOnly ? '?activeOnly=1' : ''}`;
   const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers));
-  return assertArrayField<ApiUser>(assertObjectPayload(data, null, path), 'users', null, path);
+  return assertArrayField<ApiUser>(assertObjectPayload(data, null, path), 'users', null, path, isApiUser);
 }
 
 function buildQueryString(params: Record<string, string | number | null | undefined>) {
@@ -716,7 +579,7 @@ export async function getLiveNowUsers(options: { cursor?: string | null; limit?:
   const pageInfo = assertObjectPayload(payload.pageInfo, null, path) as LiveNowResponse['pageInfo'];
 
   return {
-    users: assertArrayField<ApiUser>(payload, 'users', null, path),
+    users: assertArrayField<ApiUser>(payload, 'users', null, path, isApiUser),
     pageInfo: {
       hasMore: pageInfo.hasMore === true,
       nextCursor: typeof pageInfo.nextCursor === 'string' ? pageInfo.nextCursor : null,
@@ -733,7 +596,7 @@ export async function getWatchDiscoveryUsers(
   const pageInfo = assertObjectPayload(payload.pageInfo, null, path) as WatchDiscoveryResponse['pageInfo'];
 
   return {
-    users: assertArrayField<ApiUser>(payload, 'users', null, path),
+    users: assertArrayField<ApiUser>(payload, 'users', null, path, isApiUser),
     pageInfo: {
       hasMore: pageInfo.hasMore === true,
       nextCursor: typeof pageInfo.nextCursor === 'string' ? pageInfo.nextCursor : null,
@@ -750,7 +613,13 @@ export async function getCompatibilityDiscoveryEntries(
   const pageInfo = assertObjectPayload(payload.pageInfo, null, path) as CompatibilityDiscoveryResponse['pageInfo'];
 
   return {
-    entries: assertArrayField<CompatibilityDiscoveryEntry>(payload, 'entries', null, path),
+    entries: assertArrayField<CompatibilityDiscoveryEntry>(
+      payload,
+      'entries',
+      null,
+      path,
+      isCompatibilityDiscoveryEntry,
+    ),
     pageInfo: {
       hasMore: pageInfo.hasMore === true,
       nextCursor: typeof pageInfo.nextCursor === 'string' ? pageInfo.nextCursor : null,
@@ -762,7 +631,7 @@ export async function getLikesDiscovery(force = false): Promise<LikesDiscoveryRe
   const path = '/discovery/likes';
   const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers), force);
   const payload = assertObjectPayload(data, null, path);
-  const likedByUsers = assertArrayField<ApiUser>(payload, 'likedByUsers', null, path);
+  const likedByUsers = assertArrayField<ApiUser>(payload, 'likedByUsers', null, path, isApiUser);
   const rawLikedByUserIds = Array.isArray(payload.likedByUserIds) ? payload.likedByUserIds : [];
   const likedByUserIds = rawLikedByUserIds.filter((item): item is string => typeof item === 'string');
   const likedByCount = typeof payload.likedByCount === 'number'
@@ -770,7 +639,7 @@ export async function getLikesDiscovery(force = false): Promise<LikesDiscoveryRe
     : Math.max(likedByUsers.length, likedByUserIds.length);
 
   return {
-    likedUsers: assertArrayField<ApiUser>(payload, 'likedUsers', null, path),
+    likedUsers: assertArrayField<ApiUser>(payload, 'likedUsers', null, path, isApiUser),
     likedByUsers,
     likedByUserIds: likedByUserIds.length > 0 ? likedByUserIds : likedByUsers.map((user) => user.id),
     likedByCount,
@@ -923,7 +792,7 @@ export async function restoreIncomingLike(userId: string): Promise<boolean> {
 export async function getMatches(): Promise<ApiMatch[]> {
   const path = '/matches';
   const data = await runReadSingleFlight(path, (headers) => request<Record<string, unknown>>(path, undefined, headers));
-  return assertArrayField<ApiMatch>(assertObjectPayload(data, null, path), 'matches', null, path);
+  return assertArrayField<ApiMatch>(assertObjectPayload(data, null, path), 'matches', null, path, isApiMatch);
 }
 
 export async function updateMatchStatus(
@@ -974,19 +843,20 @@ export async function getChatThread(
 
   const suffix = params.toString() ? `?${params}` : '';
   const path = `/messages/${userId}${suffix}`;
-  const thread = await runReadSingleFlight(path, (headers) => request<ApiChatThread>(path, undefined, headers));
-  return thread ? normalizeChatThread(thread) : null;
+  const thread = await runReadSingleFlight(path, (headers) => request<unknown>(path, undefined, headers));
+  return thread ? normalizeChatThread(assertValidatedPayload(thread, isApiChatThread, null, path)) : null;
 }
 
 export async function sendMessage(userId: string, text: string, clientMessageId?: string): Promise<ApiMessage> {
-  const data = await request<{ message: ApiMessage }>(`/messages/${userId}`, {
+  const path = `/messages/${userId}`;
+  const data = await request<Record<string, unknown>>(path, {
     method: 'POST',
     headers: clientMessageId ? { 'Idempotency-Key': `message:${clientMessageId}` } : undefined,
     body: JSON.stringify({ text: text.trim(), clientMessageId }),
   });
 
   invalidateReadCache(['/chats', `/messages/${userId}`]);
-  return data.message;
+  return assertValidatedPayload(data.message, isApiMessage, null, path);
 }
 
 export async function markMessageRead(messageId: string): Promise<void> {
@@ -1037,12 +907,13 @@ export async function getChats(
     : assertObjectPayload(payload.pageInfo, null, path);
 
   return {
-    chats: chats.map((chat) =>
-      normalizeChat({
+    chats: chats.map((chat) => {
+      const normalized = normalizeChat({
         ...chat,
         user: chat.user ?? buildFallbackApiUser(chat.userId),
-      }),
-    ),
+      });
+      return assertValidatedPayload(normalized, isApiChat, null, path);
+    }),
     pageInfo: {
       hasMore: pageInfo.hasMore === true,
       nextCursor: typeof pageInfo.nextCursor === 'string' ? pageInfo.nextCursor : null,
@@ -1097,7 +968,7 @@ export async function unblockUser(userId: string): Promise<void> {
 export async function getBlockedUsers(): Promise<ApiUser[]> {
   const path = '/blocks';
   const data = await request<Record<string, unknown>>(path);
-  return assertArrayField<ApiUser>(assertObjectPayload(data, null, path), 'users', null, path);
+  return assertArrayField<ApiUser>(assertObjectPayload(data, null, path), 'users', null, path, isApiUser);
 }
 
 export async function markNotificationEventRead(eventId: string): Promise<void> {

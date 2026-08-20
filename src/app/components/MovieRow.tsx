@@ -6,7 +6,7 @@ import { getMovieKey, type Movie } from '../../services/tmdb';
 import { SCREEN_SIDE_SPACING } from '../../shared/constants';
 import type { ViewerPreview } from '../../shared/types';
 import { theme } from '../../shared/theme';
-import MovieCard from './MovieCard';
+import MovieCard, { getMovieCardWidth } from './MovieCard';
 import { SkeletonBlock } from './ui/Skeleton';
 
 interface MovieRowProps {
@@ -42,13 +42,20 @@ function MovieRow({
   emptyMessage,
   loading = false,
 }: MovieRowProps) {
+  const itemLength = getMovieCardWidth(size) + 8;
   const uniqueMovies = useMemo(
-    () =>
-      movies.filter(
-        (movie, index, list) =>
-          index ===
-          list.findIndex((candidate) => getMovieKey(candidate) === getMovieKey(movie)),
-      ),
+    () => {
+      const seenMovieKeys = new Set<string>();
+      return movies.filter((movie) => {
+        const movieKey = getMovieKey(movie);
+        if (seenMovieKeys.has(movieKey)) {
+          return false;
+        }
+
+        seenMovieKeys.add(movieKey);
+        return true;
+      });
+    },
     [movies],
   );
 
@@ -61,7 +68,7 @@ function MovieRow({
         showViewers={showViewerCount}
         viewerCount={showViewerCount ? viewerCounts?.[getMovieKey(item)] ?? 0 : 0}
         viewerProfiles={showViewerCount ? viewerProfiles?.[getMovieKey(item)] ?? [] : []}
-        imagePriority={index < 4 ? 'high' : 'normal'}
+        imagePriority={index < 2 ? 'high' : 'normal'}
       />
     ),
     [onMovieClick, showViewerCount, size, viewerCounts, viewerProfiles],
@@ -97,11 +104,16 @@ function MovieRow({
           horizontal
           data={uniqueMovies}
           keyExtractor={getMovieKey}
+          getItemLayout={(_, index) => ({
+            index,
+            length: itemLength,
+            offset: itemLength * index,
+          })}
           contentContainerStyle={styles.list}
           showsHorizontalScrollIndicator={false}
-          initialNumToRender={6}
-          maxToRenderPerBatch={8}
-          windowSize={5}
+          initialNumToRender={4}
+          maxToRenderPerBatch={4}
+          windowSize={3}
           removeClippedSubviews
           onEndReached={onLoadMore}
           onEndReachedThreshold={0.6}

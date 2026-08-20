@@ -1,10 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as Linking from 'expo-linking';
-import * as SecureStore from 'expo-secure-store';
-import type { EmailOtpType, Session } from '@supabase/supabase-js';
+import type { Session } from '@supabase/supabase-js';
 
-import { API_BASE, fetchWithRetry, getAuthHeaders, supabase } from '../../utils/supabase/client';
-import { publicAnonKey } from '../../utils/supabase/info';
+import { API_BASE, fetchWithRetry, getAuthHeaders, getPublicApiHeaders, supabase } from '../../utils/supabase/client';
 import {
   cleanupManagedProfilePhotos,
   cleanupRemovedProfilePhotos,
@@ -14,7 +12,6 @@ import {
   type ProfilePhotoUploadProgress,
 } from '../services/storage';
 import {
-  PUBLIC_WEB_BASE_URL,
   getEmailVerificationRedirectUrl,
   getPasswordResetRedirectUrl,
 } from '../shared/config/publicWeb';
@@ -24,9 +21,27 @@ import { clearSignupDraft, readSignupDraft } from '../services/signupDraft';
 import { telemetry } from '../services/telemetry';
 import type { AppUser, ProfileUpdateInput, SignUpData } from '../shared/types';
 import { syncServerTimeFromHeaders } from '../shared/utils/serverTime';
+import { isApiUser, isRecord } from '../shared/utils/apiValidation';
 import { validatePassword } from '../shared/utils/validation';
 import { clearSessionCaches, purgeUserSessionStorage } from '../shared/utils/sessionCache';
 import { subscribeToForeground } from '../shared/utils/appLifecycle';
+import {
+  beginAuthFlow,
+  clearAuthFlowState,
+  createMutationKey,
+  deleteCachedProfile,
+  isRemoteProfilePhotoUri,
+  normalizeAuthErrorMessage,
+  normalizeProfilePayload,
+  parseAvailabilityError,
+  parseErrorMessage,
+  preserveEqualUser,
+  readCachedProfile,
+  writeCachedProfile,
+  type ProfileLoadResult,
+  type ProfilePayload,
+} from './auth/authSupport';
+import { processAuthDeepLink } from './auth/authDeepLink';
 
 interface AvailabilityPayload {
   email?: string;
@@ -68,287 +83,21 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-type ProfilePayload = Omit<AppUser, 'email' | 'emailVerified'>;
-type ProfileLoadResult =
-  | { status: 'ok'; profile: ProfilePayload }
-  | { status: 'missing' }
-  | { status: 'unavailable'; error: unknown };
-const AUTH_PROFILE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const AUTH_PROFILE_CACHE_PREFIX = 'wmatch.auth-profile.v1.';
-const TRUSTED_CUSTOM_AUTH_SCHEMES = new Set(['wmatch:']);
-const TRUSTED_AUTH_PATH_PREFIXES = [
-  '/auth/verify',
-  '/auth/reset-password',
-  '/auth/recovery',
-  '/auth/callback',
-  '/verify',
-  '/reset-password',
-];
-
-function createMutationKey(scope: string) {
-  return `wmatch:${scope}:${Date.now()}:${Math.random().toString(36).slice(2, 12)}`;
-}
-
-function getCachedProfileKey(userId: string) {
-  return `${AUTH_PROFILE_CACHE_PREFIX}${userId}`;
-}
-
-async function readCachedProfile(userId: string): Promise<AppUser | null> {
-  try {
-    if (!(await SecureStore.isAvailableAsync())) {
-      return null;
-    }
-
-    const rawValue = await SecureStore.getItemAsync(getCachedProfileKey(userId));
-    if (!rawValue) {
-      return null;
-    }
-
-    const parsed = JSON.parse(rawValue) as { updatedAt?: unknown; user?: unknown };
-    const updatedAt = Number(parsed.updatedAt);
-    const cachedUser = parsed.user;
-    if (
-      !Number.isFinite(updatedAt) ||
-      Date.now() - updatedAt > AUTH_PROFILE_CACHE_TTL_MS ||
-      !cachedUser ||
-      typeof cachedUser !== 'object' ||
-      (cachedUser as { id?: unknown }).id !== userId
-    ) {
-      await SecureStore.deleteItemAsync(getCachedProfileKey(userId));
-      return null;
-    }
-
-    return cachedUser as AppUser;
-  } catch (error) {
-    console.warn('Cached auth profile could not be read:', error);
-    return null;
-  }
-}
-
-async function writeCachedProfile(user: AppUser) {
-  try {
-    if (!(await SecureStore.isAvailableAsync())) {
-      return;
-    }
-
-    await SecureStore.setItemAsync(
-      getCachedProfileKey(user.id),
-      JSON.stringify({ updatedAt: Date.now(), user }),
-      { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY },
-    );
-  } catch (error) {
-    console.warn('Auth profile cache could not be persisted:', error);
-  }
-}
-
-async function deleteCachedProfile(userId: string | null | undefined) {
-  if (!userId) {
-    return;
-  }
-
-  await SecureStore.deleteItemAsync(getCachedProfileKey(userId)).catch(() => undefined);
-}
-
-function isRemoteProfilePhotoUri(photo: string) {
-  return /^https:\/\//i.test(photo.trim());
-}
-
-function normalizeProfilePayload(profile: ProfilePayload): ProfilePayload {
-  const normalizeMedia = (value: unknown, legacyIds: number[]) =>
-    Array.isArray(value)
-      ? value
-          .filter((item): item is { id: number; mediaType: 'movie' | 'tv' } =>
-            Boolean(
-              item &&
-                typeof item === 'object' &&
-                Number.isInteger((item as { id?: unknown }).id) &&
-                ((item as { mediaType?: unknown }).mediaType === 'movie' ||
-                  (item as { mediaType?: unknown }).mediaType === 'tv'),
-            ),
-          )
-          .map((item) => ({ id: item.id, mediaType: item.mediaType }))
-      : legacyIds
-          .filter((id) => Number.isInteger(id) && id > 0)
-          .map((id) => ({ id, mediaType: 'movie' as const }));
-
-  return {
-    ...profile,
-    favoriteMedia: normalizeMedia(profile.favoriteMedia, profile.favoriteMovies ?? []),
-    watchedMedia: normalizeMedia(profile.watchedMedia, profile.watchedMovies ?? []),
-    currentlyWatchingMediaType:
-      profile.currentlyWatchingMediaType === 'tv' || profile.currentlyWatchingMediaType === 'movie'
-        ? profile.currentlyWatchingMediaType
-        : null,
-    currentlyWatchingState:
-      profile.currentlyWatchingState === 'active' || profile.currentlyWatchingState === 'paused'
-        ? profile.currentlyWatchingState
-        : null,
-    currentlyWatchingRemainingMs:
-      typeof profile.currentlyWatchingRemainingMs === 'number' && Number.isFinite(profile.currentlyWatchingRemainingMs)
-        ? Math.max(0, profile.currentlyWatchingRemainingMs)
-        : null,
-    currentlyWatchingExpiresAt:
-      typeof profile.currentlyWatchingExpiresAt === 'string' ? profile.currentlyWatchingExpiresAt : null,
-    currentlyWatchingVersion:
-      typeof profile.currentlyWatchingVersion === 'number' && Number.isFinite(profile.currentlyWatchingVersion)
-        ? Math.max(1, Math.floor(profile.currentlyWatchingVersion))
-        : null,
-  };
-}
-
-function parseDeepLinkParams(url: string) {
-  const [, hash = ''] = url.split('#');
-  const query = url.includes('?') ? url.split('?')[1].split('#')[0] : '';
-  const params = new URLSearchParams([query, hash].filter(Boolean).join('&'));
-
-  return {
-    code: params.get('code'),
-    accessToken: params.get('access_token'),
-    refreshToken: params.get('refresh_token'),
-    type: params.get('type'),
-    tokenHash: params.get('token_hash'),
-    error: params.get('error'),
-    errorCode: params.get('error_code'),
-    errorDescription: params.get('error_description'),
-  };
-}
-
-function normalizeOtpType(value: string | null): EmailOtpType | null {
-  if (!value) {
-    return null;
-  }
-
-  if (
-    value === 'signup' ||
-    value === 'invite' ||
-    value === 'magiclink' ||
-    value === 'recovery' ||
-    value === 'email_change' ||
-    value === 'email'
-  ) {
-    return value;
-  }
-
-  return null;
-}
-
-function isTrustedAuthDeepLink(url: string) {
-  try {
-    const parsedUrl = new URL(url);
-
-    if (TRUSTED_CUSTOM_AUTH_SCHEMES.has(parsedUrl.protocol)) {
-      const normalizedPath = parsedUrl.pathname || (parsedUrl.hostname ? `/${parsedUrl.hostname}` : '');
-
-      return (
-        parsedUrl.hostname === 'auth' ||
-        TRUSTED_AUTH_PATH_PREFIXES.some((prefix) => normalizedPath.startsWith(prefix))
-      );
-    }
-
-    if (parsedUrl.protocol === 'https:') {
-      const publicBaseUrl = new URL(PUBLIC_WEB_BASE_URL);
-      const publicBasePath = publicBaseUrl.pathname.replace(/\/$/, '');
-      const expectedAuthPrefix = `${publicBasePath}/auth/`;
-
-      return parsedUrl.origin === publicBaseUrl.origin && parsedUrl.pathname.startsWith(expectedAuthPrefix);
-    }
-  } catch {
-    return false;
-  }
-
-  return false;
-}
-
-async function parseErrorMessage(response: Response, fallback: string) {
-  try {
-    const rawPayload = await response.text();
-    const payload = rawPayload ? JSON.parse(rawPayload) : null;
-
-    const extractErrorMessage = (value: unknown): string | null => {
-      if (typeof value === 'string') {
-        const trimmed = value.trim();
-        return trimmed.length > 0 ? trimmed : null;
-      }
-
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          const nestedMessage = extractErrorMessage(item);
-
-          if (nestedMessage) {
-            return nestedMessage;
-          }
-        }
-
-        return null;
-      }
-
-      if (!value || typeof value !== 'object') {
-        return null;
-      }
-
-      const record = value as Record<string, unknown>;
-
-      for (const key of ['error', 'message', 'details', 'hint']) {
-        const nestedMessage = extractErrorMessage(record[key]);
-
-        if (nestedMessage) {
-          return nestedMessage;
-        }
-      }
-
-      return null;
-    };
-
-    return extractErrorMessage(payload) ?? (rawPayload.trim().length > 0 ? rawPayload.trim() : fallback);
-  } catch {
-    return fallback;
-  }
-}
-
-async function parseAvailabilityError(response: Response) {
-  if (response.status === 404) {
-    return 'Benzersizlik kontrol servisi bulunamadı. Edge Function deploy edilmemiş olabilir.';
-  }
-
-  if (response.status === 401 || response.status === 403) {
-    return 'Benzersizlik kontrolü için yetki alınamadı. Supabase ayarlarını kontrol et.';
-  }
-
-  if (response.status === 503) {
-    return 'Benzersizlik kontrol servisi hazır değil. Migration ve function kurulumunu tamamla.';
-  }
-
-  return parseErrorMessage(response, 'Uygunluk kontrolü yapılamadı.');
-}
-
-function normalizeAuthErrorMessage(error: unknown, fallback: string) {
-  if (!(error instanceof Error)) {
-    return fallback;
-  }
-
-  const message = error.message.toLowerCase();
-
-  if (
-    message.includes('email not confirmed') ||
-    message.includes('email not verified') ||
-    message.includes('confirm your email')
-  ) {
-    return 'E-postanı doğrulamadan giriş yapamazsın. Lütfen mail kutundaki onay bağlantısına tıkla.';
-  }
-
-  if (message.includes('invalid login credentials')) {
-    return 'E-posta veya şifre hatalı.';
-  }
-
-  if (message.includes('user already registered')) {
-    return 'Kayıt işlemi tamamlanamadı. Bilgileri kontrol edip tekrar dene.';
-  }
-
-  return error.message || fallback;
+async function purgeLocalAuthSession(userId: string | null) {
+  clearSessionCaches();
+  await Promise.allSettled([
+    purgeUserSessionStorage(userId),
+    purgeChatOutbox(userId),
+    deleteCachedProfile(userId),
+    clearSignupDraft(),
+  ]);
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
+  const commitUser = (nextUser: AppUser | null) => {
+    setUser((currentUser) => preserveEqualUser(currentUser, nextUser));
+  };
   const [loading, setLoading] = useState(true);
   const [isRecoveringPassword, setIsRecoveringPassword] = useState(false);
   const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null);
@@ -374,7 +123,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
       }
 
-      const profile = (await response.json()) as ProfilePayload;
+      const profile = await response.json() as unknown;
+
+      if (!isApiUser(profile)) {
+        return {
+          status: 'unavailable',
+          error: new Error('Profile response contract is invalid.'),
+        };
+      }
+
       return { status: 'ok', profile: normalizeProfilePayload(profile) };
     } catch (error) {
       console.error('Failed to load user profile:', error);
@@ -398,7 +155,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error(await parseErrorMessage(response, 'Profil güncellenemedi.'));
     }
 
-    const payload = (await response.json()) as { profile?: ProfilePayload };
+    const payload = await response.json() as unknown;
+
+    if (!isRecord(payload) || (payload.profile != null && !isApiUser(payload.profile))) {
+      throw new Error('Profile update response contract is invalid.');
+    }
+
     return payload.profile ? normalizeProfilePayload(payload.profile) : null;
   };
 
@@ -490,14 +252,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       telemetry.setUser(null);
-      clearSessionCaches();
       const signedOutUserId = lastSessionUserIdRef.current;
-      void purgeUserSessionStorage(signedOutUserId);
-      void purgeChatOutbox(signedOutUserId);
-      void deleteCachedProfile(signedOutUserId);
-      void clearSignupDraft();
+      void purgeLocalAuthSession(signedOutUserId);
       lastSessionUserIdRef.current = null;
-      setUser(null);
+      commitUser(null);
       return;
     }
 
@@ -515,7 +273,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     if (cachedUser) {
-      setUser({
+      commitUser({
         ...cachedUser,
         id: session.user.id,
         email: session.user.email ?? cachedUser.email,
@@ -542,7 +300,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (profileResult.status === 'missing') {
       clearSessionCaches();
       void deleteCachedProfile(session.user.id);
-      setUser(null);
+      commitUser(null);
       return;
     }
 
@@ -553,7 +311,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email: session.user.email ?? '',
       emailVerified,
     };
-    setUser(restoredUser);
+    commitUser(restoredUser);
     void writeCachedProfile(restoredUser);
     telemetry.setUser(`user:${session.user.id.slice(0, 8)}`);
     setLoading(false);
@@ -588,7 +346,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       email: session.user.email ?? '',
       emailVerified,
     };
-    setUser(nextUser);
+    commitUser(nextUser);
     void writeCachedProfile(nextUser);
   };
 
@@ -620,70 +378,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const handleDeepLink = async (url: string | null) => {
-    if (!url) {
-      return;
-    }
-
-    const {
-      code,
-      accessToken,
-      refreshToken,
-      type,
-      tokenHash,
-      error,
-      errorCode,
-      errorDescription,
-    } = parseDeepLinkParams(url);
-
-    if (!isTrustedAuthDeepLink(url)) {
-      console.warn('Ignored untrusted auth deep link.');
-      return;
-    }
-
-    if (error || errorDescription) {
-      console.warn('Deep link auth error:', {
-        error,
-        errorCode,
-        errorDescription,
-      });
-      return;
-    }
-
-    if (accessToken || refreshToken) {
-      console.warn('Ignored auth deep link containing raw session tokens.');
-      return;
-    }
-
-    if (code) {
-      const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-
-      if (error) {
-        console.error('Deep link PKCE exchange error:', error);
-        return;
-      }
-
-      await syncSessionUser(data.session ?? null);
-    }
-
-    const otpType = normalizeOtpType(type);
-
-    if (!code && tokenHash && otpType) {
-      const { data, error } = await supabase.auth.verifyOtp({
-        token_hash: tokenHash,
-        type: otpType,
-      });
-
-      if (error) {
-        console.error('Deep link OTP verification error:', error);
-        return;
-      }
-
-      await syncSessionUser(data.session ?? null);
-    }
-
-    if (type === 'recovery') {
-      setIsRecoveringPassword(true);
-    }
+    await processAuthDeepLink({
+      url,
+      onSession: syncSessionUser,
+      onRecovery: () => setIsRecoveringPassword(true),
+    });
   };
 
   useEffect(() => {
@@ -748,14 +447,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         sessionSyncRef.current = null;
         resetPushNotificationSyncState();
         telemetry.setUser(null);
-        clearSessionCaches();
         const signedOutUserId = lastSessionUserIdRef.current;
-        void purgeUserSessionStorage(signedOutUserId);
-        void purgeChatOutbox(signedOutUserId);
-        void deleteCachedProfile(signedOutUserId);
-        void clearSignupDraft();
+        void purgeLocalAuthSession(signedOutUserId);
         lastSessionUserIdRef.current = null;
-        setUser(null);
+        commitUser(null);
         setIsRecoveringPassword(false);
         return;
       }
@@ -803,10 +498,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await fetchWithRetry(`${API_BASE}/auth/check-availability`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${publicAnonKey}`,
-        },
+        headers: await getPublicApiHeaders(),
         body: JSON.stringify(normalizedPayload),
       });
       syncServerTimeFromHeaders(response.headers);
@@ -834,11 +526,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const safeMetadataPhotos = userData.photos.filter(isRemoteProfilePhotoUri);
 
+    const authFlowState = await beginAuthFlow('signup');
     const { error } = await supabase.auth.signUp({
       email: userData.email.trim().toLowerCase(),
       password: userData.password,
       options: {
-        emailRedirectTo: getEmailVerificationRedirectUrl(),
+        emailRedirectTo: getEmailVerificationRedirectUrl(authFlowState),
         data: {
           name: userData.name.trim(),
           age: userData.age,
@@ -854,6 +547,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     if (error) {
+      await clearAuthFlowState('signup');
       throw new Error(normalizeAuthErrorMessage(error, 'Kayıt başarısız.'));
     }
 
@@ -864,13 +558,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const signedOutUserId = user?.id ?? lastSessionUserIdRef.current;
     await clearPushNotifications().catch(() => undefined);
     await supabase.auth.signOut();
-    clearSessionCaches();
-    await purgeUserSessionStorage(signedOutUserId).catch(() => undefined);
-    await purgeChatOutbox(signedOutUserId).catch(() => undefined);
-    await deleteCachedProfile(signedOutUserId);
-    await clearSignupDraft().catch(() => undefined);
+    await purgeLocalAuthSession(signedOutUserId);
     lastSessionUserIdRef.current = null;
-    setUser(null);
+    commitUser(null);
     telemetry.setUser(null);
     setIsRecoveringPassword(false);
     setPendingVerificationEmail(null);
@@ -878,35 +568,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const sendPasswordReset = async (email: string) => {
     const normalizedEmail = email.trim().toLowerCase();
-    const response = await fetchWithRetry(`${API_BASE}/auth/password-reset`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${publicAnonKey}`,
-        'Idempotency-Key': createMutationKey('password-reset'),
-      },
-      body: JSON.stringify({
-        email: normalizedEmail,
-        redirectTo: getPasswordResetRedirectUrl(),
-      }),
-    });
-    syncServerTimeFromHeaders(response.headers);
+    const authFlowState = await beginAuthFlow('recovery');
 
-    if (!response.ok) {
-      throw new Error(await parseErrorMessage(response, 'Şifre sıfırlama maili gönderilemedi.'));
+    try {
+      const response = await fetchWithRetry(`${API_BASE}/auth/password-reset`, {
+        method: 'POST',
+        headers: {
+          ...(await getPublicApiHeaders()),
+          'Idempotency-Key': createMutationKey('password-reset'),
+        },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          redirectTo: getPasswordResetRedirectUrl(authFlowState),
+        }),
+      });
+      syncServerTimeFromHeaders(response.headers);
+
+      if (!response.ok) {
+        throw new Error(await parseErrorMessage(response, 'Şifre sıfırlama maili gönderilemedi.'));
+      }
+    } catch (error) {
+      await clearAuthFlowState('recovery');
+      throw error;
     }
   };
   const sendVerificationEmail = async (email: string) => {
     const normalizedEmail = email.trim().toLowerCase();
+    const authFlowState = await beginAuthFlow('signup');
     const { error } = await supabase.auth.resend({
       type: 'signup',
       email: normalizedEmail,
       options: {
-        emailRedirectTo: getEmailVerificationRedirectUrl(),
+        emailRedirectTo: getEmailVerificationRedirectUrl(authFlowState),
       },
     });
 
     if (error) {
+      await clearAuthFlowState('signup');
       throw new Error(normalizeAuthErrorMessage(error, 'Doğrulama maili gönderilemedi.'));
     }
 
@@ -956,7 +654,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (profile && lastSessionUserIdRef.current === user.id) {
         const nextUser = { ...user, ...profile };
-        setUser((current) => current?.id === user.id ? nextUser : current);
+        setUser((current) => current?.id === user.id ? preserveEqualUser(current, nextUser) : current);
         void writeCachedProfile(nextUser);
       }
     } catch (error) {
@@ -986,13 +684,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     await supabase.auth.signOut();
     resetPushNotificationSyncState();
-    clearSessionCaches();
-    await purgeUserSessionStorage(deletedUserId).catch(() => undefined);
-    await purgeChatOutbox(deletedUserId).catch(() => undefined);
-    await deleteCachedProfile(deletedUserId);
-    await clearSignupDraft().catch(() => undefined);
+    await purgeLocalAuthSession(deletedUserId);
     lastSessionUserIdRef.current = null;
-    setUser(null);
+    commitUser(null);
     telemetry.setUser(null);
     setIsRecoveringPassword(false);
     setPendingVerificationEmail(null);

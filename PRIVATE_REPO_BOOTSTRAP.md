@@ -19,6 +19,9 @@ The operating model is deliberate:
 
 - `.env`
 - `credentials.json`
+- `credentials/ios/dist-cert.p12`
+- `credentials/ios/profile.mobileprovision`
+- `credentials/ios/profile-associated-domains.mobileprovision`
 - `android/keystore.properties`
 - `android/keystores/*`
 - `android/app/debug.keystore`
@@ -27,6 +30,7 @@ The operating model is deliberate:
 - `firebase/GoogleService-Info.plist`
 - `.secrets/firebase-admin/*`
 - `.secrets/eas/*`
+- `.secrets/AuthKey_*.p8`
 - `RESTORE-TO-PROJECT.ps1`
 - `README.txt`
 - `CRITICAL_NOTES.txt`
@@ -122,20 +126,21 @@ Function deploy:
 powershell -ExecutionPolicy Bypass -File .\scripts\deploy-supabase.ps1
 ```
 
-Current local secret state on July 10, 2026:
+Current local secret state on August 9, 2026:
 
 - `SUPABASE_ACCESS_TOKEN` exists in `.env`
 - `SUPABASE_SECRET_KEY` exists in `.env`
 - `SUPABASE_SERVICE_ROLE_KEY` exists in `.env`
-- `SUPABASE_DB_PASSWORD` is blank in `.env`
+- `SUPABASE_DB_PASSWORD` exists in `.env`
 
-If you later add any missing secret values locally, rerun `scripts/export-wmatch-secrests.ps1` so the Desktop backup stays complete.
+If any secret value changes locally, rerun `scripts/export-wmatch-secrests.ps1` so the Desktop backup stays complete.
 
 ## iOS
 
 - There is no checked-in `ios/` native project in this repo.
 - On macOS, generate it with `npx expo prebuild --platform ios` if needed.
 - For production iOS builds, use `npx eas build -p ios --profile production` after Apple-side setup is ready.
+- Local iOS distribution and provisioning files are retained under `credentials/ios/` in the offline bundle when available.
 
 ## Provider-side limits
 

@@ -18,6 +18,11 @@ import { BoundedMap } from '../src/shared/utils/boundedMap.ts';
 import { calculateKeyboardInset } from '../src/shared/utils/keyboard.ts';
 import { getFixedGridItemWidth } from '../src/shared/utils/grid.ts';
 import {
+  isApiMessage,
+  isApiUser,
+  isCompatibilityDiscoveryEntry,
+} from '../src/shared/utils/apiValidation.ts';
+import {
   resolveBottomObstruction,
   resolveDeviceEdgeInset,
 } from '../src/shared/utils/safeArea.ts';
@@ -27,6 +32,128 @@ import {
   replaceOrAppendMessage,
   sortMessages,
 } from '../src/app/components/chat/chatMessageModel.ts';
+import {
+  patchScreenSessionState,
+  readScreenSessionState,
+} from '../src/services/screenSessionState.ts';
+import {
+  decodeChatDirectoryCursor,
+  decodeCompatibilityCursor,
+  decodeLiveNowCursor,
+  decodeMessageCursor,
+  encodeChatDirectoryCursor,
+  encodeCompatibilityCursor,
+  encodeLiveNowCursor,
+  encodeMessageCursor,
+} from '../supabase/functions/make-server-d962235e/cursors.ts';
+
+describe('bounded screen session state', () => {
+  it('keeps each user and screen isolated while merging partial updates', () => {
+    patchScreenSessionState('session-user-a', 'chat', { filter: 'unread' });
+    patchScreenSessionState('session-user-a', 'chat', { scrollOffset: 240 });
+
+    expect(readScreenSessionState('session-user-a', 'chat')).toEqual({
+      filter: 'unread',
+      scrollOffset: 240,
+    });
+    expect(readScreenSessionState('session-user-b', 'chat')).toEqual({
+      filter: 'all',
+      scrollOffset: 0,
+    });
+  });
+});
+
+describe('opaque keyset cursors', () => {
+  it('round-trips every supported cursor without exposing invalid input', () => {
+    const message = { created_at: '2026-07-31T12:00:00.000Z', id: 'message-1' };
+    const live = { updated_at: '2026-07-31T12:01:00.000Z', user_id: 'user-1' };
+    const directory = {
+      activity_at: '2026-07-31T12:02:00.000Z',
+      other_user_id: '00000000-0000-4000-8000-000000000001',
+    };
+    const compatibility = {
+      compatibility_score: 72,
+      user_id: '00000000-0000-4000-8000-000000000002',
+    };
+
+    expect(decodeMessageCursor(encodeMessageCursor(message))).toEqual({
+      createdAt: message.created_at,
+      id: message.id,
+    });
+    expect(decodeLiveNowCursor(encodeLiveNowCursor(live))).toEqual({
+      updatedAt: live.updated_at,
+      userId: live.user_id,
+    });
+    expect(decodeChatDirectoryCursor(encodeChatDirectoryCursor(directory))).toEqual({
+      activityAt: directory.activity_at,
+      userId: directory.other_user_id,
+    });
+    expect(decodeCompatibilityCursor(encodeCompatibilityCursor(compatibility))).toEqual({
+      score: compatibility.compatibility_score,
+      userId: compatibility.user_id,
+    });
+    expect(decodeMessageCursor('not-base64-json')).toBeNull();
+    expect(decodeCompatibilityCursor(btoa(JSON.stringify({ score: 0, userId: 'bad' })))).toBeNull();
+  });
+});
+
+describe('critical API runtime contracts', () => {
+  const user = {
+    id: '00000000-0000-4000-8000-000000000001',
+    name: 'Ada',
+    age: 28,
+    showAgeOnProfile: true,
+    gender: 'female',
+    showGenderOnProfile: true,
+    username: 'ada_test',
+    bio: '',
+    letterboxd: '',
+    photos: ['https://example.test/photo.jpg'],
+    favoriteMovies: [1],
+    favoriteMedia: [{ id: 1, mediaType: 'movie' }],
+    watchedMovies: [2],
+    watchedMedia: [{ id: 2, mediaType: 'tv' }],
+    currentlyWatching: null,
+    currentlyWatchingMediaType: null,
+    currentlyWatchingState: null,
+    currentlyWatchingRemainingMs: null,
+    currentlyWatchingExpiresAt: null,
+    currentlyWatchingVersion: null,
+    currentlyWatchingUpdatedAt: null,
+    locationUpdatedAt: null,
+    discoveryPreferences: {
+      genderPreference: 'random',
+      ageMin: 18,
+      ageMax: 99,
+      distanceMinKm: 0,
+      distanceMaxKm: 500,
+      compatibilityMin: 0,
+      compatibilityMax: 100,
+    },
+  };
+
+  it('accepts complete user and discovery payloads', () => {
+    expect(isApiUser(user)).toBe(true);
+    expect(isCompatibilityDiscoveryEntry({ user, score: 72 })).toBe(true);
+  });
+
+  it('rejects malformed nested user and score fields', () => {
+    expect(isApiUser({ ...user, photos: [42] })).toBe(false);
+    expect(isCompatibilityDiscoveryEntry({ user, score: 101 })).toBe(false);
+  });
+
+  it('validates message identity, participants and read state', () => {
+    expect(isApiMessage({
+      id: 'message-1',
+      sender_id: user.id,
+      receiver_id: '00000000-0000-4000-8000-000000000002',
+      text: 'Merhaba',
+      read: false,
+      created_at: '2026-08-19T12:00:00.000Z',
+    })).toBe(true);
+    expect(isApiMessage({ id: 'message-1', read: 'false' })).toBe(false);
+  });
+});
 
 describe('keyboard layout utilities', () => {
   it('adds only the keyboard area that Android did not already resize', () => {

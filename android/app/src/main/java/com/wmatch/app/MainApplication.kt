@@ -1,4 +1,5 @@
 package com.wmatch.app
+import com.facebook.react.common.assets.ReactFontManager
 
 import android.app.Application
 import android.content.res.Configuration
@@ -10,7 +11,6 @@ import com.facebook.react.ReactPackage
 import com.facebook.react.ReactHost
 import com.facebook.react.common.ReleaseLevel
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint
-import com.google.firebase.FirebaseApp
 
 import expo.modules.ApplicationLifecycleDispatcher
 import expo.modules.ExpoReactHostFactory
@@ -30,9 +30,9 @@ class MainApplication : Application(), ReactApplication {
 
   override fun onCreate() {
     super.onCreate()
-    if (FirebaseApp.getApps(this).isEmpty()) {
-      FirebaseApp.initializeApp(this)
-    }
+    // @generated begin xml-fonts-init - expo prebuild (DO NOT MODIFY) sync-da39a3ee5e6b4b0d3255bfef95601890afd80709
+
+    // @generated end xml-fonts-init
     DefaultNewArchitectureEntryPoint.releaseLevel = try {
       ReleaseLevel.valueOf(BuildConfig.REACT_NATIVE_RELEASE_LEVEL.uppercase())
     } catch (e: IllegalArgumentException) {

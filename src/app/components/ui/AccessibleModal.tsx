@@ -5,18 +5,21 @@ import {
   findNodeHandle,
   Modal,
   StyleSheet,
+  Text,
   View,
   type ModalProps,
 } from 'react-native';
 
 interface AccessibleModalProps extends Omit<ModalProps, 'children' | 'onShow' | 'onDismiss'> {
   children: ReactNode;
+  initialFocusRef?: RefObject<View | Text | null>;
   returnFocusRef?: RefObject<View | null>;
 }
 
 export default function AccessibleModal({
   children,
   visible = true,
+  initialFocusRef,
   returnFocusRef,
   ...modalProps
 }: AccessibleModalProps) {
@@ -25,7 +28,8 @@ export default function AccessibleModal({
 
   const focusModal = () => {
     const frame = requestAnimationFrame(() => {
-      const node = modalRootRef.current ? findNodeHandle(modalRootRef.current) : null;
+      const focusTarget = initialFocusRef?.current ?? modalRootRef.current;
+      const node = focusTarget ? findNodeHandle(focusTarget) : null;
       if (node) {
         AccessibilityInfo.setAccessibilityFocus(node);
       }
@@ -44,7 +48,7 @@ export default function AccessibleModal({
   useEffect(() => {
     if (visible) {
       wasVisibleRef.current = true;
-      return focusModal();
+      return;
     }
 
     if (wasVisibleRef.current) {
@@ -52,7 +56,7 @@ export default function AccessibleModal({
       restoreFocus();
     }
 
-    return undefined;
+    return;
   }, [returnFocusRef, visible]);
 
   return (
@@ -61,9 +65,6 @@ export default function AccessibleModal({
       visible={visible}
       onShow={() => {
         focusModal();
-      }}
-      onDismiss={() => {
-        restoreFocus();
       }}
     >
       <View

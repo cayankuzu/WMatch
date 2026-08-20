@@ -68,8 +68,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   large: {
-    minWidth: 46,
-    minHeight: 46,
+    minWidth: theme.layout.controlMinUnified,
+    minHeight: theme.layout.controlMinUnified,
   },
   selected: {
     borderColor: theme.colors.borderFocus,

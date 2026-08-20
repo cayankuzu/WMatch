@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
@@ -30,8 +30,26 @@ export default function SearchBar({ userId, onSearch, onFocus, onBlur }: SearchB
   const [expanded, setExpanded] = useState(false);
   const [focused, setFocused] = useState(false);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const onSearchRef = useRef(onSearch);
+  const lastSearchKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
+    onSearchRef.current = onSearch;
+  }, [onSearch]);
+
+  const dispatchSearch = useCallback((nextQuery: string, nextFilter: 'all' | 'movie' | 'tv') => {
+    const normalizedQuery = nextQuery.trim();
+    const requestKey = `${nextFilter}:${normalizedQuery}`;
+    if (lastSearchKeyRef.current === requestKey) {
+      return;
+    }
+
+    lastSearchKeyRef.current = requestKey;
+    onSearchRef.current(normalizedQuery, nextFilter);
+  }, []);
+
+  useEffect(() => {
+    lastSearchKeyRef.current = null;
     let cancelled = false;
     void loadRecentSearches(userId).then((items) => {
       if (!cancelled) {
@@ -46,24 +64,24 @@ export default function SearchBar({ userId, onSearch, onFocus, onBlur }: SearchB
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      onSearch(query.trim(), filter);
+      dispatchSearch(query, filter);
     }, 220);
 
     return () => clearTimeout(timer);
-  }, [filter, onSearch, query]);
+  }, [dispatchSearch, filter, query]);
 
   const handleClear = () => {
     triggerHaptic('selection');
     setQuery('');
     setExpanded(false);
     onBlur?.();
-    onSearch('', 'all');
+    dispatchSearch('', 'all');
     setFilter('all');
   };
 
   const submitSearch = (nextQuery = query) => {
     const normalizedQuery = nextQuery.trim();
-    onSearch(normalizedQuery, filter);
+    dispatchSearch(normalizedQuery, filter);
     if (normalizedQuery) {
       void saveRecentSearch(userId, normalizedQuery).then(setRecentSearches);
     }
@@ -105,6 +123,7 @@ export default function SearchBar({ userId, onSearch, onFocus, onBlur }: SearchB
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t('common.reset')}
+            hitSlop={4}
             onPress={handleClear}
             style={({ pressed }) => [styles.clearButton, pressed && styles.clearButtonPressed]}
           >

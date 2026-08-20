@@ -1,4 +1,4 @@
-import { memo, Suspense, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
+import { memo, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, BackHandler, Platform, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -9,6 +9,7 @@ import { markChatThreadRead, markNotificationEventRead } from '../services/api';
 import {
   getLastNotificationIntent,
   openPushNotificationSettings,
+  requestPushNotifications,
   subscribeToForegroundNotificationPresentation,
   subscribeToNotificationEventInserts,
   subscribeToNotificationResponses,
@@ -17,7 +18,12 @@ import {
   type NotificationIntent,
 } from '../services/notifications';
 import { flushPendingChatMessages } from '../services/chatOutbox';
-import { recordTabUsage } from '../services/tabUsage';
+import {
+  getConnectivitySnapshot,
+  subscribeToConnectivity,
+} from '../services/connectivity';
+import { loadLastActiveTab, recordTabUsage } from '../services/tabUsage';
+import { hydrateScreenSessionState } from '../services/screenSessionState';
 import { emitTabReselected } from '../services/tabNavigation';
 import { getResidentTabLimit } from '../services/runtimeProfile';
 import { clearTabBadges, useTabBadges } from '../services/tabBadges';
@@ -109,7 +115,6 @@ function AppContent() {
 
   const [authScreen, setAuthScreen] = useState<AuthScreen>('login');
   const [activeTab, setActiveTab] = useState<AppTab>('watch');
-  const renderedTab = useDeferredValue(activeTab);
   const [residentTabs, setResidentTabs] = useState<AppTab[]>(['watch']);
   const renderedResidentTabs = TAB_RENDER_ORDER.filter((tab) => residentTabs.includes(tab));
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
@@ -121,12 +126,26 @@ function AppContent() {
   const tabSwitchStartedAtRef = useRef(0);
   const handledNotificationRequestIdsRef = useRef(new Set<string>());
   const pushSettingsPromptedUserIdsRef = useRef(new Set<string>());
+  const pushPermissionRequestedUserIdsRef = useRef(new Set<string>());
+  const explicitTabIntentRef = useRef(false);
   const { message: exitPopupMessage, showPopup: showExitPopup } = useTransientPopup();
   const watchHome = useWatchHomeController(user, activeTab, activeWatching);
   const tabBadges = useTabBadges();
+  const userId = user?.id ?? null;
 
   useAppPresence(user?.id ?? null);
   useAppDataWarmup(user, activeTab);
+  useEffect(() => subscribeToForeground(() => {
+    const resumedAt = Date.now();
+    requestAnimationFrame(() => {
+      telemetry.recordDuration(
+        'app.warm_resume',
+        Date.now() - resumedAt,
+        performanceBudgets.warmResumeMs,
+        { activeTab },
+      );
+    });
+  }), [activeTab]);
   useEffect(() => subscribeToMemoryWarning(() => {
     setResidentTabs([activeTab]);
     clearSessionCaches();
@@ -134,57 +153,30 @@ function AppContent() {
   }), [activeTab]);
   const syncCurrentUserPush = useCallback(
     async (userId: string | null | undefined) => {
-      const result = await syncPushNotifications(userId);
-
-      if (
-        !userId ||
-        result.status !== 'settings-required' ||
-        pushSettingsPromptedUserIdsRef.current.has(userId)
-      ) {
-        return;
-      }
-
-      pushSettingsPromptedUserIdsRef.current.add(userId);
-      Alert.alert(
-        t('notifications.permission.title'),
-        result.reason === 'channel'
-          ? t('notifications.permission.channelDescription')
-          : t('notifications.permission.description'),
-        [
-          {
-            text: t('notifications.permission.notNow'),
-            style: 'cancel',
-          },
-          {
-            text: t('notifications.permission.openSettings'),
-            onPress: () => {
-              void openPushNotificationSettings();
-            },
-          },
-        ],
-      );
+      await syncPushNotifications(userId);
     },
-    [t],
+    [],
   );
   const prepareTab = useCallback((tab: AppTab) => {
     void preloadTabModule(tab).catch((error) => {
       telemetry.captureException(error, { operation: 'tab_module_preload', tab });
     });
 
-    if (!user || tab === activeTab) {
+    if (!userId || tab === activeTab) {
       return;
     }
 
-    void preloadTabData(user, tab, 'intent').catch((error) => {
+    void preloadTabData(userId, tab, 'intent').catch((error) => {
       telemetry.captureException(error, { operation: 'tab_intent_preload', tab });
     });
-  }, [activeTab, user]);
+  }, [activeTab, userId]);
   const switchTab = useCallback((tab: AppTab) => {
     if (tab === activeTab) {
       return;
     }
 
     tabSwitchStartedAtRef.current = Date.now();
+    explicitTabIntentRef.current = true;
     telemetry.track('navigation.tab_intent', { tab });
     prepareTab(tab);
     setResidentTabs((current) => {
@@ -192,23 +184,77 @@ function AppContent() {
       return next.slice(-MAX_RESIDENT_TABS);
     });
     setActiveTab(tab);
-    if (user) {
-      recordTabUsage(user.id, tab);
+    if (userId) {
+      recordTabUsage(userId, tab);
+      if (tab === 'chat') {
+        void requestPushNotifications(userId).then((result) => {
+          if (
+            result.status !== 'settings-required'
+            || pushSettingsPromptedUserIdsRef.current.has(userId)
+          ) {
+            return;
+          }
+
+          pushSettingsPromptedUserIdsRef.current.add(userId);
+          Alert.alert(
+            t('notifications.permission.title'),
+            t(result.reason === 'channel'
+              ? 'notifications.permission.channelDescription'
+              : 'notifications.permission.description'),
+            [
+              { text: t('notifications.permission.notNow'), style: 'cancel' },
+              {
+                text: t('notifications.permission.openSettings'),
+                onPress: () => void openPushNotificationSettings(),
+              },
+            ],
+          );
+        });
+      }
     }
-  }, [activeTab, prepareTab, user]);
+  }, [activeTab, prepareTab, t, userId]);
   const handleTabReselect = useCallback((tab: AppTab) => {
     telemetry.track('navigation.tab_reselected', { tab });
     emitTabReselected(tab);
   }, []);
 
   useEffect(() => {
+    const currentUserId = user?.id;
+    let cancelled = false;
+    explicitTabIntentRef.current = false;
     setActiveTab('watch');
     setResidentTabs(['watch']);
     clearTabBadges();
+
+    if (!currentUserId) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void loadLastActiveTab(currentUserId).then(async (lastTab) => {
+      if (lastTab === 'chat' || lastTab === 'likes') {
+        await hydrateScreenSessionState(currentUserId, lastTab);
+      }
+
+      if (cancelled || explicitTabIntentRef.current || lastTab === 'watch') {
+        return;
+      }
+
+      setActiveTab(lastTab);
+      setResidentTabs(['watch', lastTab]);
+      void preloadTabModule(lastTab);
+      void preloadTabData(currentUserId, lastTab, 'critical');
+      telemetry.track('navigation.tab_restored', { tab: lastTab });
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [user?.id]);
 
   useEffect(() => {
-    if (renderedTab !== activeTab || tabSwitchStartedAtRef.current === 0) {
+    if (tabSwitchStartedAtRef.current === 0) {
       return;
     }
 
@@ -219,7 +265,7 @@ function AppContent() {
       { tab: activeTab },
     );
     tabSwitchStartedAtRef.current = 0;
-  }, [activeTab, renderedTab]);
+  }, [activeTab]);
 
   const handleBottomNavHeight = useCallback((height: number) => {
     if (height <= 0) {
@@ -248,6 +294,53 @@ function AppContent() {
 
     return unsubscribeForeground;
   }, [syncCurrentUserPush, user?.id, watchHome.refreshLiveNow]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    const initialConnectivity = getConnectivitySnapshot();
+    let wasUnavailable = !initialConnectivity.connected || !initialConnectivity.internetReachable;
+
+    return subscribeToConnectivity(() => {
+      const connectivity = getConnectivitySnapshot();
+      const unavailable = !connectivity.connected || !connectivity.internetReachable;
+      const recovered = wasUnavailable && !unavailable;
+      wasUnavailable = unavailable;
+
+      if (!recovered) {
+        return;
+      }
+
+      void preloadTabData(user.id, activeTab, 'critical');
+      void watchHome.refreshLiveNow();
+      void flushPendingChatMessages(user.id);
+      void syncCurrentUserPush(user.id);
+      telemetry.track('app.connectivity_recovered', { activeTab });
+    });
+  }, [activeTab, syncCurrentUserPush, user?.id, watchHome.refreshLiveNow]);
+
+  useEffect(() => {
+    const currentUserId = user?.id;
+
+    if (
+      !currentUserId
+      || !user.emailVerified
+      || pushPermissionRequestedUserIdsRef.current.has(currentUserId)
+    ) {
+      return;
+    }
+
+    pushPermissionRequestedUserIdsRef.current.add(currentUserId);
+    const permissionTimer = setTimeout(() => {
+      void requestPushNotifications(currentUserId);
+    }, 1_000);
+
+    return () => {
+      clearTimeout(permissionTimer);
+    };
+  }, [user?.emailVerified, user?.id]);
 
   useEffect(() => {
     void syncCurrentUserPush(user?.id);
@@ -578,16 +671,18 @@ function AppContent() {
       <ConnectivityBanner />
       <View style={styles.content}>
         {renderedResidentTabs.map((tab) => {
-          const isVisible = tab === renderedTab;
+          const isVisible = tab === activeTab;
 
           return (
             <TabScene
               key={tab}
               active={isVisible}
             >
-              <Suspense fallback={isVisible ? renderTabFallback(tab) : null}>
-                {renderTab(tab)}
-              </Suspense>
+              <ErrorBoundary surface={`tab:${tab}`}>
+                <Suspense fallback={isVisible ? renderTabFallback(tab) : null}>
+                  {renderTab(tab)}
+                </Suspense>
+              </ErrorBoundary>
             </TabScene>
           );
         })}

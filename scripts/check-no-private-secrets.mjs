@@ -6,10 +6,50 @@ const fail = (message) => {
   process.exit(1);
 };
 
+const easIgnore = readFileSync('.easignore', 'utf8');
+const easIgnoreLines = easIgnore
+  .split(/\r?\n/)
+  .map((line) => line.trim())
+  .filter((line) => line && !line.startsWith('#'));
+
+for (const requiredPattern of ['.env', '.env.*', '.secrets/', 'credentials.json']) {
+  if (!easIgnoreLines.includes(requiredPattern)) {
+    fail(`.easignore must exclude ${requiredPattern}`);
+  }
+}
+
+if (easIgnoreLines.some((line) => /^!\.env(?:$|\.)/i.test(line) && !/^!\.env\.(?:example|sample)$/i.test(line))) {
+  fail('.easignore must not re-include a private environment file');
+}
+
+if (easIgnoreLines.some((line) => /^!\.secrets(?:\/|$)/i.test(line))) {
+  fail('.easignore must not re-include the private secrets directory');
+}
+
 const trackedFiles = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { encoding: 'utf8' })
   .split('\0')
   .filter(Boolean)
   .map((file) => file.replaceAll('\\', '/'));
+const indexedFiles = new Set(
+  execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
+    .split('\0')
+    .filter(Boolean)
+    .map((file) => file.replaceAll('\\', '/')),
+);
+
+const readTextFile = (file) => {
+  try {
+    return readFileSync(file, 'utf8');
+  } catch (error) {
+    if (!indexedFiles.has(file)) {
+      throw error;
+    }
+
+    // Some Windows workspaces expose tracked files to Git while temporarily
+    // denying direct reads. The index is still the exact committed payload.
+    return execFileSync('git', ['show', `:${file}`], { encoding: 'utf8' });
+  }
+};
 
 const forbiddenTrackedFiles = [
   /^\.env$/i,
@@ -43,7 +83,7 @@ for (const file of trackedFiles) {
     continue;
   }
 
-  const content = readFileSync(file, 'utf8');
+  const content = readTextFile(file);
 
   if (/const\s+API_KEY\s*=\s*['"][a-f0-9]{32}['"]/i.test(content)) {
     fail(`hardcoded API key constant is present in ${file}`);

@@ -30,7 +30,7 @@ export default function ProfileScreen({ onMovieClick }: ProfileScreenProps) {
   const [savingFilters, setSavingFilters] = useState(false);
 
   if (!user) {
-    return <LoadingScreen message={t('profile.loading')} />;
+    return <LoadingScreen message={t('profile.loading')} onRetry={() => void refreshUser()} />;
   }
 
   const handleRefresh = async () => {

@@ -96,6 +96,7 @@ export default function CurrentMovieBar({
       <View style={styles.container}>
         <Pressable
           accessible={false}
+          hitSlop={6}
           onPress={onMovieClick}
           style={({ pressed }) => [styles.posterButton, pressed && styles.pressed]}
         >

@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -36,7 +37,7 @@ function MessageStatusIcon({
   return <MaterialCommunityIcons accessible={false} name="check" size={13} color={theme.colors.white} />;
 }
 
-export default function ChatMessageBubble({
+function ChatMessageBubble({
   message,
   isOwn,
   canShowReadReceipt,
@@ -65,7 +66,7 @@ export default function ChatMessageBubble({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={failedLabel}
-      hitSlop={4}
+      hitSlop={6}
       onPress={onFailedPress}
       style={styles.retryButton}
     >
@@ -73,6 +74,13 @@ export default function ChatMessageBubble({
     </Pressable>
   );
 }
+
+export default memo(ChatMessageBubble, (previous, next) => (
+  previous.message === next.message
+  && previous.isOwn === next.isOwn
+  && previous.canShowReadReceipt === next.canShowReadReceipt
+  && previous.failedLabel === next.failedLabel
+));
 
 const styles = StyleSheet.create({
   bubble: {

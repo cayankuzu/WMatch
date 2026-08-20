@@ -1,0 +1,21 @@
+appId: com.wmatch.app
+name: Login
+env:
+  E2E_EMAIL: ${E2E_EMAIL}
+  E2E_PASSWORD: ${E2E_PASSWORD}
+---
+- launchApp:
+    clearState: true
+    stopApp: true
+- assertVisible: "Giriş yap"
+- tapOn: "E-posta"
+- inputText: ${E2E_EMAIL}
+- tapOn: "Şifre"
+- inputText: ${E2E_PASSWORD}
+- hideKeyboard
+- tapOn: "Giriş yap"
+- extendedWaitUntil:
+    visible: "İzle"
+    timeout: 20000
+- assertVisible: "Eşleş"
+- assertVisible: "Profil"

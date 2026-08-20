@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useEffect, useState } from 'react';
 
 import { useLocalization } from '../../context/LocalizationContext';
@@ -8,9 +8,10 @@ import DelayedActivityIndicator from './ui/DelayedActivityIndicator';
 
 interface LoadingScreenProps {
   message?: string;
+  onRetry?: () => void;
 }
 
-export default function LoadingScreen({ message }: LoadingScreenProps) {
+export default function LoadingScreen({ message, onRetry }: LoadingScreenProps) {
   const { t } = useLocalization();
   const [elapsedMs, setElapsedMs] = useState(0);
 
@@ -30,7 +31,18 @@ export default function LoadingScreen({ message }: LoadingScreenProps) {
         <DelayedActivityIndicator active color={theme.colors.primarySoft} size="large" />
         <Text style={styles.text}>{message ?? t('common.loading')}</Text>
         {elapsedMs >= 5000 ? <Text style={styles.delayText}>{t('app.loading.slow')}</Text> : null}
-        {elapsedMs >= 12000 ? <Text style={styles.delayText}>{t('app.loading.retryHint')}</Text> : null}
+        {elapsedMs >= 12000 && onRetry ? (
+          <>
+            <Text style={styles.delayText}>{t('app.loading.retryHint')}</Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={onRetry}
+              style={({ pressed }) => [styles.retryButton, pressed && styles.retryButtonPressed]}
+            >
+              <Text style={styles.retryText}>{t('data.action.retry')}</Text>
+            </Pressable>
+          </>
+        ) : null}
       </View>
     </Screen>
   );
@@ -68,5 +80,21 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.roles.meta.lineHeight,
     fontFamily: theme.fonts.medium,
     textAlign: 'center',
+  },
+  retryButton: {
+    minHeight: theme.layout.controlMinUnified,
+    minWidth: 96,
+    borderRadius: theme.radius.control,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    backgroundColor: theme.colors.primary,
+  },
+  retryButtonPressed: {
+    opacity: theme.interaction.pressedOpacity,
+  },
+  retryText: {
+    color: theme.colors.white,
+    ...theme.typography.roles.control,
   },
 });

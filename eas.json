@@ -17,9 +17,7 @@
   },
   "submit": {
     "production": {
-      "android": {
-        "serviceAccountKeyPath": ".secrets/firebase-admin/mwatch-69a6f-firebase-adminsdk-fbsvc-dbceb2e0a2.json"
-      },
+      "android": {},
       "ios": {
         "ascAppId": "6779453259",
         "appleTeamId": "HBRG8P523Z",

@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { API_BASE, fetchWithRetry, getAuthHeaders } from '../../utils/supabase/client';
@@ -10,10 +9,26 @@ import {
   type Movie,
 } from '../services/tmdb';
 import type { MediaRef, MediaType } from '../shared/types';
+import { storageKeys } from '../shared/constants/storage';
 import { getServerNowIsoString, getServerNowMs, syncServerTimeFromHeaders } from '../shared/utils/serverTime';
 import { subscribeToForeground } from '../shared/utils/appLifecycle';
 import { telemetry } from '../services/telemetry';
 import { useAuth } from './AuthContext';
+import {
+  deleteLibrarySnapshot,
+  ensureMovieInList,
+  filterMoviesByInput,
+  hasMovieInput,
+  moviesToRefs,
+  readLibrarySnapshot,
+  readMovieSyncOutbox as readStoredMovieSyncOutbox,
+  readPausedWatching as readStoredPausedWatching,
+  writeLibrarySnapshot,
+  writeMovieSyncOutbox as writeStoredMovieSyncOutbox,
+  writePausedWatching,
+  type MovieSyncPayload,
+  type PausedWatchingEntry,
+} from './app/librarySupport';
 
 interface WatchSessionContextType {
   currentlyWatching: Movie | null;
@@ -45,146 +60,11 @@ type AppContextType = WatchSessionContextType & LibraryContextType;
 const WatchSessionContext = createContext<WatchSessionContextType | undefined>(undefined);
 const LibraryContext = createContext<LibraryContextType | undefined>(undefined);
 const WATCH_SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
-const PAUSED_WATCHING_STORAGE_PREFIX = 'wmatch:paused-watching:';
-const MOVIE_SYNC_OUTBOX_PREFIX = 'wmatch:movie-sync-outbox:';
-const LIBRARY_SNAPSHOT_STORAGE_PREFIX = 'wmatch:library-snapshot:';
-const LIBRARY_SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
 const PROFILE_SYNC_DEBOUNCE_MS = 400;
 const MOVIE_HYDRATION_BATCH_SIZE = 8;
 const UNKNOWN_LIBRARY_ERROR = 'data.error.generic';
 const WATCHING_EXPIRED_NOTICE =
   'Bir içerik en fazla 12 saat boyunca "Şu anda izleniyor" alanında kalabilir. Süre dolduğu için otomatik olarak durduruldu.';
-
-type PausedWatchingEntry = {
-  movie: Movie;
-  remainingWatchMs: number;
-};
-
-type MovieSyncPayload = {
-  favoriteMedia: MediaRef[];
-  watchedMedia: MediaRef[];
-  favoriteIds?: number[];
-  watchedIds?: number[];
-  watchingId: number | null;
-  watchingMediaType: MediaType | null;
-  watchingAction?: 'start' | 'pause' | 'resume' | 'stop';
-  watchingVersion?: number | null;
-  idempotencyKey: string;
-  updatedAt: number;
-};
-
-type LibrarySnapshot = {
-  updatedAt: number;
-  favorites: Movie[];
-  watched: Movie[];
-};
-
-const isCachedMovie = (value: unknown): value is Movie => {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-
-  const movie = value as Partial<Movie>;
-  return Number.isInteger(movie.id) && Number(movie.id) > 0;
-};
-
-async function readLibrarySnapshot(userId: string): Promise<LibrarySnapshot | null> {
-  try {
-    const rawValue = await AsyncStorage.getItem(`${LIBRARY_SNAPSHOT_STORAGE_PREFIX}${userId}`);
-    if (!rawValue) {
-      return null;
-    }
-
-    const snapshot = JSON.parse(rawValue) as Partial<LibrarySnapshot>;
-    if (
-      !Number.isFinite(snapshot.updatedAt) ||
-      Date.now() - Number(snapshot.updatedAt) > LIBRARY_SNAPSHOT_TTL_MS ||
-      !Array.isArray(snapshot.favorites) ||
-      !snapshot.favorites.every(isCachedMovie) ||
-      !Array.isArray(snapshot.watched) ||
-      !snapshot.watched.every(isCachedMovie)
-    ) {
-      await AsyncStorage.removeItem(`${LIBRARY_SNAPSHOT_STORAGE_PREFIX}${userId}`);
-      return null;
-    }
-
-    return snapshot as LibrarySnapshot;
-  } catch (error) {
-    console.warn('Movie library snapshot could not be restored:', error);
-    return null;
-  }
-}
-
-const ensureMovieInList = (movies: Movie[], movie: Movie | null) => {
-  if (!movie || movies.some((item) => getMovieKey(item) === getMovieKey(movie))) {
-    return movies;
-  }
-
-  return [movie, ...movies];
-};
-
-const getMovieInputKey = (movie: Movie | number) => (
-  typeof movie === 'number' ? null : getMovieKey(movie)
-);
-
-const filterMoviesByInput = (movies: Movie[], movie: Movie | number) => {
-  const movieKey = getMovieInputKey(movie);
-
-  if (movieKey) {
-    return movies.filter((item) => getMovieKey(item) !== movieKey);
-  }
-
-  return movies.filter((item) => item.id !== movie);
-};
-
-const hasMovieInput = (movies: Movie[], movie: Movie | number) => {
-  const movieKey = getMovieInputKey(movie);
-
-  if (movieKey) {
-    return movies.some((item) => getMovieKey(item) === movieKey);
-  }
-
-  return movies.some((item) => item.id === movie);
-};
-
-const moviesToRefs = (movies: Movie[]) => movies.map(movieToMediaRef);
-
-const normalizeMediaRefs = (value: unknown, legacyIds: number[] = []): MediaRef[] => {
-  if (!Array.isArray(value)) {
-    return legacyMovieIdsToRefs(legacyIds);
-  }
-
-  const seen = new Set<string>();
-  const refs: MediaRef[] = [];
-
-  value.forEach((item) => {
-    if (!item || typeof item !== 'object') {
-      return;
-    }
-
-    const id = (item as { id?: unknown }).id;
-    const mediaType = (item as { mediaType?: unknown }).mediaType;
-
-    if (
-      typeof id !== 'number' ||
-      !Number.isInteger(id) ||
-      id <= 0 ||
-      (mediaType !== 'movie' && mediaType !== 'tv')
-    ) {
-      return;
-    }
-
-    const key = `${mediaType}:${id}`;
-    if (seen.has(key)) {
-      return;
-    }
-
-    seen.add(key);
-    refs.push({ id, mediaType });
-  });
-
-  return refs;
-};
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const { user, refreshUser } = useAuth();
@@ -207,11 +87,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const flushMovieSyncOutboxRef = useRef<() => Promise<void>>(async () => undefined);
   const watchingVersionRef = useRef<number | null>(user?.currentlyWatchingVersion ?? null);
   const libraryCacheMutationRef = useRef<Promise<void>>(Promise.resolve());
+  const libraryUserRef = useRef(user);
+
+  libraryUserRef.current = user;
 
   activeUserIdRef.current = user?.id ?? null;
 
-  const pausedWatchingStorageKey = user ? `${PAUSED_WATCHING_STORAGE_PREFIX}${user.id}` : null;
-  const movieSyncOutboxKey = user ? `${MOVIE_SYNC_OUTBOX_PREFIX}${user.id}` : null;
+  // Only library/watch fields can invalidate this hydration. Profile photos, display
+  // names and other account refreshes must not refetch the entire movie library.
+  const libraryHydrationKey = useMemo(
+    () => user
+      ? JSON.stringify({
+          id: user.id,
+          favoriteMedia: user.favoriteMedia,
+          watchedMedia: user.watchedMedia,
+          favoriteMovies: user.favoriteMovies,
+          watchedMovies: user.watchedMovies,
+          currentlyWatching: user.currentlyWatching,
+          currentlyWatchingMediaType: user.currentlyWatchingMediaType,
+          currentlyWatchingState: user.currentlyWatchingState,
+          currentlyWatchingRemainingMs: user.currentlyWatchingRemainingMs,
+          currentlyWatchingUpdatedAt: user.currentlyWatchingUpdatedAt,
+        })
+      : 'signed-out',
+    [user],
+  );
+
+  const pausedWatchingStorageKey = user ? storageKeys.pausedWatching(user.id) : null;
+  const movieSyncOutboxKey = user ? storageKeys.movieSyncOutbox(user.id) : null;
 
   const persistLibrarySnapshot = (nextFavorites: Movie[], nextWatched: Movie[]) => {
     const userId = activeUserIdRef.current;
@@ -219,24 +122,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const snapshot: LibrarySnapshot = {
-      updatedAt: Date.now(),
-      favorites: nextFavorites,
-      watched: nextWatched,
-    };
     libraryCacheMutationRef.current = libraryCacheMutationRef.current
       .catch(() => undefined)
       .then(async () => {
-        const storageKey = `${LIBRARY_SNAPSHOT_STORAGE_PREFIX}${userId}`;
-
         if (activeUserIdRef.current !== userId) {
           return;
         }
 
-        await AsyncStorage.setItem(storageKey, JSON.stringify(snapshot));
+        await writeLibrarySnapshot(userId, nextFavorites, nextWatched);
 
         if (activeUserIdRef.current !== userId) {
-          await AsyncStorage.removeItem(storageKey);
+          await deleteLibrarySnapshot(userId);
         }
       })
       .catch((error) => {
@@ -256,122 +152,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return movies.filter((movie): movie is Movie => movie != null);
   };
 
-  const readPausedWatching = async () => {
-    if (!pausedWatchingStorageKey) {
-      return null;
-    }
-
-    try {
-      const rawValue = await AsyncStorage.getItem(pausedWatchingStorageKey);
-      if (!rawValue) {
-        return null;
-      }
-
-      const parsedValue = JSON.parse(rawValue) as Partial<PausedWatchingEntry> & { movie?: Movie };
-
-      if (
-        parsedValue &&
-        typeof parsedValue === 'object' &&
-        parsedValue.movie &&
-        typeof parsedValue.remainingWatchMs === 'number' &&
-        Number.isFinite(parsedValue.remainingWatchMs)
-      ) {
-        return {
-          movie: parsedValue.movie,
-          remainingWatchMs: Math.max(0, parsedValue.remainingWatchMs),
-        } satisfies PausedWatchingEntry;
-      }
-
-      if (parsedValue && typeof parsedValue === 'object' && 'id' in parsedValue) {
-        return {
-          movie: parsedValue as Movie,
-          remainingWatchMs: WATCH_SESSION_DURATION_MS,
-        } satisfies PausedWatchingEntry;
-      }
-
-      return null;
-    } catch (error) {
-      console.warn('Paused watching movie could not be restored:', error);
-      return null;
-    }
-  };
-
-  const persistPausedWatching = async (entry: PausedWatchingEntry | null) => {
-    if (!pausedWatchingStorageKey) {
-      return;
-    }
-
-    try {
-      if (entry) {
-        await AsyncStorage.setItem(pausedWatchingStorageKey, JSON.stringify(entry));
-      } else {
-        await AsyncStorage.removeItem(pausedWatchingStorageKey);
-      }
-    } catch (error) {
-      console.warn('Paused watching movie could not be persisted:', error);
-    }
-  };
-
-  const readMovieSyncOutbox = async (): Promise<MovieSyncPayload[]> => {
-    if (!movieSyncOutboxKey) {
-      return [];
-    }
-
-    try {
-      const rawValue = await AsyncStorage.getItem(movieSyncOutboxKey);
-
-      if (!rawValue) {
-        return [];
-      }
-
-      const parsedValue = JSON.parse(rawValue) as Partial<MovieSyncPayload> | Partial<MovieSyncPayload>[];
-      const entries = Array.isArray(parsedValue) ? parsedValue : [parsedValue];
-
-      return entries.flatMap((entry) => {
-        if (
-          (!Array.isArray(entry.favoriteMedia) && !Array.isArray(entry.favoriteIds)) ||
-          (!Array.isArray(entry.watchedMedia) && !Array.isArray(entry.watchedIds)) ||
-          typeof entry.idempotencyKey !== 'string' ||
-          typeof entry.updatedAt !== 'number'
-        ) {
-          return [];
-        }
-
-        const parsedWatchingId = entry.watchingId;
-        return [{
-          favoriteMedia: normalizeMediaRefs(entry.favoriteMedia, entry.favoriteIds),
-          watchedMedia: normalizeMediaRefs(entry.watchedMedia, entry.watchedIds),
-          watchingId: Number.isInteger(parsedWatchingId) ? parsedWatchingId as number : null,
-          watchingMediaType: entry.watchingMediaType === 'tv' ? 'tv' : parsedWatchingId ? 'movie' : null,
-          watchingAction:
-            entry.watchingAction === 'start' ||
-            entry.watchingAction === 'pause' ||
-            entry.watchingAction === 'resume' ||
-            entry.watchingAction === 'stop'
-              ? entry.watchingAction
-              : undefined,
-          watchingVersion: typeof entry.watchingVersion === 'number' ? entry.watchingVersion : null,
-          idempotencyKey: entry.idempotencyKey,
-          updatedAt: entry.updatedAt,
-        } satisfies MovieSyncPayload];
-      });
-    } catch (error) {
-      console.warn('Movie sync outbox could not be restored:', error);
-      return [];
-    }
-  };
-
+  const readPausedWatching = () => (
+    readStoredPausedWatching(pausedWatchingStorageKey, WATCH_SESSION_DURATION_MS)
+  );
+  const persistPausedWatching = (entry: PausedWatchingEntry | null) => (
+    writePausedWatching(pausedWatchingStorageKey, entry)
+  );
+  const readMovieSyncOutbox = () => readStoredMovieSyncOutbox(movieSyncOutboxKey);
   const writeMovieSyncOutbox = async (queue: MovieSyncPayload[]) => {
-    if (!movieSyncOutboxKey) {
-      return;
-    }
-
     try {
-      if (queue.length === 0) {
-        await AsyncStorage.removeItem(movieSyncOutboxKey);
-      } else {
-        await AsyncStorage.setItem(movieSyncOutboxKey, JSON.stringify(queue));
-      }
+      await writeStoredMovieSyncOutbox(movieSyncOutboxKey, queue);
     } catch (error) {
       console.warn('Movie sync outbox could not be persisted:', error);
       throw error;
@@ -617,7 +407,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let mounted = true;
 
     async function hydrateFromProfile() {
-      if (!user) {
+      const hydrationUser = libraryUserRef.current;
+
+      if (!hydrationUser) {
         setCurrentlyWatchingState(null);
         setActiveWatching(null);
         setCurrentlyWatchingUpdatedAt(null);
@@ -635,7 +427,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       try {
         const pendingOutboxPromise = readMovieSyncOutbox();
-        const cachedLibrary = await readLibrarySnapshot(user.id);
+        const cachedLibrary = await readLibrarySnapshot(hydrationUser.id);
 
         if (!mounted) {
           return;
@@ -649,17 +441,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
         const pendingOutboxQueue = await pendingOutboxPromise;
         const pendingOutbox = pendingOutboxQueue.at(-1) ?? null;
-        const favoriteMedia = pendingOutbox?.favoriteMedia ?? user.favoriteMedia ?? legacyMovieIdsToRefs(user.favoriteMovies ?? []);
-        const watchedMedia = pendingOutbox?.watchedMedia ?? user.watchedMedia ?? legacyMovieIdsToRefs(user.watchedMovies ?? []);
-        const watchingId = pendingOutbox ? pendingOutbox.watchingId : user.currentlyWatching;
-        const watchingMediaType = pendingOutbox ? pendingOutbox.watchingMediaType : user.currentlyWatchingMediaType;
+        const favoriteMedia = pendingOutbox?.favoriteMedia ?? hydrationUser.favoriteMedia ?? legacyMovieIdsToRefs(hydrationUser.favoriteMovies ?? []);
+        const watchedMedia = pendingOutbox?.watchedMedia ?? hydrationUser.watchedMedia ?? legacyMovieIdsToRefs(hydrationUser.watchedMovies ?? []);
+        const watchingId = pendingOutbox ? pendingOutbox.watchingId : hydrationUser.currentlyWatching;
+        const watchingMediaType = pendingOutbox ? pendingOutbox.watchingMediaType : hydrationUser.currentlyWatchingMediaType;
         const serverWatchingState = pendingOutbox
           ? pendingOutbox.watchingAction === 'pause'
             ? 'paused'
             : pendingOutbox.watchingId
               ? 'active'
               : null
-          : user.currentlyWatchingState;
+          : hydrationUser.currentlyWatchingState;
         const [favoriteMovies, watchedMovies, activeMovie, pausedMovie] = await Promise.all([
           hydrateMovies(favoriteMedia),
           hydrateMovies(watchedMedia),
@@ -681,7 +473,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 movie: activeMovie,
                 remainingWatchMs: Math.max(
                   0,
-                  user.currentlyWatchingRemainingMs ?? WATCH_SESSION_DURATION_MS,
+                  hydrationUser.currentlyWatchingRemainingMs ?? WATCH_SESSION_DURATION_MS,
                 ),
               }
             : null;
@@ -696,7 +488,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setActiveWatching(serverWatchingState === 'active' ? activeMovie : null);
         setCurrentlyWatchingUpdatedAt(
           serverWatchingState === 'active' && activeMovie
-            ? (pendingOutbox ? getServerNowIsoString() : user.currentlyWatchingUpdatedAt ?? null)
+            ? (pendingOutbox ? getServerNowIsoString() : hydrationUser.currentlyWatchingUpdatedAt ?? null)
             : null,
         );
         setWatchingState(serverWatchingState === 'active' && activeMovie ? 'active' : restoredPausedEntry ? 'paused' : 'idle');
@@ -724,7 +516,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       mounted = false;
     };
-  }, [user]);
+  }, [libraryHydrationKey]);
 
   useEffect(() => {
     watchingVersionRef.current = user?.currentlyWatchingVersion ?? null;

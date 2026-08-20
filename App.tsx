@@ -29,28 +29,18 @@ function App() {
     Inter_700Bold,
     Inter_800ExtraBold,
   });
-  const fontsReady = fontsLoaded || Boolean(fontError);
+  useEffect(() => {
+    if (fontError) {
+      telemetry.captureException(fontError, { operation: 'font_bootstrap' });
+    }
+  }, [fontError]);
 
   const handleRootLayout = useCallback(() => {
-    if (!fontsReady) {
-      return;
-    }
-
-    // The React splash is painted before the native splash is released, avoiding
-    // a blank frame while auth/session cache restoration completes.
+    // Session/cache bootstrap must not wait for a presentation-only resource.
+    // Fonts are embedded in native builds; useFonts remains a development fallback.
     void ExpoSplashScreen.hideAsync().catch(() => undefined);
-    telemetry.markStartupMilestone('react_first_layout');
-  }, [fontsReady]);
-
-  useEffect(() => {
-    if (fontsReady) {
-      void ExpoSplashScreen.hideAsync().catch(() => undefined);
-    }
-  }, [fontsReady]);
-
-  if (!fontsReady) {
-    return null;
-  }
+    telemetry.markStartupMilestone('react_first_layout', { fontsLoaded });
+  }, [fontsLoaded]);
 
   return (
     <GestureHandlerRootView style={styles.root}>
