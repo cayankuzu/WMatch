@@ -1,0 +1,108 @@
+name: Database validation
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/**'
+      - 'scripts/check-migrations.mjs'
+      - 'scripts/database/**'
+      - 'scripts/guards/check-dependency-direction.mjs'
+      - 'tests/dependency-direction.test.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/database-validation.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'supabase/**'
+      - 'scripts/check-migrations.mjs'
+      - 'scripts/database/**'
+      - 'scripts/guards/check-dependency-direction.mjs'
+      - 'tests/dependency-direction.test.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/database-validation.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: database-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clean-replay-and-rls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin npm install-script policy engine
+        run: |
+          npm install --global npm@11.19.0 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Setup pinned Supabase CLI
+        uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf # v2.1.1
+        with:
+          version: 2.109.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Static migration safety
+        run: npm run check:migrations
+
+      - name: Architecture dependency direction
+        run: npm run check:architecture
+
+      - name: Start isolated local database
+        run: supabase db start
+
+      - name: First full migration replay
+        run: supabase db reset --local --no-seed
+
+      - name: Run pgTAP after first replay
+        run: npm run test:rls
+
+      - name: Second full migration replay
+        run: supabase db reset --local --no-seed
+
+      - name: Run pgTAP after second replay
+        run: npm run test:rls
+
+      - name: PostgreSQL function lint
+        run: supabase db lint --local --schema public,storage --level warning --fail-on error
+
+      - name: Local security and performance advisors
+        run: npm run check:db:advisors
+
+      - name: Compensate local advisor API-exposure blind spots
+        run: npm run check:db:exposure
+
+      - name: Assert atomic origin nonce concurrency
+        run: npm run test:db:nonce
+
+      - name: Assert schema parity
+        shell: bash
+        run: |
+          schema_diff="$(supabase db diff --from migrations --to local --schema public,storage,realtime)"
+          test -z "$schema_diff" || { echo "$schema_diff"; exit 1; }
+
+      - name: Local logical dump and isolated restore drill
+        run: npm run test:db:restore
+
+      - name: Stop local database
+        if: always()
+        run: supabase stop --no-backup

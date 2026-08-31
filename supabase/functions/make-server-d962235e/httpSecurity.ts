@@ -2,6 +2,11 @@ export type HeaderReader = {
   header(name: string): string | undefined;
 };
 
+export const normalizeRequestId = (value: string | undefined) => {
+  const normalized = value?.trim() ?? "";
+  return /^[A-Za-z0-9_-]{8,64}$/.test(normalized) ? normalized : null;
+};
+
 const isValidIpAddress = (value: string) => {
   if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) {
     return value.split(".").every((part) => Number(part) >= 0 && Number(part) <= 255);

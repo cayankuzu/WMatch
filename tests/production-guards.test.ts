@@ -21,6 +21,34 @@ function collectSourceFiles(path: string): string[] {
   return readdirSync(path).flatMap((entry) => collectSourceFiles(join(path, entry)));
 }
 
+function readEdgeSource() {
+  const edgeRoot = 'supabase/functions/make-server-d962235e';
+  const preferredOrder = [
+    'runtime.ts',
+    'sharedMiddleware.ts',
+    'domains/storage.ts',
+    'domains/system.ts',
+    'domains/tmdb.ts',
+    'domains/auth.ts',
+    'domains/profileDiscovery.ts',
+    'domains/swipe.ts',
+    'domains/match.ts',
+    'domains/chat.ts',
+    'domains/moderation.ts',
+    'domains/notification.ts',
+    'accountDeletion.ts',
+    'httpSecurity.ts',
+    'originHmac.ts',
+    'routeRegistry.ts',
+    'index.ts',
+  ].map((path) => join(edgeRoot, path));
+  const remainingFiles = collectSourceFiles(edgeRoot)
+    .filter((path) => !preferredOrder.includes(path) && !path.endsWith('_test.ts'))
+    .sort();
+
+  return [...preferredOrder, ...remainingFiles].map(read).join('\n');
+}
+
 const EXPO_CLI = join('node_modules', 'expo', 'bin', 'cli');
 
 describe('production guardrails', () => {
@@ -72,7 +100,7 @@ describe('production guardrails', () => {
   });
 
   it('does not trust spoofable proxy chains or expose native APIs through wildcard CORS', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const clientSource = read('utils/supabase/client.ts');
 
     expect(edgeSource).not.toContain('c.req.header("x-forwarded-for")');
@@ -174,7 +202,7 @@ describe('production guardrails', () => {
   });
 
   it('does not use wildcard selects in the Edge API', () => {
-    const source = read('supabase/functions/make-server-d962235e/index.ts');
+    const source = readEdgeSource();
 
     expect(source).not.toContain('.select("*")');
     expect(source).not.toMatch(/\.select\(\s*\)/);
@@ -183,7 +211,7 @@ describe('production guardrails', () => {
   });
 
   it('keeps exact location in the private profile boundary', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const migrationSource = read('supabase/migrations/20260714120000_profile_private_location_boundary.sql');
 
     expect(migrationSource).toContain('CREATE TABLE IF NOT EXISTS public.profiles_private');
@@ -218,11 +246,11 @@ describe('production guardrails', () => {
   });
 
   it('uses deterministic keyset pagination for the full compatibility candidate set', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const migrationSource = read('supabase/migrations/20260819090000_discovery_correctness_read_models.sql');
     const screenSource = read('src/app/components/CompatibilityScreen.tsx');
 
-    expect(edgeSource).toContain('supabase.rpc(\n      "get_compatibility_candidate_page"');
+    expect(edgeSource).toMatch(/supabase\.rpc\(\s*"get_compatibility_candidate_page"/);
     expect(edgeSource).not.toContain('loadCompatibilityCandidatePageFallback');
     expect(edgeSource).toContain('p_cursor_score: cursor?.score');
     expect(edgeSource).not.toContain('p_cursor_overlap');
@@ -255,7 +283,7 @@ describe('production guardrails', () => {
   });
 
   it('updates profile movie collections through a service-only atomic RPC', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const migrationSource = read('supabase/migrations/20260714224500_atomic_user_movie_collections_rpc.sql');
     const typedMigrationSource = read('supabase/migrations/20260715183000_final_reaudit_contracts.sql');
     const p0MigrationSource = read('supabase/migrations/20260715201000_p0_reaudit_closures.sql');
@@ -286,7 +314,7 @@ describe('production guardrails', () => {
 
   it('keeps movie library sync ordered and separate from watch-session transitions', () => {
     const appSource = readTogether('src/context/AppContext.tsx', 'src/context/app/librarySupport.ts');
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const watchReturnTypeMigrationSource = read('supabase/migrations/20260720012500_watch_session_media_type_ambiguity_fix.sql');
 
     expect(appSource).toContain('const requestBody: Record<string, unknown>');
@@ -312,7 +340,7 @@ describe('production guardrails', () => {
   });
 
   it('uses redacted structured Edge request logging', () => {
-    const source = read('supabase/functions/make-server-d962235e/index.ts');
+    const source = readEdgeSource();
 
     expect(source).not.toContain('logger(console.log)');
     expect(source).toContain('requestId');
@@ -321,7 +349,7 @@ describe('production guardrails', () => {
   });
 
   it('delivers push notifications through a durable service-only retry outbox', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const migrationSource = read('supabase/migrations/20260718120000_production_integrity_hardening.sql');
     const healthMigrationSource = read('supabase/migrations/20260819100000_push_delivery_health.sql');
     const receiptMigrationSource = read('supabase/migrations/20260819190000_push_delivery_receipts.sql');
@@ -371,7 +399,7 @@ describe('production guardrails', () => {
   });
 
   it('typechecks the Edge boundary against generated database types', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const generatedTypes = read('supabase/types/database.generated.ts');
 
     expect(edgeSource).toContain('createClient<Database>');
@@ -381,7 +409,7 @@ describe('production guardrails', () => {
   });
 
   it('exposes release and schema readiness in the Edge health contract', () => {
-    const source = read('supabase/functions/make-server-d962235e/index.ts');
+    const source = readEdgeSource();
     const configSource = read('supabase/config.toml');
     const { version } = JSON.parse(read('package.json')) as { version: string };
 
@@ -403,7 +431,7 @@ describe('production guardrails', () => {
   });
 
   it('keeps match selects aligned with the composite matches primary key', () => {
-    const source = read('supabase/functions/make-server-d962235e/index.ts');
+    const source = readEdgeSource();
     const matchSelect = source.slice(
       source.indexOf('const MATCH_SELECT ='),
       source.indexOf('const MESSAGE_SELECT ='),
@@ -416,7 +444,7 @@ describe('production guardrails', () => {
   });
 
   it('keeps chat list message stats on the bounded RPC path', () => {
-    const source = read('supabase/functions/make-server-d962235e/index.ts');
+    const source = readEdgeSource();
     const statsFunction = source.slice(
       source.indexOf('const loadChatMessageStats = async'),
       source.indexOf('const fetchMatchBetweenUsers = async'),
@@ -489,10 +517,8 @@ describe('production guardrails', () => {
     const liveNowSource = read('src/app/hooks/useLiveNowUsers.ts');
     const watchHomeSource = read('src/app/hooks/useWatchHomeController.ts');
     const apiSource = read('src/services/api.ts');
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
-    const liveNowRoute = edgeSource.slice(
-      edgeSource.indexOf('app.get("/make-server-d962235e/watch/live-now"'),
-      edgeSource.indexOf('app.get("/make-server-d962235e/users"'),
+    const liveNowRoute = read(
+      'supabase/functions/make-server-d962235e/domains/profileDiscovery.ts',
     );
 
     expect(apiSource).toContain('`/watch/live-now${buildQueryString');
@@ -503,19 +529,18 @@ describe('production guardrails', () => {
     expect(liveNowSource).toContain('if (!options.force)');
     expect(watchHomeSource).toContain('activeWatchingKey');
     expect(watchHomeSource).toContain('void refreshLiveNow({ force: true })');
-    expect(liveNowRoute).toContain('supabase.rpc("get_live_now_users"');
+    expect(liveNowRoute).toMatch(/supabase\.rpc\(\s*"get_live_now_users"/);
     expect(liveNowRoute).toContain('decodeLiveNowCursor');
     expect(liveNowRoute).toContain('encodeLiveNowCursor');
     expect(liveNowRoute).not.toContain('fetchActiveMatchedUserIdsForUser');
   });
 
   it('pages same-title watch discovery without a fixed candidate cap', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const migrationSource = read('supabase/migrations/20260819090000_discovery_correctness_read_models.sql');
     const matchSource = read('src/app/components/MatchScreen.tsx');
-    const routeSource = edgeSource.slice(
-      edgeSource.indexOf('app.get("/make-server-d962235e/discovery/watch"'),
-      edgeSource.indexOf('app.get("/make-server-d962235e/discovery/compatibility"'),
+    const routeSource = read(
+      'supabase/functions/make-server-d962235e/domains/profileDiscovery.ts',
     );
 
     expect(routeSource).toContain('get_watch_discovery_candidate_page');
@@ -537,7 +562,7 @@ describe('production guardrails', () => {
   it('keeps media identity typed for currently-watching and live-now hydration', () => {
     const typeSource = read('src/shared/types/index.ts');
     const watchHomeSource = read('src/app/hooks/useWatchHomeController.ts');
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const migrationSource = read('supabase/migrations/20260715162000_media_type_live_now_contract.sql');
 
     expect(typeSource).toContain("currentlyWatchingMediaType: MediaType | null");
@@ -555,7 +580,7 @@ describe('production guardrails', () => {
   });
 
   it('keeps compatibility scoring typed so movie and tv id collisions do not match', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const compatibilitySource = read('src/shared/utils/compatibility.ts');
     const profileViewerSource = read('src/app/components/ProfileViewer.tsx');
     const likesSource = read('src/app/components/LikesScreen.tsx');
@@ -571,7 +596,7 @@ describe('production guardrails', () => {
   });
 
   it('recovers legacy chats from message peers without enabling sends without a match', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const migrationSource = read('supabase/migrations/20260715201000_p0_reaudit_closures.sql');
     const chatsRoute = edgeSource.slice(
       edgeSource.indexOf('app.get("/make-server-d962235e/chats"'),
@@ -606,17 +631,15 @@ describe('production guardrails', () => {
   });
 
   it('uses a single RPC for watch session transitions with version conflict handling', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
     const migrationSource = read('supabase/migrations/20260715201000_p0_reaudit_closures.sql');
-    const profileRoute = edgeSource.slice(
-      edgeSource.indexOf('app.put("/make-server-d962235e/profile"'),
-      edgeSource.indexOf('app.get("/make-server-d962235e/users"'),
+    const profileRoute = read(
+      'supabase/functions/make-server-d962235e/domains/profileDiscovery.ts',
     );
 
     expect(migrationSource).toContain('CREATE OR REPLACE FUNCTION public.apply_watch_session_transition');
     expect(migrationSource).toContain('FOR UPDATE');
     expect(migrationSource).toContain('watch_version_conflict');
-    expect(profileRoute).toContain('supabase.rpc("apply_watch_session_transition"');
+    expect(profileRoute).toMatch(/supabase\.rpc\(\s*"apply_watch_session_transition"/);
     expect(profileRoute).toContain('currentlyWatchingVersion');
     expect(profileRoute).toContain('conflict: conflictWatching');
     expect(profileRoute).toContain('}, 409)');
@@ -625,7 +648,7 @@ describe('production guardrails', () => {
 
   it('does not send incoming-like profile DTOs when likes are entitlement locked', () => {
     const screenSource = read('src/app/components/LikesScreen.tsx');
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const likesRoute = edgeSource.slice(
       edgeSource.indexOf('app.get("/make-server-d962235e/discovery/likes"'),
       edgeSource.indexOf('app.get("/make-server-d962235e/matches"'),
@@ -642,7 +665,7 @@ describe('production guardrails', () => {
   it('uses tuple chat cursors instead of created-at-only pagination', () => {
     const modalSource = read('src/app/components/ChatModal.tsx');
     const apiSource = read('src/services/api.ts');
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const messagesRoute = edgeSource.slice(
       edgeSource.indexOf('app.get("/make-server-d962235e/messages/:userId"'),
       edgeSource.indexOf('app.post("/make-server-d962235e/messages/:userId"'),
@@ -1025,7 +1048,7 @@ describe('production guardrails', () => {
     const modalSource = read('src/app/components/ChatModal.tsx');
     const cacheSource = read('src/services/chatCache.ts');
     const constantsSource = read('src/shared/constants/index.ts');
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
 
     expect(constantsSource).toContain('CHAT_THREAD_INITIAL_PAGE_SIZE = 33');
     expect(cacheSource).toContain('CHAT_THREAD_CACHE_TTL_MS = 15 * 60 * 1000');
@@ -1103,7 +1126,8 @@ describe('production guardrails', () => {
     expect(profileCardSource).toContain('useAnimatedStyle');
     expect(profileCardSource).toContain('runOnJS(commitDown)');
     expect(profileCardSource).toContain("import AppImage from './ui/AppImage'");
-    expect(imageSource).toContain('cachePolicy="memory-disk"');
+    expect(imageSource).toContain("cachePolicy={stableCacheKey ? 'memory' : 'memory-disk'}");
+    expect(read('src/context/AuthContext.tsx')).toContain('clearPrivateImageMemoryCache()');
     expect(imageSource).toContain('getStableImageCacheKey(uri)');
     expect(imageSource).toContain('enforceEarlyResizing = true');
     expect(imageSource).not.toContain('blurhash');
@@ -1115,7 +1139,7 @@ describe('production guardrails', () => {
     const controllerSource = read('src/app/hooks/useWatchHomeController.ts');
     const snapshotSource = read('src/services/watchHomeSnapshot.ts');
     const tmdbSource = read('src/services/tmdb.ts');
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
 
     expect(controllerSource).toContain('readWatchHomeSnapshot()');
     expect(controllerSource).toContain('new AbortController()');
@@ -1177,7 +1201,7 @@ describe('production guardrails', () => {
   it('keeps match presentation optimistic and moves notification side effects off the response path', () => {
     const matchSource = read('src/app/components/MatchScreen.tsx');
     const swipeSource = read('src/app/components/SwipeModal.tsx');
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const likeRoute = edgeSource.slice(
       edgeSource.indexOf('app.post("/make-server-d962235e/likes/:userId"'),
       edgeSource.indexOf('app.post("/make-server-d962235e/likes/:userId/undo"'),
@@ -1198,7 +1222,7 @@ describe('production guardrails', () => {
     const constantsSource = read('src/shared/constants/index.ts');
     const hookSource = read('src/app/hooks/useLiveNowUsers.ts');
     const watchHomeSource = read('src/app/hooks/useWatchHomeController.ts');
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
 
     expect(constantsSource).toContain('LIVE_NOW_PAGE_SIZE = 16');
     expect(hookSource).toContain('limit: LIVE_NOW_PAGE_SIZE');
@@ -1230,7 +1254,7 @@ describe('production guardrails', () => {
   it('serializes push-token sync so startup and foreground work cannot race', () => {
     const source = read('src/services/notifications.ts');
     const appSource = read('src/app/App.tsx');
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
 
     expect(source).toContain('let pushSyncInFlight:');
     expect(source).toContain('pushSyncInFlight.userId === normalizedUserId');
@@ -1285,12 +1309,12 @@ describe('production guardrails', () => {
     expect(modalSource).toContain('{characterCount}/{MAX_MESSAGE_LENGTH}');
     expect(modalSource).toContain("t('chat.modal.retry.resend')");
     expect(modalSource).toContain("t('chat.modal.retry.cancel')");
-    expect(modalSource).toContain('removePendingChatMessage(currentUserId, message.id)');
+    expect(modalSource).toContain('cancelPendingChatMessage(currentUserId, message.id)');
     expect(validationSource).toContain('Array.from(value).slice(0, MAX_MESSAGE_LENGTH)');
   });
 
   it('does not reveal whether a password reset account exists', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const routeSource = edgeSource.slice(
       edgeSource.indexOf('app.post("/make-server-d962235e/auth/password-reset"'),
       edgeSource.indexOf('app.post("/make-server-d962235e/auth/signup"'),
@@ -1304,7 +1328,7 @@ describe('production guardrails', () => {
   });
 
   it('does not expose raw infrastructure errors through Edge API responses', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
 
     expect(edgeSource).not.toMatch(/return c\.json\(\{ error: String\(error\)/);
     expect(edgeSource).not.toMatch(/return c\.json\(\{ error: error\.message/);
@@ -1369,7 +1393,7 @@ describe('production guardrails', () => {
   });
 
   it('keeps end-and-remove chat cleanup inside one service-only transaction', () => {
-    const edgeSource = read('supabase/functions/make-server-d962235e/index.ts');
+    const edgeSource = readEdgeSource();
     const migrationSource = read(
       'supabase/migrations/20260718120000_production_integrity_hardening.sql',
     );
@@ -1382,6 +1406,29 @@ describe('production guardrails', () => {
     expect(migrationSource).toContain(
       'REVOKE ALL ON FUNCTION public.delete_chat_for_user_atomic(UUID, UUID, TEXT)',
     );
+  });
+
+  it('keeps privacy-sensitive writes and signed origin traffic behind service boundaries', () => {
+    const edgeSource = readEdgeSource();
+    const hmacSource = read('supabase/functions/make-server-d962235e/originHmac.ts');
+    const deletionSource = read('supabase/functions/make-server-d962235e/accountDeletion.ts');
+    const migrationSource = read(
+      'supabase/migrations/20260830120000_security_privacy_closures.sql',
+    );
+
+    expect(edgeSource).toContain('validateOwnedProfilePhotos');
+    expect(edgeSource).toContain('client_payload_hash');
+    expect(edgeSource).toContain('idempotencyReplayed');
+    expect(edgeSource).toContain('createOriginHmacMiddleware');
+    expect(hmacSource).toContain('REQUIRE_CLOUDFLARE_ORIGIN_HMAC');
+    expect(hmacSource).toContain('crypto.subtle.verify');
+    expect(hmacSource).toContain('claimNonce');
+    expect(deletionSource).toContain('resumeAccountDeletionJob');
+    expect(migrationSource).toContain('REVOKE ALL ON FUNCTION public.check_email_availability(TEXT)');
+    expect(migrationSource).toContain('CREATE TABLE IF NOT EXISTS public.edge_origin_hmac_nonces');
+    expect(migrationSource).toContain('CREATE TABLE IF NOT EXISTS public.moderation_report_audit_events');
+    expect(migrationSource).toContain('Service boundary messages');
+    expect(migrationSource).toContain('Service boundary moderation reports');
   });
 
   it('keeps the UI hardening primitives wired to semantic tokens', () => {

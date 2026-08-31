@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import * as Linking from 'expo-linking';
 import type { Session } from '@supabase/supabase-js';
 
-import { API_BASE, fetchWithRetry, getAuthHeaders, getPublicApiHeaders, supabase } from '../../utils/supabase/client';
+import { API_BASE, fetchWithRetry, getAuthHeaders, getPublicApiHeaders, resolveApiUrl, supabase } from '../../utils/supabase/client';
 import {
   cleanupManagedProfilePhotos,
   cleanupRemovedProfilePhotos,
@@ -16,6 +16,7 @@ import {
   getPasswordResetRedirectUrl,
 } from '../shared/config/publicWeb';
 import { clearPushNotifications, resetPushNotificationSyncState } from '../services/notifications';
+import { clearPrivateImageMemoryCache } from '../services/imageCache';
 import { purgeChatOutbox } from '../services/chatOutbox';
 import { clearSignupDraft, readSignupDraft } from '../services/signupDraft';
 import { telemetry } from '../services/telemetry';
@@ -90,6 +91,7 @@ async function purgeLocalAuthSession(userId: string | null) {
     purgeChatOutbox(userId),
     deleteCachedProfile(userId),
     clearSignupDraft(),
+    clearPrivateImageMemoryCache(),
   ]);
 }
 
@@ -496,9 +498,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      const response = await fetchWithRetry(`${API_BASE}/auth/check-availability`, {
+      const apiPath = '/auth/check-availability';
+      const response = await fetchWithRetry(resolveApiUrl(apiPath), {
         method: 'POST',
-        headers: await getPublicApiHeaders(),
+        headers: await getPublicApiHeaders(apiPath),
         body: JSON.stringify(normalizedPayload),
       });
       syncServerTimeFromHeaders(response.headers);
@@ -524,7 +527,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error(passwordError);
     }
 
-    const safeMetadataPhotos = userData.photos.filter(isRemoteProfilePhotoUri);
+    // Signup metadata is untrusted and processed before the user owns a storage
+    // namespace. Photos are finalized only through the authenticated profile API.
+    const safeMetadataPhotos: string[] = [];
 
     const authFlowState = await beginAuthFlow('signup');
     const { error } = await supabase.auth.signUp({
@@ -571,10 +576,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const authFlowState = await beginAuthFlow('recovery');
 
     try {
-      const response = await fetchWithRetry(`${API_BASE}/auth/password-reset`, {
+      const apiPath = '/auth/password-reset';
+      const response = await fetchWithRetry(resolveApiUrl(apiPath), {
         method: 'POST',
         headers: {
-          ...(await getPublicApiHeaders()),
+          ...(await getPublicApiHeaders(apiPath)),
           'Idempotency-Key': createMutationKey('password-reset'),
         },
         body: JSON.stringify({

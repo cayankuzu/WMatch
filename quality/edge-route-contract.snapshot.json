@@ -1,0 +1,211 @@
+{
+  "schemaVersion": 1,
+  "routeCount": 41,
+  "routes": [
+    {
+      "domain": "system",
+      "method": "GET",
+      "path": "/make-server-d962235e/health"
+    },
+    {
+      "domain": "tmdb",
+      "method": "POST",
+      "path": "/make-server-d962235e/tmdb/media-batch"
+    },
+    {
+      "domain": "tmdb",
+      "method": "GET",
+      "path": "/make-server-d962235e/tmdb/*"
+    },
+    {
+      "domain": "auth",
+      "method": "POST",
+      "path": "/make-server-d962235e/auth/check-availability"
+    },
+    {
+      "domain": "auth",
+      "method": "POST",
+      "path": "/make-server-d962235e/auth/password-reset"
+    },
+    {
+      "domain": "auth",
+      "method": "POST",
+      "path": "/make-server-d962235e/auth/signup"
+    },
+    {
+      "domain": "auth",
+      "method": "DELETE",
+      "path": "/make-server-d962235e/account"
+    },
+    {
+      "domain": "auth",
+      "method": "POST",
+      "path": "/make-server-d962235e/account-deletion-jobs/resume"
+    },
+    {
+      "domain": "profileDiscovery",
+      "method": "GET",
+      "path": "/make-server-d962235e/profile/:userId"
+    },
+    {
+      "domain": "profileDiscovery",
+      "method": "PUT",
+      "path": "/make-server-d962235e/profile"
+    },
+    {
+      "domain": "profileDiscovery",
+      "method": "GET",
+      "path": "/make-server-d962235e/watch/live-now"
+    },
+    {
+      "domain": "profileDiscovery",
+      "method": "GET",
+      "path": "/make-server-d962235e/users"
+    },
+    {
+      "domain": "profileDiscovery",
+      "method": "GET",
+      "path": "/make-server-d962235e/discovery/watch"
+    },
+    {
+      "domain": "profileDiscovery",
+      "method": "GET",
+      "path": "/make-server-d962235e/discovery/compatibility"
+    },
+    {
+      "domain": "swipe",
+      "method": "GET",
+      "path": "/make-server-d962235e/swipe-quota"
+    },
+    {
+      "domain": "swipe",
+      "method": "POST",
+      "path": "/make-server-d962235e/swipe-quota/consume"
+    },
+    {
+      "domain": "swipe",
+      "method": "POST",
+      "path": "/make-server-d962235e/likes/:userId"
+    },
+    {
+      "domain": "swipe",
+      "method": "POST",
+      "path": "/make-server-d962235e/likes/:userId/undo"
+    },
+    {
+      "domain": "swipe",
+      "method": "DELETE",
+      "path": "/make-server-d962235e/likes/:userId"
+    },
+    {
+      "domain": "swipe",
+      "method": "DELETE",
+      "path": "/make-server-d962235e/likes/incoming/:userId"
+    },
+    {
+      "domain": "swipe",
+      "method": "PUT",
+      "path": "/make-server-d962235e/likes/incoming/:userId/restore"
+    },
+    {
+      "domain": "swipe",
+      "method": "GET",
+      "path": "/make-server-d962235e/likes"
+    },
+    {
+      "domain": "swipe",
+      "method": "GET",
+      "path": "/make-server-d962235e/discovery/likes"
+    },
+    {
+      "domain": "match",
+      "method": "GET",
+      "path": "/make-server-d962235e/matches"
+    },
+    {
+      "domain": "match",
+      "method": "PUT",
+      "path": "/make-server-d962235e/matches/status"
+    },
+    {
+      "domain": "match",
+      "method": "GET",
+      "path": "/make-server-d962235e/blocks"
+    },
+    {
+      "domain": "match",
+      "method": "POST",
+      "path": "/make-server-d962235e/blocks/:userId"
+    },
+    {
+      "domain": "match",
+      "method": "DELETE",
+      "path": "/make-server-d962235e/blocks/:userId"
+    },
+    {
+      "domain": "chat",
+      "method": "POST",
+      "path": "/make-server-d962235e/chats/:userId/hide"
+    },
+    {
+      "domain": "chat",
+      "method": "POST",
+      "path": "/make-server-d962235e/chats/:userId/delete"
+    },
+    {
+      "domain": "chat",
+      "method": "PUT",
+      "path": "/make-server-d962235e/chats/:userId/settings"
+    },
+    {
+      "domain": "chat",
+      "method": "GET",
+      "path": "/make-server-d962235e/messages/:userId"
+    },
+    {
+      "domain": "chat",
+      "method": "POST",
+      "path": "/make-server-d962235e/messages/:userId"
+    },
+    {
+      "domain": "chat",
+      "method": "PUT",
+      "path": "/make-server-d962235e/messages/thread/:userId/read"
+    },
+    {
+      "domain": "chat",
+      "method": "PUT",
+      "path": "/make-server-d962235e/messages/:messageId/read"
+    },
+    {
+      "domain": "chat",
+      "method": "GET",
+      "path": "/make-server-d962235e/chats"
+    },
+    {
+      "domain": "moderation",
+      "method": "POST",
+      "path": "/make-server-d962235e/reports"
+    },
+    {
+      "domain": "notification",
+      "method": "POST",
+      "path": "/make-server-d962235e/notifications/push-outbox/drain"
+    },
+    {
+      "domain": "notification",
+      "method": "POST",
+      "path": "/make-server-d962235e/notifications/push-token"
+    },
+    {
+      "domain": "notification",
+      "method": "DELETE",
+      "path": "/make-server-d962235e/notifications/push-token"
+    },
+    {
+      "domain": "notification",
+      "method": "PUT",
+      "path": "/make-server-d962235e/notifications/events/:eventId/read"
+    }
+  ]
+}

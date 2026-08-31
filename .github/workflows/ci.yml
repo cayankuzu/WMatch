@@ -31,6 +31,11 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Pin npm install-script policy engine
+        run: |
+          npm install --global npm@11.19.0 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "11.19.0"
+
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf # v2.1.1
         with:
@@ -57,6 +62,9 @@ jobs:
       - name: Signing identity guard
         run: npm run check:signing
 
+      - name: Native and OTA config parity
+        run: npm run check:native-parity
+
       - name: Private secret guard
         run: npm run check:secrets
 
@@ -65,6 +73,12 @@ jobs:
 
       - name: Touch target guard
         run: npm run check:touch
+
+      - name: Architecture dependency direction guard
+        run: npm run check:architecture
+
+      - name: Frozen product surface guard
+        run: npm run check:feature-surface
 
       - name: Typecheck
         run: npm run typecheck
@@ -103,3 +117,7 @@ jobs:
 
       - name: Expo doctor
         run: npm run doctor
+
+      - name: Stop local database
+        if: always()
+        run: supabase stop --no-backup

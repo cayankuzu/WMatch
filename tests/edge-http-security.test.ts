@@ -4,6 +4,7 @@ import {
   getRequestRateLimitIdentity,
   isTrustedPasswordResetRedirect,
   normalizeIdempotencyKey,
+  normalizeRequestId,
 } from '../supabase/functions/make-server-d962235e/httpSecurity';
 
 const headers = (values: Record<string, string>) => ({
@@ -52,5 +53,12 @@ describe('Edge HTTP security boundary', () => {
     expect(normalizeIdempotencyKey('message:1234')).toBe('message:1234');
     expect(normalizeIdempotencyKey('short')).toBeNull();
     expect(normalizeIdempotencyKey('x'.repeat(181))).toBeNull();
+  });
+
+  it('accepts only bounded log-safe request IDs', () => {
+    expect(normalizeRequestId('request_1234')).toBe('request_1234');
+    expect(normalizeRequestId('short')).toBeNull();
+    expect(normalizeRequestId(`valid123\nforged-log`)).toBeNull();
+    expect(normalizeRequestId('x'.repeat(65))).toBeNull();
   });
 });

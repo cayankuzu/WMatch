@@ -24,11 +24,17 @@ vi.mock('@supabase/supabase-js', () => ({
 }));
 
 vi.mock('../utils/supabase/info', () => ({
+  apiGatewayBaseUrl: 'https://edge.example.test',
   projectId: 'test-project',
   publicAnonKey: 'test-anon-key',
 }));
 
-import { fetchWithRetry, RequestTimeoutError } from '../utils/supabase/client';
+import {
+  fetchWithRetry,
+  RequestTimeoutError,
+  resolveApiUrl,
+  shouldUseEdgeGateway,
+} from '../utils/supabase/client';
 
 function createAbortAwareFetch() {
   return vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
@@ -84,5 +90,27 @@ describe('fetchWithRetry cancellation semantics', () => {
 
     await assertion;
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('selective edge routing', () => {
+  it('routes only the security and public metadata allowlist through the stable gateway', () => {
+    expect(resolveApiUrl('/tmdb/trending/all/week')).toBe(
+      'https://edge.example.test/tmdb/trending/all/week',
+    );
+    expect(resolveApiUrl('/auth/password-reset')).toBe(
+      'https://edge.example.test/auth/password-reset',
+    );
+    expect(resolveApiUrl('/reports')).toBe('https://edge.example.test/reports');
+    expect(shouldUseEdgeGateway('/messages/peer-id')).toBe(false);
+    expect(resolveApiUrl('/messages/peer-id')).toBe(
+      'https://test-project.supabase.co/functions/v1/make-server-d962235e/messages/peer-id',
+    );
+  });
+
+  it('rejects ambiguous non-rooted API paths', () => {
+    expect(() => resolveApiUrl('tmdb/trending/all/week')).toThrow(
+      'API paths must start with a forward slash.',
+    );
   });
 });

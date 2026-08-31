@@ -1,0 +1,32 @@
+{
+  "name": "@wmatch/cloudflare-edge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.19.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=11.19.0"
+  },
+  "scripts": {
+    "check": "npm run types:check && npm run typecheck && npm test && npm run deploy:dry-run",
+    "deploy:dry-run": "wrangler versions upload --env development --dry-run",
+    "test": "vitest run && node --test scripts/release-evidence.test.mjs",
+    "typecheck": "tsc --noEmit && tsc --project test/tsconfig.json --noEmit",
+    "types": "wrangler types --env development --env-interface CloudflareBindings",
+    "types:check": "wrangler types --env development --env-interface CloudflareBindings --check"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.1.2",
+    "@types/node": "26.1.1",
+    "jose": "6.2.10",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11",
+    "wrangler": "4.127.1"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260828.1": true
+  }
+}

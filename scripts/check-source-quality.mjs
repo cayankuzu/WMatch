@@ -40,8 +40,23 @@ const LEGACY_COMPONENT_LINE_BUDGETS = new Map([
 const LEGACY_SOURCE_LINE_BUDGETS = new Map([
   ['src/services/api.ts', 1060],
   ['src/context/AuthContext.tsx', 800],
-  ['src/context/AppContext.tsx', 835],
-  ['supabase/functions/make-server-d962235e/index.ts', 6660],
+  ['src/context/AppContext.tsx', 875],
+]);
+const EDGE_SOURCE_BUDGETS = new Map([
+  ['supabase/functions/make-server-d962235e/index.ts', { lines: 40, routes: 0 }],
+  ['supabase/functions/make-server-d962235e/routeRegistry.ts', { lines: 100, routes: 0 }],
+  ['supabase/functions/make-server-d962235e/runtime.ts', { lines: 3750, routes: 0 }],
+  ['supabase/functions/make-server-d962235e/sharedMiddleware.ts', { lines: 180, routes: 0 }],
+  ['supabase/functions/make-server-d962235e/domains/auth.ts', { lines: 330, routes: 5 }],
+  ['supabase/functions/make-server-d962235e/domains/chat.ts', { lines: 830, routes: 8 }],
+  ['supabase/functions/make-server-d962235e/domains/match.ts', { lines: 320, routes: 5 }],
+  ['supabase/functions/make-server-d962235e/domains/moderation.ts', { lines: 430, routes: 1 }],
+  ['supabase/functions/make-server-d962235e/domains/notification.ts', { lines: 230, routes: 4 }],
+  ['supabase/functions/make-server-d962235e/domains/profileDiscovery.ts', { lines: 1100, routes: 6 }],
+  ['supabase/functions/make-server-d962235e/domains/storage.ts', { lines: 700, routes: 0 }],
+  ['supabase/functions/make-server-d962235e/domains/swipe.ts', { lines: 720, routes: 9 }],
+  ['supabase/functions/make-server-d962235e/domains/system.ts', { lines: 80, routes: 1 }],
+  ['supabase/functions/make-server-d962235e/domains/tmdb.ts', { lines: 260, routes: 2 }],
 ]);
 
 for (const file of sourceFiles) {
@@ -87,6 +102,20 @@ for (const file of sourceFiles) {
     oversizedFiles.push(`${file} (${source.split(/\r?\n/).length}/${sourceLineBudget})`);
   }
 
+  const edgeBudget = EDGE_SOURCE_BUDGETS.get(file);
+  if (edgeBudget) {
+    const lineCount = source.split(/\r?\n/).length;
+    const routeCount = (source.match(/\bapp\.(get|post|put|patch|delete)\s*\(/g) ?? []).length;
+
+    if (lineCount > edgeBudget.lines) {
+      oversizedFiles.push(`${file} (${lineCount}/${edgeBudget.lines})`);
+    }
+
+    if (routeCount > edgeBudget.routes) {
+      oversizedFiles.push(`${file} route complexity (${routeCount}/${edgeBudget.routes})`);
+    }
+  }
+
   const fileConsoleCalls = (source.match(/\bconsole\.(log|debug|info|warn|error)\s*\(/g) ?? []).length;
   const fileExplicitAny = (source.match(/\bany\b/g) ?? []).length;
   consoleCalls += fileConsoleCalls;
@@ -97,7 +126,7 @@ for (const file of sourceFiles) {
     runtimeExplicitAny += fileExplicitAny;
   }
 
-  if (file === 'supabase/functions/make-server-d962235e/index.ts') {
+  if (file.startsWith('supabase/functions/make-server-d962235e/')) {
     edgeExplicitAny += fileExplicitAny;
   }
 }

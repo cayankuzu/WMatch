@@ -1,0 +1,90 @@
+name: Release evidence
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Immutable candidate commit SHA
+        required: true
+        type: string
+
+jobs:
+  repository-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: preview
+    env:
+      EXPO_PUBLIC_API_BASE_URL: ${{ vars.EXPO_PUBLIC_API_BASE_URL }}
+      EXPO_PUBLIC_APP_ENV: preview
+      EXPO_PUBLIC_RELEASE_SHA: ${{ inputs.commit_sha }}
+      EXPO_PUBLIC_SENTRY_DSN: ${{ vars.EXPO_PUBLIC_SENTRY_DSN }}
+      EXPO_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: ${{ vars.EXPO_PUBLIC_SENTRY_TRACES_SAMPLE_RATE }}
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+      EXPO_PUBLIC_SUPABASE_PROJECT_ID: ${{ vars.EXPO_PUBLIC_SUPABASE_PROJECT_ID }}
+    steps:
+      - name: Checkout immutable candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact and clean tree
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain)"
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin npm install-script policy engine
+        run: |
+          npm install --global npm@11.19.0 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Verify and export embedded bundles
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+        run: |
+          npm ci
+          npm ci --prefix infra/cloudflare/wmatch-edge
+          npm run verify:release
+          npm run check --prefix infra/cloudflare/wmatch-edge
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          npx expo export --platform android --source-maps external --dump-assetmap --output-dir "${RUNNER_TEMP}/expo-export/android"
+          npx expo export --platform ios --source-maps external --dump-assetmap --output-dir "${RUNNER_TEMP}/expo-export/ios"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Build evidence manifest and SBOM
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/release-evidence"
+          npm sbom --sbom-format cyclonedx > "${RUNNER_TEMP}/release-evidence/sbom.cdx.json"
+          npm sbom --prefix infra/cloudflare/wmatch-edge --sbom-format cyclonedx > "${RUNNER_TEMP}/release-evidence/worker-sbom.cdx.json"
+          cp app.json eas.json package.json package-lock.json "${RUNNER_TEMP}/release-evidence/"
+          git rev-parse HEAD > "${RUNNER_TEMP}/release-evidence/commit-sha.txt"
+          git status --porcelain > "${RUNNER_TEMP}/release-evidence/git-status.txt"
+          find "${RUNNER_TEMP}/expo-export" -type f -print0 | sort -z | xargs -0 sha256sum > "${RUNNER_TEMP}/release-evidence/expo-export.sha256"
+          find "${RUNNER_TEMP}/release-evidence" -type f ! -name manifest.sha256 -print0 | sort -z | xargs -0 sha256sum > "${RUNNER_TEMP}/release-evidence/manifest.sha256"
+
+      - name: Upload same-SHA repository evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence-${{ inputs.commit_sha }}
+          path: |
+            ${{ runner.temp }}/release-evidence
+            ${{ runner.temp }}/expo-export
+          if-no-files-found: error
+          retention-days: 180

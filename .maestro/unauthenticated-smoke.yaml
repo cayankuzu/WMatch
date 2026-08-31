@@ -1,0 +1,13 @@
+appId: com.wmatch.app
+name: Unauthenticated startup smoke
+---
+- launchApp:
+    clearState: true
+    stopApp: true
+- extendedWaitUntil:
+    visible: "Giriş yap"
+    timeout: 30000
+- assertVisible: "E-posta"
+- assertVisible: "Şifre"
+- assertVisible: "Şifremi unuttum"
+- assertVisible: "Hesabın yok mu? Kayıt ol"

@@ -2,14 +2,22 @@
   "expo": {
     "name": "WMatch",
     "slug": "wmatch",
-    "version": "1.0.50",
+    "version": "1.0.51",
+    "runtimeVersion": "1.0.51",
+    "updates": {
+      "url": "https://u.expo.dev/5aab8659-db24-4152-aa79-142f210e16d1",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "useEmbeddedUpdate": true
+    },
     "icon": "./assets/branding/icon-wm-normalized.png",
     "orientation": "default",
     "userInterfaceStyle": "dark",
     "scheme": "wmatch",
     "ios": {
       "bundleIdentifier": "com.wmatch.app",
-      "buildNumber": "53",
+      "buildNumber": "55",
       "googleServicesFile": "./firebase/GoogleService-Info.plist",
       "supportsTablet": true,
       "associatedDomains": [
@@ -39,7 +47,7 @@
     },
     "android": {
       "package": "com.wmatch.app",
-      "versionCode": 51,
+      "versionCode": 53,
       "googleServicesFile": "./firebase/google-services.json",
       "predictiveBackGestureEnabled": true,
       "adaptiveIcon": {

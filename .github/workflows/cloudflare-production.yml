@@ -1,0 +1,372 @@
+name: Cloudflare Worker Production
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Upload an immutable version, advance one rollout gate, or roll back"
+        required: true
+        default: upload
+        type: choice
+        options:
+          - upload
+          - rollout
+          - rollback
+      target_version_id:
+        description: "Rollout only: immutable Cloudflare Worker version UUID"
+        required: false
+        type: string
+      target_commit_sha:
+        description: "Rollout only: full 40-character commit SHA attached to the target version"
+        required: false
+        type: string
+      baseline_version_id:
+        description: "Rollout/rollback: known-good Worker version UUID"
+        required: false
+        type: string
+      percentage:
+        description: "Rollout only: the next permitted target percentage"
+        required: true
+        default: "5"
+        type: choice
+        options:
+          - "5"
+          - "25"
+          - "50"
+          - "100"
+      observability_evidence_url:
+        description: "Rollout only: HTTPS link to reviewed metrics/log evidence for this gate"
+        required: false
+        type: string
+      budget_evidence_url:
+        description: "Rollout only: HTTPS link to reviewed request/CPU/cost budget evidence"
+        required: false
+        type: string
+      rollback_reason:
+        description: "Rollback only: short operator reason retained in deployment evidence"
+        required: false
+        type: string
+
+concurrency:
+  group: cloudflare-production
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: infra/cloudflare/wmatch-edge
+
+jobs:
+  verify:
+    name: Verify production candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.operation == 'rollout' && inputs.target_commit_sha || github.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/cloudflare/wmatch-edge/package-lock.json
+
+      - name: Activate pinned npm policy engine
+        run: |
+          npm install --global --ignore-scripts npm@11.19.0
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Audit production dependency graph
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Verify generated bindings, types, and runtime tests
+        run: |
+          npm run types:check
+          npm run typecheck
+          npm test
+
+      - name: Compile production upload without publishing
+        run: npx wrangler versions upload --env production --dry-run
+
+  operate-production:
+    name: Protected production operation
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: cloudflare-production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      EDGE_ALLOWED_ORIGINS: ${{ vars.WMATCH_EDGE_ALLOWED_ORIGINS }}
+      EDGE_ALLOWED_REDIRECT_ORIGINS: ${{ vars.WMATCH_EDGE_ALLOWED_REDIRECT_ORIGINS }}
+      EDGE_BASE_URL: ${{ vars.WMATCH_EDGE_BASE_URL }}
+      EDGE_CACHE_VERSION: ${{ vars.WMATCH_EDGE_CACHE_VERSION }}
+      EDGE_JWT_AUDIENCE: ${{ vars.WMATCH_EDGE_JWT_AUDIENCE }}
+      EDGE_JWT_ISSUER: ${{ vars.WMATCH_EDGE_JWT_ISSUER }}
+      EDGE_JWT_JWKS_URL: ${{ vars.WMATCH_EDGE_JWT_JWKS_URL }}
+      EDGE_ORIGIN_BASE_URL: ${{ vars.WMATCH_EDGE_ORIGIN_BASE_URL }}
+      EDGE_ORIGIN_HMAC_KEY_ID: ${{ vars.WMATCH_EDGE_ORIGIN_HMAC_KEY_ID }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      OPERATION: ${{ inputs.operation }}
+      INPUT_TARGET_VERSION_ID: ${{ inputs.target_version_id }}
+      INPUT_TARGET_COMMIT_SHA: ${{ inputs.target_commit_sha }}
+      INPUT_BASELINE_VERSION_ID: ${{ inputs.baseline_version_id }}
+      INPUT_PERCENTAGE: ${{ inputs.percentage }}
+      INPUT_OBSERVABILITY_URL: ${{ inputs.observability_evidence_url }}
+      INPUT_BUDGET_URL: ${{ inputs.budget_evidence_url }}
+      INPUT_ROLLBACK_REASON: ${{ inputs.rollback_reason }}
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/cloudflare/wmatch-edge/package-lock.json
+
+      - name: Activate pinned npm policy engine
+        run: |
+          npm install --global --ignore-scripts npm@11.19.0
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Fail closed on branch, ownership, and action inputs
+        run: |
+          set -euo pipefail
+          [[ "$DEFAULT_BRANCH" == "main" || "$DEFAULT_BRANCH" == "master" ]] || {
+            echo "::error::Repository default branch must be main or master"
+            exit 1
+          }
+          [[ "$GITHUB_REF_NAME" == "$DEFAULT_BRANCH" ]] || {
+            echo "::error::Production operations must run from the repository default branch"
+            exit 1
+          }
+
+          required=(
+            CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN EDGE_ALLOWED_ORIGINS
+            EDGE_ALLOWED_REDIRECT_ORIGINS EDGE_BASE_URL EDGE_CACHE_VERSION
+            EDGE_JWT_AUDIENCE EDGE_JWT_ISSUER EDGE_JWT_JWKS_URL
+            EDGE_ORIGIN_BASE_URL EDGE_ORIGIN_HMAC_KEY_ID
+          )
+          for name in "${required[@]}"; do
+            value="${!name:-}"
+            test -n "$value" || { echo "::error::$name is required"; exit 1; }
+            [[ "$value" != *REQUIRED__* ]] || { echo "::error::$name is still a placeholder"; exit 1; }
+            [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { echo "::error::$name contains a newline"; exit 1; }
+          done
+
+          [[ "$EDGE_BASE_URL" =~ ^https://[^/]+$ ]] || { echo "::error::EDGE_BASE_URL must be an exact HTTPS origin"; exit 1; }
+          [[ "$EDGE_ORIGIN_BASE_URL" =~ ^https://[^/]+/functions/v1/[^/?#]+$ ]] || { echo "::error::EDGE_ORIGIN_BASE_URL must be one Supabase Function base URL"; exit 1; }
+          [[ "$EDGE_JWT_ISSUER" =~ ^https://[^/]+/auth/v1$ ]] || { echo "::error::EDGE_JWT_ISSUER must be a Supabase Auth issuer"; exit 1; }
+          [[ "$EDGE_JWT_JWKS_URL" =~ ^https://[^/]+/auth/v1/\.well-known/jwks\.json$ ]] || { echo "::error::EDGE_JWT_JWKS_URL must be a Supabase JWKS URL"; exit 1; }
+          [[ "$EDGE_CACHE_VERSION" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || { echo "::error::EDGE_CACHE_VERSION is invalid"; exit 1; }
+          [[ "$EDGE_ORIGIN_HMAC_KEY_ID" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "::error::EDGE_ORIGIN_HMAC_KEY_ID is invalid"; exit 1; }
+
+          uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+          sha='^[0-9a-fA-F]{40}$'
+          case "$OPERATION" in
+            upload)
+              ;;
+            rollout)
+              [[ "$INPUT_TARGET_VERSION_ID" =~ $uuid ]] || { echo "::error::A valid target_version_id is required"; exit 1; }
+              [[ "$INPUT_BASELINE_VERSION_ID" =~ $uuid ]] || { echo "::error::A valid baseline_version_id is required"; exit 1; }
+              [[ "$INPUT_TARGET_VERSION_ID" != "$INPUT_BASELINE_VERSION_ID" ]] || { echo "::error::Target and baseline must differ"; exit 1; }
+              [[ "$INPUT_TARGET_COMMIT_SHA" =~ $sha ]] || { echo "::error::A full target_commit_sha is required"; exit 1; }
+              [[ "$INPUT_PERCENTAGE" =~ ^(5|25|50|100)$ ]] || { echo "::error::Invalid rollout percentage"; exit 1; }
+              [[ "$INPUT_OBSERVABILITY_URL" =~ ^https://[^[:space:]]{1,500}$ ]] || { echo "::error::An HTTPS observability_evidence_url is required"; exit 1; }
+              [[ "$INPUT_BUDGET_URL" =~ ^https://[^[:space:]]{1,500}$ ]] || { echo "::error::An HTTPS budget_evidence_url is required"; exit 1; }
+              git cat-file -e "${INPUT_TARGET_COMMIT_SHA}^{commit}" 2>/dev/null || { echo "::error::Target commit is not present in repository history"; exit 1; }
+              git merge-base --is-ancestor "$INPUT_TARGET_COMMIT_SHA" HEAD || { echo "::error::Target commit is not an ancestor of the protected default branch"; exit 1; }
+              ;;
+            rollback)
+              [[ "$INPUT_BASELINE_VERSION_ID" =~ $uuid ]] || { echo "::error::A valid baseline_version_id is required"; exit 1; }
+              test -n "$INPUT_ROLLBACK_REASON" || { echo "::error::rollback_reason is required"; exit 1; }
+              [[ ${#INPUT_ROLLBACK_REASON} -le 160 ]] || { echo "::error::rollback_reason exceeds 160 characters"; exit 1; }
+              [[ "$INPUT_ROLLBACK_REASON" != *$'\n'* && "$INPUT_ROLLBACK_REASON" != *$'\r'* ]] || { echo "::error::rollback_reason contains a newline"; exit 1; }
+              ;;
+            *)
+              echo "::error::Unknown production operation"
+              exit 1
+              ;;
+          esac
+
+      - name: Verify versioned secrets already exist
+        run: |
+          set -euo pipefail
+          npx wrangler secret list --env production --format json > "$RUNNER_TEMP/production-secrets.json"
+          node scripts/release-evidence.mjs assert-secrets "$RUNNER_TEMP/production-secrets.json"
+
+      - name: Capture current production deployment
+        id: before
+        run: |
+          set -euo pipefail
+          npx wrangler deployments status --env production --json > "$RUNNER_TEMP/production-before.json"
+          primary_id="$(node scripts/release-evidence.mjs primary "$RUNNER_TEMP/production-before.json")"
+          echo "primary_id=$primary_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload or reuse immutable production version without deploying
+        if: ${{ inputs.operation == 'upload' }}
+        id: upload
+        run: |
+          set -euo pipefail
+          npx wrangler versions list --env production --json > "$RUNNER_TEMP/production-versions-before.json"
+          target_id="$(node scripts/release-evidence.mjs find-tag "$RUNNER_TEMP/production-versions-before.json" "$GITHUB_SHA")"
+          if [[ -z "$target_id" ]]; then
+            npx wrangler versions upload \
+              --env production \
+              --strict \
+              --tag "$GITHUB_SHA" \
+              --message "production candidate ${GITHUB_SHA} run ${GITHUB_RUN_ID}" \
+              --var "ALLOWED_ORIGINS:$EDGE_ALLOWED_ORIGINS" \
+              --var "ALLOWED_REDIRECT_ORIGINS:$EDGE_ALLOWED_REDIRECT_ORIGINS" \
+              --var "CACHE_VERSION:$EDGE_CACHE_VERSION" \
+              --var "ENVIRONMENT:production" \
+              --var "JWT_AUDIENCE:$EDGE_JWT_AUDIENCE" \
+              --var "JWT_ISSUER:$EDGE_JWT_ISSUER" \
+              --var "JWT_JWKS_URL:$EDGE_JWT_JWKS_URL" \
+              --var "ORIGIN_BASE_URL:$EDGE_ORIGIN_BASE_URL" \
+              --var "ORIGIN_HMAC_KEY_ID:$EDGE_ORIGIN_HMAC_KEY_ID" \
+              --var "ORIGIN_HMAC_MAX_SKEW_SECONDS:60" \
+              --var "ORIGIN_MAX_RESPONSE_BYTES:2097152" \
+              --var "ORIGIN_TIMEOUT_MS:8000" \
+              2>&1 | tee "$RUNNER_TEMP/production-upload.txt"
+            npx wrangler versions list --env production --json > "$RUNNER_TEMP/production-versions-after.json"
+            target_id="$(node scripts/release-evidence.mjs resolve-tag "$RUNNER_TEMP/production-versions-after.json" "$GITHUB_SHA")"
+          else
+            printf 'Reusing existing immutable version %s\n' "$target_id" | tee "$RUNNER_TEMP/production-upload.txt"
+          fi
+          npx wrangler versions view "$target_id" --env production --json > "$RUNNER_TEMP/production-target.json"
+          node scripts/release-evidence.mjs assert-version "$RUNNER_TEMP/production-target.json" "$target_id" "$GITHUB_SHA"
+          echo "version_id=$target_id" >> "$GITHUB_OUTPUT"
+
+      - name: Verify rollout target, baseline, and previous gate
+        if: ${{ inputs.operation == 'rollout' }}
+        run: |
+          set -euo pipefail
+          npx wrangler versions view "$INPUT_TARGET_VERSION_ID" --env production --json > "$RUNNER_TEMP/production-target.json"
+          npx wrangler versions view "$INPUT_BASELINE_VERSION_ID" --env production --json > "$RUNNER_TEMP/production-baseline.json"
+          node scripts/release-evidence.mjs assert-version \
+            "$RUNNER_TEMP/production-target.json" \
+            "$INPUT_TARGET_VERSION_ID" \
+            "$INPUT_TARGET_COMMIT_SHA"
+          node scripts/release-evidence.mjs assert-version \
+            "$RUNNER_TEMP/production-baseline.json" \
+            "$INPUT_BASELINE_VERSION_ID"
+          node scripts/release-evidence.mjs assert-previous \
+            "$RUNNER_TEMP/production-before.json" \
+            "$INPUT_BASELINE_VERSION_ID" \
+            "$INPUT_TARGET_VERSION_ID" \
+            "$INPUT_PERCENTAGE"
+
+      - name: Advance exactly one production rollout gate
+        if: ${{ inputs.operation == 'rollout' }}
+        run: |
+          set -euo pipefail
+          if [[ "$INPUT_PERCENTAGE" == "100" ]]; then
+            version_specs=("${INPUT_TARGET_VERSION_ID}@100%")
+          else
+            baseline_percentage=$((100 - INPUT_PERCENTAGE))
+            version_specs=(
+              "${INPUT_BASELINE_VERSION_ID}@${baseline_percentage}%"
+              "${INPUT_TARGET_VERSION_ID}@${INPUT_PERCENTAGE}%"
+            )
+          fi
+          npx wrangler versions deploy "${version_specs[@]}" \
+            --env production \
+            --message "production gate ${INPUT_PERCENTAGE}% target ${INPUT_TARGET_COMMIT_SHA}; evidence run ${GITHUB_RUN_ID}" \
+            --yes \
+            2>&1 | tee "$RUNNER_TEMP/production-deploy.txt"
+          npx wrangler deployments status --env production --json > "$RUNNER_TEMP/production-after.json"
+          node scripts/release-evidence.mjs assert-deployment \
+            "$RUNNER_TEMP/production-after.json" \
+            "$INPUT_BASELINE_VERSION_ID" \
+            "$INPUT_TARGET_VERSION_ID" \
+            "$INPUT_PERCENTAGE"
+
+      - name: Smoke rollout and automatically restore baseline on failure
+        if: ${{ inputs.operation == 'rollout' }}
+        run: |
+          set -euo pipefail
+          if ! curl --fail --silent --show-error --max-time 10 --retry 2 --max-filesize 65536 \
+            --output "$RUNNER_TEMP/production-health.json" \
+            --dump-header "$RUNNER_TEMP/production-health-headers.txt" \
+            "$EDGE_BASE_URL/health" || \
+             ! grep -Eiq '^cache-control:.*no-store' "$RUNNER_TEMP/production-health-headers.txt"; then
+            npx wrangler versions deploy "${INPUT_BASELINE_VERSION_ID}@100%" \
+              --env production \
+              --message "automatic rollback after failed ${INPUT_PERCENTAGE}% health smoke for ${INPUT_TARGET_COMMIT_SHA}" \
+              --yes \
+              2>&1 | tee "$RUNNER_TEMP/production-automatic-rollback.txt"
+            npx wrangler deployments status --env production --json > "$RUNNER_TEMP/production-rollback-after.json"
+            node scripts/release-evidence.mjs assert-rollback \
+              "$RUNNER_TEMP/production-rollback-after.json" \
+              "$INPUT_BASELINE_VERSION_ID"
+            exit 1
+          fi
+
+      - name: Verify rollback target and perform explicit rollback
+        if: ${{ inputs.operation == 'rollback' }}
+        run: |
+          set -euo pipefail
+          npx wrangler versions view "$INPUT_BASELINE_VERSION_ID" --env production --json > "$RUNNER_TEMP/production-baseline.json"
+          node scripts/release-evidence.mjs assert-version \
+            "$RUNNER_TEMP/production-baseline.json" \
+            "$INPUT_BASELINE_VERSION_ID"
+          npx wrangler versions deploy "${INPUT_BASELINE_VERSION_ID}@100%" \
+            --env production \
+            --message "explicit rollback: ${INPUT_ROLLBACK_REASON}" \
+            --yes \
+            2>&1 | tee "$RUNNER_TEMP/production-rollback.txt"
+          npx wrangler deployments status --env production --json > "$RUNNER_TEMP/production-after.json"
+          node scripts/release-evidence.mjs assert-rollback \
+            "$RUNNER_TEMP/production-after.json" \
+            "$INPUT_BASELINE_VERSION_ID"
+          curl --fail --silent --show-error --max-time 10 --retry 2 --max-filesize 65536 \
+            --output "$RUNNER_TEMP/production-health.json" \
+            --dump-header "$RUNNER_TEMP/production-health-headers.txt" \
+            "$EDGE_BASE_URL/health"
+          grep -Eiq '^cache-control:.*no-store' "$RUNNER_TEMP/production-health-headers.txt"
+
+      - name: Publish immutable evidence summary
+        if: always()
+        run: |
+          {
+            echo "### Cloudflare production evidence"
+            echo "- Operation: \`$OPERATION\`"
+            echo "- Workflow commit: \`$GITHUB_SHA\`"
+            echo "- Previous primary: \`${{ steps.before.outputs.primary_id || 'unavailable' }}\`"
+            echo "- Uploaded version: \`${{ steps.upload.outputs.version_id || 'not-applicable' }}\`"
+            echo "- Requested target: \`${INPUT_TARGET_VERSION_ID:-not-applicable}\`"
+            echo "- Requested gate: \`${INPUT_PERCENTAGE:-not-applicable}%\`"
+            echo "- Observability evidence: ${INPUT_OBSERVABILITY_URL:-not-applicable}"
+            echo "- Budget evidence: ${INPUT_BUDGET_URL:-not-applicable}"
+            echo "- Workflow run: \`$GITHUB_RUN_ID\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain production operation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloudflare-production-${{ inputs.operation }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/production-*.json
+            ${{ runner.temp }}/production-*.txt
+          if-no-files-found: warn
+          retention-days: 90

@@ -36,7 +36,7 @@ interface AppImageProps {
   onDisplay?: ImageProps['onDisplay'];
 }
 
-/** Shared image surface with stable layout, disk cache, placeholder, and branded failure state. */
+/** Shared image surface with stable layout, privacy-scoped cache, placeholder, and failure state. */
 export default function AppImage({
   uri,
   style,
@@ -125,7 +125,7 @@ export default function AppImage({
           key={`${uri}:${retryAttempt}`}
           accessible={Boolean(accessibilityLabel)}
           accessibilityLabel={accessibilityLabel}
-          cachePolicy="memory-disk"
+          cachePolicy={stableCacheKey ? 'memory' : 'memory-disk'}
           blurRadius={blurRadius}
           contentFit={contentFit}
           enforceEarlyResizing={enforceEarlyResizing}

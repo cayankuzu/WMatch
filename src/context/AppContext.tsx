@@ -19,10 +19,13 @@ import {
   ensureMovieInList,
   filterMoviesByInput,
   hasMovieInput,
+  isMovieSyncPayloadDeliverable,
+  markMovieSyncPayloadFailure,
   moviesToRefs,
   readLibrarySnapshot,
   readMovieSyncOutbox as readStoredMovieSyncOutbox,
   readPausedWatching as readStoredPausedWatching,
+  resetMovieSyncPayloadDelivery,
   writeLibrarySnapshot,
   writeMovieSyncOutbox as writeStoredMovieSyncOutbox,
   writePausedWatching,
@@ -79,6 +82,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [watchingExpiredNotice, setWatchingExpiredNotice] = useState<string | null>(null);
   const [pausedWatching, setPausedWatching] = useState<PausedWatchingEntry | null>(null);
   const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSyncPayloadRef = useRef<MovieSyncPayload | null>(null);
   const outboxMutationRef = useRef<Promise<unknown>>(Promise.resolve());
   const syncInFlightRef = useRef(false);
@@ -185,11 +189,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const enqueueMovieSyncPayload = (payload: MovieSyncPayload) =>
     mutateMovieSyncOutbox((queue) => {
+      const pendingPayload = resetMovieSyncPayloadDelivery(payload);
       if (payload.watchingAction) {
-        return [...queue, payload];
+        return [...queue, pendingPayload];
       }
 
-      return [...queue.filter((entry) => Boolean(entry.watchingAction)), payload];
+      return [...queue.filter((entry) => Boolean(entry.watchingAction)), pendingPayload];
     });
 
   const clearMovieSyncOutbox = (idempotencyKey: string) =>
@@ -362,14 +367,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
       while (activeUserIdRef.current === syncUserId) {
         await outboxMutationRef.current.catch(() => undefined);
         const queue = await readMovieSyncOutbox();
-        const nextPayload = queue[0];
+        const nextPayload = queue.find((entry) => (entry.deliveryStatus ?? 'pending') === 'pending');
 
         if (!nextPayload) {
           break;
         }
 
+        if (!isMovieSyncPayloadDeliverable(nextPayload)) {
+          if (nextPayload.nextAttemptAt != null) {
+            if (syncRetryTimeoutRef.current) {
+              clearTimeout(syncRetryTimeoutRef.current);
+            }
+            syncRetryTimeoutRef.current = setTimeout(() => {
+              syncRetryTimeoutRef.current = null;
+              void flushMovieSyncOutboxRef.current();
+            }, Math.max(0, nextPayload.nextAttemptAt - Date.now()));
+          }
+          break;
+        }
+
         const synced = await syncToDatabase(nextPayload, syncUserId);
         if (!synced) {
+          const failedPayload = markMovieSyncPayloadFailure(nextPayload);
+          await mutateMovieSyncOutbox((currentQueue) => currentQueue.map((entry) => (
+            entry.idempotencyKey === failedPayload.idempotencyKey ? failedPayload : entry
+          )));
+
+          if (failedPayload.deliveryStatus === 'pending' && failedPayload.nextAttemptAt != null) {
+            if (syncRetryTimeoutRef.current) {
+              clearTimeout(syncRetryTimeoutRef.current);
+            }
+            syncRetryTimeoutRef.current = setTimeout(() => {
+              syncRetryTimeoutRef.current = null;
+              void flushMovieSyncOutboxRef.current();
+            }, Math.max(0, failedPayload.nextAttemptAt - Date.now()));
+          }
           break;
         }
 
@@ -440,7 +472,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
 
         const pendingOutboxQueue = await pendingOutboxPromise;
-        const pendingOutbox = pendingOutboxQueue.at(-1) ?? null;
+        const pendingOutbox = pendingOutboxQueue
+          .filter((entry) => (entry.deliveryStatus ?? 'pending') === 'pending')
+          .at(-1) ?? null;
         const favoriteMedia = pendingOutbox?.favoriteMedia ?? hydrationUser.favoriteMedia ?? legacyMovieIdsToRefs(hydrationUser.favoriteMovies ?? []);
         const watchedMedia = pendingOutbox?.watchedMedia ?? hydrationUser.watchedMedia ?? legacyMovieIdsToRefs(hydrationUser.watchedMovies ?? []);
         const watchingId = pendingOutbox ? pendingOutbox.watchingId : hydrationUser.currentlyWatching;
@@ -526,6 +560,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (syncTimeoutRef.current) {
       clearTimeout(syncTimeoutRef.current);
       syncTimeoutRef.current = null;
+    }
+    if (syncRetryTimeoutRef.current) {
+      clearTimeout(syncRetryTimeoutRef.current);
+      syncRetryTimeoutRef.current = null;
     }
   }, []);
 

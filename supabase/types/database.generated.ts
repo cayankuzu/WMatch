@@ -424,6 +424,30 @@ export type Database = {
         }
         Relationships: []
       }
+      edge_origin_hmac_nonces: {
+        Row: {
+          claimed_at: string
+          expires_at: string
+          key_id: string
+          nonce: string
+          signed_at: string
+        }
+        Insert: {
+          claimed_at?: string
+          expires_at: string
+          key_id: string
+          nonce: string
+          signed_at: string
+        }
+        Update: {
+          claimed_at?: string
+          expires_at?: string
+          key_id?: string
+          nonce?: string
+          signed_at?: string
+        }
+        Relationships: []
+      }
       likes: {
         Row: {
           created_at: string | null
@@ -656,6 +680,7 @@ export type Database = {
       messages: {
         Row: {
           client_message_id: string | null
+          client_payload_hash: string | null
           client_request_id: string | null
           created_at: string | null
           id: string
@@ -666,6 +691,7 @@ export type Database = {
         }
         Insert: {
           client_message_id?: string | null
+          client_payload_hash?: string | null
           client_request_id?: string | null
           created_at?: string | null
           id?: string
@@ -676,6 +702,7 @@ export type Database = {
         }
         Update: {
           client_message_id?: string | null
+          client_payload_hash?: string | null
           client_request_id?: string | null
           created_at?: string | null
           id?: string
@@ -707,11 +734,15 @@ export type Database = {
           created_at: string
           details: string
           id: string
+          idempotency_key: string | null
+          last_transition_at: string
+          payload_hash: string | null
           reason_code: string
           reporter_snapshot: Json
           reporter_user_id: string
           reviewed_at: string | null
           reviewer_notes: string | null
+          sla_due_at: string
           status: string
           target_record_id: string | null
           target_snapshot: Json
@@ -724,11 +755,15 @@ export type Database = {
           created_at?: string
           details: string
           id?: string
+          idempotency_key?: string | null
+          last_transition_at?: string
+          payload_hash?: string | null
           reason_code: string
           reporter_snapshot?: Json
           reporter_user_id: string
           reviewed_at?: string | null
           reviewer_notes?: string | null
+          sla_due_at?: string
           status?: string
           target_record_id?: string | null
           target_snapshot?: Json
@@ -741,11 +776,15 @@ export type Database = {
           created_at?: string
           details?: string
           id?: string
+          idempotency_key?: string | null
+          last_transition_at?: string
+          payload_hash?: string | null
           reason_code?: string
           reporter_snapshot?: Json
           reporter_user_id?: string
           reviewed_at?: string | null
           reviewer_notes?: string | null
+          sla_due_at?: string
           status?: string
           target_record_id?: string | null
           target_snapshot?: Json
@@ -766,6 +805,50 @@ export type Database = {
             columns: ["target_user_id"]
             isOneToOne: false
             referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      moderation_report_audit_events: {
+        Row: {
+          action: string
+          actor_kind: string
+          actor_label: string | null
+          created_at: string
+          from_status: string | null
+          id: string
+          metadata: Json
+          report_id: string
+          to_status: string | null
+        }
+        Insert: {
+          action: string
+          actor_kind?: string
+          actor_label?: string | null
+          created_at?: string
+          from_status?: string | null
+          id?: string
+          metadata?: Json
+          report_id: string
+          to_status?: string | null
+        }
+        Update: {
+          action?: string
+          actor_kind?: string
+          actor_label?: string | null
+          created_at?: string
+          from_status?: string | null
+          id?: string
+          metadata?: Json
+          report_id?: string
+          to_status?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "moderation_report_audit_events_report_id_fkey"
+            columns: ["report_id"]
+            isOneToOne: false
+            referencedRelation: "moderation_reports"
             referencedColumns: ["id"]
           },
         ]
@@ -1217,6 +1300,15 @@ export type Database = {
           email_message: string
         }[]
       }
+      claim_edge_origin_hmac_nonce: {
+        Args: {
+          p_key_id: string
+          p_max_skew_seconds?: number
+          p_nonce: string
+          p_timestamp: number
+        }
+        Returns: boolean
+      }
       claim_push_receipt_jobs: {
         Args: { p_limit?: number }
         Returns: {
@@ -1489,6 +1581,15 @@ export type Database = {
           user_id: string
           window_started_at: string
         }[]
+      }
+      transition_moderation_report_ops: {
+        Args: {
+          p_actor_label?: string
+          p_next_status: string
+          p_report_id: string
+          p_reviewer_notes?: string
+        }
+        Returns: Database["public"]["Tables"]["moderation_reports"]["Row"]
       }
       undo_like_action_atomic: {
         Args: {

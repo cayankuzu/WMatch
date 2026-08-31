@@ -10,6 +10,37 @@ function requirePublicEnv(value: string | undefined, name: string) {
   return trimmed;
 }
 
+function optionalPublicHttpsUrl(value: string | undefined, name: string) {
+  const trimmed = value?.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  let parsed: URL;
+
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`${name} must be an absolute HTTPS URL.`);
+  }
+
+  const localDevelopmentUrl =
+    process.env.NODE_ENV !== 'production'
+    && parsed.protocol === 'http:'
+    && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost');
+
+  if ((parsed.protocol !== 'https:' && !localDevelopmentUrl) || parsed.username || parsed.password) {
+    throw new Error(`${name} must be an HTTPS URL without embedded credentials.`);
+  }
+
+  if (parsed.search || parsed.hash) {
+    throw new Error(`${name} must not include a query string or fragment.`);
+  }
+
+  return parsed.toString().replace(/\/$/, '');
+}
+
 // Expo only inlines EXPO_PUBLIC_* values when they are accessed via direct dot notation.
 export const projectId = requirePublicEnv(
   process.env.EXPO_PUBLIC_SUPABASE_PROJECT_ID,
@@ -19,4 +50,11 @@ export const projectId = requirePublicEnv(
 export const publicAnonKey = requirePublicEnv(
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
   'EXPO_PUBLIC_SUPABASE_ANON_KEY',
+);
+
+// Optional during the backward-compatible cutover. Production build/update
+// workflows require this value before publishing an edge-enabled artifact.
+export const apiGatewayBaseUrl = optionalPublicHttpsUrl(
+  process.env.EXPO_PUBLIC_API_BASE_URL,
+  'EXPO_PUBLIC_API_BASE_URL',
 );

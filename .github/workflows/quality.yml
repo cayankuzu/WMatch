@@ -1,0 +1,96 @@
+name: Quality
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - chore/aaa-mvp-feature-freeze-cloudflare-ota
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin npm install-script policy engine
+        run: |
+          npm install --global npm@11.19.0 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Install dependencies from lockfiles
+        run: |
+          npm ci
+          npm ci --prefix infra/cloudflare/wmatch-edge
+
+      - name: Install pinned security scanners
+        shell: bash
+        run: |
+          go install github.com/gitleaks/gitleaks/v8@v8.30.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          python -m pip install --disable-pip-version-check semgrep==1.169.0
+
+      - name: Full-history secret scan
+        run: gitleaks git . --config .gitleaks.toml --redact=100 --no-banner
+
+      - name: Current tracked-tree secret scan
+        run: node scripts/security/scan-gitleaks-tracked-tree.mjs
+
+      - name: SAST
+        run: >-
+          semgrep scan
+          --config p/typescript
+          --config p/react
+          --config p/secrets
+          --error
+          --strict
+          --exclude '*.sql'
+          --exclude '*.png'
+          --exclude '*.jar'
+          --exclude 'worker-configuration.d.ts'
+          --exclude 'node_modules'
+          --exclude '.wrangler'
+          --metrics=off
+          src utils supabase/functions scripts tests .github
+          infra/cloudflare/wmatch-edge/src
+          infra/cloudflare/wmatch-edge/test
+          infra/cloudflare/wmatch-edge/scripts
+
+      - name: Aggregate repository release gate
+        run: npm run verify:release
+
+      - name: Cloudflare Worker gate
+        run: npm run check --prefix infra/cloudflare/wmatch-edge
+
+      - name: Generate dependency SBOMs
+        run: |
+          npm sbom --sbom-format cyclonedx > "${RUNNER_TEMP}/wmatch-sbom.json"
+          npm sbom --prefix infra/cloudflare/wmatch-edge --sbom-format cyclonedx > "${RUNNER_TEMP}/wmatch-worker-sbom.json"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/wmatch-sbom.json
+            ${{ runner.temp }}/wmatch-worker-sbom.json
+          if-no-files-found: error
+          retention-days: 30

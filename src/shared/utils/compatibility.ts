@@ -1,4 +1,7 @@
+import { COMPATIBILITY_ALGORITHM_VERSION } from '../constants/index.ts';
+
 export interface CompatibilityBreakdown {
+  algorithmVersion: typeof COMPATIBILITY_ALGORITHM_VERSION;
   score: number;
   favoriteScore: number;
   watchedScore: number;
@@ -117,6 +120,7 @@ export function getCompatibilityBreakdown(
       : activeWeights.reduce((sum, item) => sum + item.value * item.weight, 0) / weightedTotal;
 
   return {
+    algorithmVersion: COMPATIBILITY_ALGORITHM_VERSION,
     score: Math.round(normalizedScore * 100),
     favoriteScore: Math.round((favoriteScore ?? 0) * 100),
     watchedScore: Math.round((watchedScore ?? 0) * 100),

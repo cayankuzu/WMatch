@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "b8ff52ac41eda5f6ef1e43472784d794328f7050",
+  "featureSurfaceSnapshot": "quality/feature-surface.snapshot.json",
+  "contract": "User-visible screen, modal, sheet, navigation, theme, and branding sources must remain visually identical to the immutable feature-freeze baseline.",
+  "exactSurfaceGroups": ["screenEntrypoints", "modalEntrypoints", "sheetEntrypoints"],
+  "exactPaths": [
+    "src/app/App.tsx",
+    "src/app/components/BottomNav.tsx",
+    "src/shared/theme/index.ts",
+    "src/shared/theme/compatibility.ts",
+    "assets/branding/logo-wm-stacked.png",
+    "assets/branding/splash-logo-main.png"
+  ],
+  "normalizedPaths": [
+    {
+      "path": "src/app/components/ui/AppImage.tsx",
+      "normalizer": "nonVisualImageCachePolicy",
+      "reason": "The cache storage policy was privacy-hardened without changing rendered layout, content, styling, accessibility, or failure-state topology."
+    },
+    {
+      "path": "src/app/components/ChatModal.tsx",
+      "normalizer": "nonVisualChatOutboxCancellation",
+      "reason": "Only the failed-message cancellation persistence primitive changed from deletion to a durable cancellation tombstone; rendered content, action labels, accessibility, and topology are unchanged."
+    }
+  ],
+  "runtimePixelEvidence": "Manual same-SHA device screenshots remain a release gate; this repository guard is the deterministic pre/post source golden."
+}

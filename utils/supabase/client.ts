@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 
-import { projectId, publicAnonKey } from './info';
+import { apiGatewayBaseUrl, projectId, publicAnonKey } from './info';
 
 export const SUPABASE_URL = `https://${projectId}.supabase.co`;
 
@@ -290,6 +290,28 @@ export const supabase = createClient(SUPABASE_URL, publicAnonKey, {
 
 export const API_BASE = `${SUPABASE_URL}/functions/v1/make-server-d962235e`;
 
+const EDGE_GATEWAY_PATHS = new Set([
+  '/health',
+  '/auth/check-availability',
+  '/auth/password-reset',
+  '/reports',
+]);
+
+export function shouldUseEdgeGateway(path: string) {
+  return Boolean(
+    apiGatewayBaseUrl
+    && (path === '/tmdb' || path.startsWith('/tmdb/') || EDGE_GATEWAY_PATHS.has(path)),
+  );
+}
+
+export function resolveApiUrl(path: string) {
+  if (!path.startsWith('/')) {
+    throw new Error('API paths must start with a forward slash.');
+  }
+
+  return `${shouldUseEdgeGateway(path) ? apiGatewayBaseUrl : API_BASE}${path}`;
+}
+
 export async function getAuthHeaders() {
   const {
     data: { session },
@@ -302,7 +324,14 @@ export async function getAuthHeaders() {
   };
 }
 
-export async function getPublicApiHeaders() {
+export async function getPublicApiHeaders(path?: string): Promise<Record<string, string>> {
+  if (path && shouldUseEdgeGateway(path)) {
+    return {
+      'Content-Type': 'application/json',
+      'X-WMatch-Install-Id': await getInstallationId(),
+    };
+  }
+
   const {
     data: { session },
   } = await supabase.auth.getSession();

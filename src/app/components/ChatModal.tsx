@@ -29,6 +29,7 @@ import {
   type ApiMessage,
 } from '../../services/api';
 import {
+  cancelPendingChatMessage,
   enqueuePendingChatMessage,
   listPendingChatMessages,
   removePendingChatMessage,
@@ -570,7 +571,7 @@ export default function ChatModal({
 
   const handleCancelFailedMessage = async (message: LocalChatMessage) => {
     try {
-      await removePendingChatMessage(currentUserId, message.id);
+      await cancelPendingChatMessage(currentUserId, message.id);
 
       if (mountedRef.current) {
         setMessages((current) => current.filter((item) => item.id !== message.id));

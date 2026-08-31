@@ -1,0 +1,13 @@
+title = "WMatch secret scanning"
+minVersion = "v8.25.0"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "App Store Connect issuer UUID is public account metadata, not the API private key."
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = ['''^\s*"ascApiKeyIssuerId"\s*:\s*"[0-9a-fA-F-]+"\s*,?\s*$''']
+paths = ['''(^|[/\\])eas\.json$''']

@@ -132,7 +132,7 @@ function isLocalPhotoUri(uri: string) {
 
 function createStoragePath(userId: string, index: number, extension: string) {
   const suffix = `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 10)}`;
-  return `${userId}/${suffix}.${extension}`;
+  return `${userId}/.quarantine/${suffix}.${extension}`;
 }
 
 function getManagedStoragePath(photoUrl: string) {

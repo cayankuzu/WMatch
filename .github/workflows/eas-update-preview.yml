@@ -1,0 +1,167 @@
+name: EAS update preview
+
+permissions:
+  actions: read
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Immutable commit SHA to publish
+        required: true
+        type: string
+      base_ref:
+        description: Last binary or update commit used for OTA classification
+        required: true
+        type: string
+
+concurrency:
+  group: eas-update-preview
+  cancel-in-progress: false
+
+jobs:
+  publish-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: preview
+    env:
+      EXPO_PUBLIC_API_BASE_URL: ${{ vars.EXPO_PUBLIC_API_BASE_URL }}
+      EXPO_PUBLIC_APP_ENV: preview
+      EXPO_PUBLIC_RELEASE_SHA: ${{ inputs.commit_sha }}
+      EXPO_PUBLIC_SENTRY_DSN: ${{ vars.EXPO_PUBLIC_SENTRY_DSN }}
+      EXPO_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: ${{ vars.EXPO_PUBLIC_SENTRY_TRACES_SAMPLE_RATE }}
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+      EXPO_PUBLIC_SUPABASE_PROJECT_ID: ${{ vars.EXPO_PUBLIC_SUPABASE_PROJECT_ID }}
+    steps:
+      - name: Checkout requested commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert immutable inputs
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+          BASE_REF: ${{ inputs.base_ref }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_REF" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git cat-file -e "${EXPECTED_SHA}^{commit}"
+          git cat-file -e "${BASE_REF}^{commit}"
+          git merge-base --is-ancestor "$BASE_REF" HEAD
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin npm policy engine and audited EAS CLI
+        run: |
+          npm install --global npm@11.19.0 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "11.19.0"
+          npm install --global eas-cli@22.0.0 --ignore-scripts --no-audit --no-fund
+          eas --version | grep -F "eas-cli/22.0.0"
+
+      - name: Require successful same-SHA CI and security gates
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+          GH_READ_TOKEN: ${{ github.token }}
+        run: |
+          require_successful_workflow() {
+            workflow_file="$1"
+            response="$(curl --fail --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${EXPECTED_SHA}&status=success&per_page=1")"
+            jq -e --arg sha "$EXPECTED_SHA" \
+              '.workflow_runs | length == 1 and .[0].head_sha == $sha and .[0].conclusion == "success"' \
+              <<< "$response" >/dev/null
+          }
+          require_successful_workflow ci.yml
+          require_successful_workflow quality.yml
+
+      - name: Install and verify
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+        run: |
+          npm ci
+          npm run verify:release
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Fail closed on native or ambiguous changes
+        shell: bash
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
+        run: node scripts/guards/classify-ota-change.mjs --base "$BASE_REF" --head HEAD --assert-ota-safe
+
+      - name: Validate protected environment configuration
+        shell: bash
+        run: |
+          test -n "$EXPO_PUBLIC_SUPABASE_PROJECT_ID"
+          test -n "$EXPO_PUBLIC_SUPABASE_ANON_KEY"
+          [[ "$EXPO_PUBLIC_API_BASE_URL" =~ ^https:// ]]
+
+      - name: Publish exact bundle to preview
+        id: publish
+        shell: bash
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPECTED_API_BASE_URL: ${{ vars.EXPO_PUBLIC_API_BASE_URL }}
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+        run: |
+          test -n "$EXPO_TOKEN"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          # Expand these variables only inside the environment loaded by EAS.
+          # shellcheck disable=SC2016
+          WMATCH_EXPECTED_API_BASE_URL="$EXPECTED_API_BASE_URL" WMATCH_EXPECTED_RELEASE_SHA="$EXPECTED_SHA" \
+            eas env:exec preview \
+            'test "$EXPO_PUBLIC_APP_ENV" = "preview" && test "$EXPO_PUBLIC_API_BASE_URL" = "$WMATCH_EXPECTED_API_BASE_URL" && test "$EXPO_PUBLIC_RELEASE_SHA" = "$WMATCH_EXPECTED_RELEASE_SHA" && test -n "$EXPO_PUBLIC_SUPABASE_PROJECT_ID" && test -n "$EXPO_PUBLIC_SUPABASE_ANON_KEY"' \
+            --non-interactive
+          eas update \
+            --channel preview \
+            --environment preview \
+            --emit-metadata \
+            --source-maps true \
+            --message "preview sha=${EXPECTED_SHA}" \
+            --non-interactive \
+            --json > "${RUNNER_TEMP}/eas-preview-update.json"
+          published_group="$(jq -er \
+            'if type == "array" and length > 0 and ([.[].group] | unique | length) == 1 then .[0].group else error("invalid publish response") end' \
+            "${RUNNER_TEMP}/eas-preview-update.json")"
+          eas update:view "$published_group" --json \
+            > "${RUNNER_TEMP}/eas-preview-update-view.json"
+          runtime_version="$(node -p "require('./app.json').expo.version")"
+          jq -e --arg sha "$EXPECTED_SHA" --arg group "$published_group" --arg runtime "$runtime_version" '
+            type == "array" and length == 2 and
+            all(.[]; .group == $group and .gitCommitHash == $sha and .runtimeVersion == $runtime and .branch == "preview") and
+            ([.[].platform | ascii_downcase] | unique | sort) == ["android", "ios"]
+          ' "${RUNNER_TEMP}/eas-preview-update-view.json" >/dev/null
+          test -f dist/eas-update-metadata.json
+          cp dist/eas-update-metadata.json "${RUNNER_TEMP}/eas-preview-update-metadata.json"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          sha256sum "${RUNNER_TEMP}/eas-preview-update.json" > "${RUNNER_TEMP}/eas-preview-update.sha256"
+          sha256sum "${RUNNER_TEMP}/eas-preview-update-view.json" >> "${RUNNER_TEMP}/eas-preview-update.sha256"
+          sha256sum "${RUNNER_TEMP}/eas-preview-update-metadata.json" >> "${RUNNER_TEMP}/eas-preview-update.sha256"
+
+      - name: Upload immutable preview evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: eas-preview-${{ inputs.commit_sha }}
+          path: |
+            ${{ runner.temp }}/eas-preview-update.json
+            ${{ runner.temp }}/eas-preview-update-view.json
+            ${{ runner.temp }}/eas-preview-update-metadata.json
+            ${{ runner.temp }}/eas-preview-update.sha256
+          if-no-files-found: error
+          retention-days: 90

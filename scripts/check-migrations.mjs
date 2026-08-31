@@ -7,7 +7,7 @@ const fail = (message) => {
 };
 
 const migrationsDir = 'supabase/migrations';
-const expectedLatest = '20260819190000_push_delivery_receipts.sql';
+const expectedLatest = '20260830120000_security_privacy_closures.sql';
 const historicalNoopMigrations = new Set([
   '20260703131500_per_user_chat_deletion_state.sql',
 ]);
@@ -102,6 +102,14 @@ const requiredTokens = [
   'GRANT EXECUTE ON FUNCTION public.apply_watch_session_transition(UUID, TEXT, INTEGER, TEXT, INTEGER, INTEGER) TO service_role',
   'REVOKE ALL ON TABLE public.media_identity_repair_history FROM anon, authenticated, public',
   'REVOKE ALL ON TABLE public.chat_repair_audit FROM anon, authenticated, public',
+  'REVOKE ALL ON FUNCTION public.check_email_availability(TEXT)',
+  'CREATE TABLE IF NOT EXISTS public.moderation_report_audit_events',
+  'CREATE OR REPLACE FUNCTION public.transition_moderation_report_ops',
+  'ADD COLUMN IF NOT EXISTS client_payload_hash TEXT',
+  'Service boundary messages',
+  'Service boundary moderation reports',
+  'CREATE TABLE IF NOT EXISTS public.edge_origin_hmac_nonces',
+  'CREATE OR REPLACE FUNCTION public.claim_edge_origin_hmac_nonce',
 ];
 
 for (const token of requiredTokens) {
@@ -110,7 +118,7 @@ for (const token of requiredTokens) {
   }
 }
 
-if (!latestSource.includes("'20260819190000'")) {
+if (!latestSource.includes("'20260830120000'")) {
   fail('latest migration does not advance the schema contract');
 }
 

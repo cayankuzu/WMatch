@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_BASE, fetchWithRetry, getPublicApiHeaders } from '../../utils/supabase/client';
+import { fetchWithRetry, getPublicApiHeaders, resolveApiUrl } from '../../utils/supabase/client';
 import type { MediaRef, MediaType } from '../shared/types';
 import {
   scheduleMediaPrefetch,
@@ -244,8 +244,9 @@ function requestTMDB<T>(path: string, signal?: AbortSignal): Promise<T> {
     return inflightRequest as Promise<T>;
   }
 
-  const request = getPublicApiHeaders()
-    .then((headers) => fetchWithRetry(`${API_BASE}/tmdb${path}`, { signal, headers }))
+  const apiPath = `/tmdb${path}`;
+  const request = getPublicApiHeaders(apiPath)
+    .then((headers) => fetchWithRetry(resolveApiUrl(apiPath), { signal, headers }))
     .then(async (response) => {
       if (!response.ok) {
         throw new Error(`TMDB request failed with status ${response.status}`);
@@ -505,8 +506,9 @@ async function fetchDetailsWithFallback(kind: MediaKind, id: number): Promise<Mo
 }
 
 async function fetchMediaBatch(refs: Array<{ id: number; mediaType: MediaKind }>) {
-  const publicHeaders = await getPublicApiHeaders();
-  const response = await fetchWithRetry(`${API_BASE}/tmdb/media-batch`, {
+  const apiPath = '/tmdb/media-batch';
+  const publicHeaders = await getPublicApiHeaders(apiPath);
+  const response = await fetchWithRetry(resolveApiUrl(apiPath), {
     method: 'POST',
     headers: {
       ...publicHeaders,

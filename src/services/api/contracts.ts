@@ -37,6 +37,7 @@ export interface LiveNowResponse {
 }
 
 export interface CompatibilityDiscoveryResponse {
+  algorithmVersion: 1;
   entries: CompatibilityDiscoveryEntry[];
   pageInfo: { hasMore: boolean; nextCursor: string | null };
 }

@@ -1,4 +1,4 @@
-import { API_BASE, fetchWithRetry, getAuthHeaders } from '../../utils/supabase/client';
+import { fetchWithRetry, getAuthHeaders, resolveApiUrl } from '../../utils/supabase/client';
 import type {
   ApiChat,
   ApiChatThread,
@@ -354,7 +354,7 @@ async function request<T>(path: string, init?: RequestInit, authHeaders?: Header
   let response: Response;
 
   try {
-    response = await fetchWithRetry(`${API_BASE}${path}`, {
+    response = await fetchWithRetry(resolveApiUrl(path), {
       ...init,
       method,
       headers: requestHeaders,
@@ -612,7 +612,12 @@ export async function getCompatibilityDiscoveryEntries(
   const payload = assertObjectPayload(data, null, path);
   const pageInfo = assertObjectPayload(payload.pageInfo, null, path) as CompatibilityDiscoveryResponse['pageInfo'];
 
+  if (payload.algorithmVersion !== 1) {
+    throw new Error('Compatibility algorithm contract mismatch.');
+  }
+
   return {
+    algorithmVersion: 1,
     entries: assertArrayField<CompatibilityDiscoveryEntry>(
       payload,
       'entries',
@@ -1004,9 +1009,11 @@ export async function unregisterPushToken(token?: string): Promise<void> {
 }
 
 export async function submitUserReport(payload: SubmitUserReportPayload): Promise<void> {
+  const idempotencyKey = createIdempotencyKey(`report:${payload.targetUserId}:${payload.reasonCode}`);
   await runSingleFlight(`report:${payload.targetUserId}:${payload.reasonCode}`, () =>
     request('/reports', {
       method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify(payload),
     }),
   );

@@ -5,6 +5,11 @@ import type { MediaRef, MediaType } from '../../shared/types';
 import { getMovieKey, legacyMovieIdsToRefs, movieToMediaRef, type Movie } from '../../services/tmdb';
 
 const LIBRARY_SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000;
+const MOVIE_SYNC_OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const MOVIE_SYNC_OUTBOX_MAX_RETRY_AGE_MS = 24 * 60 * 60 * 1000;
+const MOVIE_SYNC_OUTBOX_MAX_ATTEMPTS = 6;
+const MOVIE_SYNC_OUTBOX_RETRY_BASE_MS = 1_000;
+const MOVIE_SYNC_OUTBOX_RETRY_MAX_MS = 15 * 60 * 1000;
 
 export interface PausedWatchingEntry {
   movie: Movie;
@@ -22,6 +27,10 @@ export interface MovieSyncPayload {
   watchingVersion?: number | null;
   idempotencyKey: string;
   updatedAt: number;
+  retryCount?: number;
+  nextAttemptAt?: number | null;
+  deliveryStatus?: 'pending' | 'dead-letter' | 'cancelled';
+  deliveryStatusUpdatedAt?: number | null;
 }
 
 interface LibrarySnapshot {
@@ -146,7 +155,7 @@ export async function readMovieSyncOutbox(storageKey: string | null): Promise<Mo
     const rawValue = await AsyncStorage.getItem(storageKey);
     if (!rawValue) return [];
     const value = JSON.parse(rawValue) as Partial<MovieSyncPayload> | Partial<MovieSyncPayload>[];
-    return (Array.isArray(value) ? value : [value]).flatMap((entry) => {
+    const normalized: MovieSyncPayload[] = (Array.isArray(value) ? value : [value]).flatMap<MovieSyncPayload>((entry): MovieSyncPayload[] => {
       if (
         (!Array.isArray(entry.favoriteMedia) && !Array.isArray(entry.favoriteIds))
         || (!Array.isArray(entry.watchedMedia) && !Array.isArray(entry.watchedIds))
@@ -154,24 +163,96 @@ export async function readMovieSyncOutbox(storageKey: string | null): Promise<Mo
         || typeof entry.updatedAt !== 'number'
       ) return [];
       const watchingId = Number.isInteger(entry.watchingId) ? entry.watchingId as number : null;
+      const watchingMediaType: MediaType | null = entry.watchingMediaType === 'tv'
+        ? 'tv'
+        : watchingId
+          ? 'movie'
+          : null;
       const action = entry.watchingAction;
       return [{
         favoriteMedia: normalizeMediaRefs(entry.favoriteMedia, entry.favoriteIds),
         watchedMedia: normalizeMediaRefs(entry.watchedMedia, entry.watchedIds),
         watchingId,
-        watchingMediaType: entry.watchingMediaType === 'tv' ? 'tv' : watchingId ? 'movie' : null,
+        watchingMediaType,
         watchingAction: action === 'start' || action === 'pause' || action === 'resume' || action === 'stop'
           ? action
           : undefined,
         watchingVersion: typeof entry.watchingVersion === 'number' ? entry.watchingVersion : null,
         idempotencyKey: entry.idempotencyKey,
         updatedAt: entry.updatedAt,
+        retryCount: Number.isInteger(entry.retryCount) && Number(entry.retryCount) >= 0
+          ? Math.min(Number(entry.retryCount), MOVIE_SYNC_OUTBOX_MAX_ATTEMPTS)
+          : 0,
+        nextAttemptAt: typeof entry.nextAttemptAt === 'number' && Number.isFinite(entry.nextAttemptAt)
+          ? entry.nextAttemptAt
+          : null,
+        deliveryStatus: entry.deliveryStatus === 'dead-letter' || entry.deliveryStatus === 'cancelled'
+          ? entry.deliveryStatus
+          : 'pending',
+        deliveryStatusUpdatedAt:
+          typeof entry.deliveryStatusUpdatedAt === 'number' && Number.isFinite(entry.deliveryStatusUpdatedAt)
+            ? entry.deliveryStatusUpdatedAt
+            : null,
       }];
     });
+    const retained = normalized.filter((entry) => Date.now() - entry.updatedAt <= MOVIE_SYNC_OUTBOX_RETENTION_MS);
+
+    if (retained.length !== normalized.length) {
+      if (retained.length === 0) await AsyncStorage.removeItem(storageKey);
+      else await AsyncStorage.setItem(storageKey, JSON.stringify(retained));
+    }
+
+    return retained;
   } catch (error) {
     console.warn('Movie sync outbox could not be restored:', error);
     return [];
   }
+}
+
+export function resetMovieSyncPayloadDelivery(payload: MovieSyncPayload): MovieSyncPayload {
+  return {
+    ...payload,
+    retryCount: 0,
+    nextAttemptAt: null,
+    deliveryStatus: 'pending',
+    deliveryStatusUpdatedAt: Date.now(),
+  };
+}
+
+export function markMovieSyncPayloadFailure(
+  payload: MovieSyncPayload,
+  now = Date.now(),
+): MovieSyncPayload {
+  const retryCount = (payload.retryCount ?? 0) + 1;
+  const retryAgeMs = now - payload.updatedAt;
+  const deadLettered = retryCount >= MOVIE_SYNC_OUTBOX_MAX_ATTEMPTS
+    || retryAgeMs >= MOVIE_SYNC_OUTBOX_MAX_RETRY_AGE_MS;
+  const retryDelayMs = Math.min(
+    MOVIE_SYNC_OUTBOX_RETRY_BASE_MS * (2 ** Math.max(0, retryCount - 1)),
+    MOVIE_SYNC_OUTBOX_RETRY_MAX_MS,
+  );
+
+  return {
+    ...payload,
+    retryCount,
+    nextAttemptAt: deadLettered ? null : now + retryDelayMs,
+    deliveryStatus: deadLettered ? 'dead-letter' : 'pending',
+    deliveryStatusUpdatedAt: now,
+  };
+}
+
+export function cancelMovieSyncPayload(payload: MovieSyncPayload, now = Date.now()): MovieSyncPayload {
+  return {
+    ...payload,
+    nextAttemptAt: null,
+    deliveryStatus: 'cancelled',
+    deliveryStatusUpdatedAt: now,
+  };
+}
+
+export function isMovieSyncPayloadDeliverable(payload: MovieSyncPayload, now = Date.now()) {
+  return (payload.deliveryStatus ?? 'pending') === 'pending'
+    && (payload.nextAttemptAt == null || payload.nextAttemptAt <= now);
 }
 
 export async function writeMovieSyncOutbox(storageKey: string | null, queue: MovieSyncPayload[]) {

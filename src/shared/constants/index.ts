@@ -17,6 +17,7 @@ export const MIN_DISTANCE_FILTER_KM = 0;
 export const MAX_DISTANCE_FILTER_KM = 500;
 export const MIN_COMPATIBILITY_FILTER = 0;
 export const MAX_COMPATIBILITY_FILTER = 100;
+export const COMPATIBILITY_ALGORITHM_VERSION = 1 as const;
 export const DAILY_LIKE_SWIPE_LIMIT = 13;
 export const DAILY_DISLIKE_SWIPE_LIMIT = 13;
 export const DAILY_UNDO_LIMIT = 3;

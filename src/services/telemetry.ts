@@ -1,5 +1,6 @@
 import * as Sentry from '@sentry/react-native';
 import * as Application from 'expo-application';
+import * as Updates from 'expo-updates';
 
 import { performanceBudgets } from '../shared/constants/performance';
 
@@ -70,6 +71,9 @@ export function initializeTelemetry() {
   const build = Application.nativeBuildVersion ?? '0';
   const release = `${applicationId}@${version}`;
   const environment = process.env.EXPO_PUBLIC_APP_ENV?.trim() || (__DEV__ ? 'development' : 'production');
+  const commitSha = process.env.EXPO_PUBLIC_RELEASE_SHA?.trim() || 'unavailable';
+  const runtimeVersion = Updates.runtimeVersion ?? version;
+  const updateChannel = Updates.channel ?? (__DEV__ ? 'development' : 'embedded');
   telemetryEnabled = Boolean(dsn);
 
   Sentry.init({
@@ -92,6 +96,10 @@ export function initializeTelemetry() {
     Sentry.setTag('app.id', applicationId);
     Sentry.setTag('app.version', version);
     Sentry.setTag('app.build', build);
+    Sentry.setTag('app.commit_sha', commitSha);
+    Sentry.setTag('app.runtime_version', runtimeVersion);
+    Sentry.setTag('app.update_channel', updateChannel);
+    Sentry.setTag('app.update_id', Updates.updateId ?? 'embedded');
   }
 }
 

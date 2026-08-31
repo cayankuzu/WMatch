@@ -1,11 +1,37 @@
 {
   "cli": {
-    "version": ">= 20.5.1",
+    "version": "22.0.0",
     "appVersionSource": "local"
   },
   "build": {
+    "development": {
+      "environment": "development",
+      "channel": "development",
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "credentialsSource": "local",
+        "buildType": "apk"
+      },
+      "ios": {
+        "credentialsSource": "local"
+      }
+    },
+    "preview": {
+      "environment": "preview",
+      "channel": "preview",
+      "distribution": "internal",
+      "android": {
+        "credentialsSource": "local",
+        "buildType": "apk"
+      },
+      "ios": {
+        "credentialsSource": "local"
+      }
+    },
     "production": {
       "environment": "production",
+      "channel": "production",
       "android": {
         "credentialsSource": "local",
         "buildType": "app-bundle"

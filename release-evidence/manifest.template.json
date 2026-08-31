@@ -1,0 +1,209 @@
+{
+  "schemaVersion": 1,
+  "templateStatus": "unverified",
+  "candidate": {
+    "repository": "cayankuzu/WMatch",
+    "commitSha": "REPLACE_WITH_40_CHARACTER_IMMUTABLE_SHA",
+    "branchOrTag": "REPLACE_WITH_SIGNED_TAG_OR_VERIFIED_BRANCH",
+    "treeClean": false,
+    "appVersion": "1.0.51",
+    "runtimeVersion": "1.0.51",
+    "androidVersionCode": 53,
+    "iosBuildNumber": "55",
+    "createdAtUtc": null
+  },
+  "sourceContract": {
+    "baselineSha": "b8ff52ac41eda5f6ef1e43472784d794328f7050",
+    "featureContract": "docs/existing-feature-contract.md",
+    "featureSnapshot": "quality/feature-surface.snapshot.json",
+    "featureGuardStatus": "pending",
+    "edgeRouteInventoryCount": 41,
+    "tableInventoryCount": 28,
+    "internalOnlyAdditions": [
+      "POST /account-deletion-jobs/resume",
+      "moderation_report_audit_events",
+      "edge_origin_hmac_nonces"
+    ],
+    "newProductSurface": null
+  },
+  "repositoryEvidence": {
+    "aggregateCommand": "npm run verify:release",
+    "status": "pending",
+    "logPath": null,
+    "logSha256": null,
+    "sbomPath": null,
+    "sbomSha256": null,
+    "commands": []
+  },
+  "databaseEvidence": {
+    "requiredMigration": "20260830120000",
+    "migrationCount": 44,
+    "localPostgresMajorVersion": 17,
+    "stagingProjectRefHash": null,
+    "firstLocalReplayStatus": "pending",
+    "secondLocalReplayStatus": "pending",
+    "pgTapExpectedFiles": 3,
+    "pgTapExpectedTests": 117,
+    "pgTapExpectedRuns": 2,
+    "pgTapRunTargets": ["source", "restored"],
+    "pgTapStatus": "pending",
+    "migrationReplayStatus": "pending",
+    "databaseLintPublicStorageStatus": "pending",
+    "databaseLintFullStatus": "pending",
+    "databaseLintKnownVendorFinding": "realtime.apply_rls dynamic EXECUTE",
+    "databaseAdvisorWarnStatus": "pending",
+    "databaseAdvisorExpectedIssues": 0,
+    "atomicNonceConcurrency": {
+      "status": "pending",
+      "expectedTransactions": 32,
+      "expectedFailedTransactions": 0,
+      "expectedTrueResults": 1,
+      "expectedFalseResults": 31,
+      "expectedNonceRows": 1
+    },
+    "schemaDiffSchemas": ["public", "storage", "realtime"],
+    "schemaDiffStatus": "pending",
+    "rlsIdorAttackStatus": "pending",
+    "accountDeletionDrillStatus": "pending",
+    "moderationDrillStatus": "pending",
+    "productionApplyStatus": "pending",
+    "productionApplyEvidencePath": null
+  },
+  "edgeEvidence": {
+    "status": "pending",
+    "workerEnvironment": "production",
+    "workerVersionId": null,
+    "sourceCommitSha": null,
+    "healthEvidencePath": null,
+    "observabilityEvidencePath": null,
+    "budgetEvidencePath": null,
+    "rolloutPercentagesCompleted": [],
+    "requiredRolloutSequence": [5, 25, 50, 100],
+    "knownGoodVersionId": null,
+    "rollbackEvidencePath": null
+  },
+  "restoreEvidence": {
+    "status": "pending",
+    "localLogicalRestore": {
+      "status": "pending",
+      "dumpSha256": null,
+      "sourceCommitSha": null,
+      "targetFromTemplate0": null,
+      "requiredRestoreRole": "supabase_admin",
+      "restoreRole": null,
+      "ownerDroppingRestoreAllowed": false,
+      "ownerMetadataPreserved": null,
+      "expectedSchemaContract": "20260830120000",
+      "schemaContract": null,
+      "expectedPublicTableCount": 28,
+      "publicTableCount": null,
+      "expectedPublicIndexCount": 88,
+      "publicIndexCount": null,
+      "expectedRlsEnabledPublicTableCount": 27,
+      "rlsEnabledPublicTableCount": null,
+      "expectedPgTapFiles": 3,
+      "pgTapFiles": null,
+      "expectedPgTapTests": 117,
+      "pgTapTestsPassed": null,
+      "logPath": null,
+      "logSha256": null
+    },
+    "providerPitrRestoreStatus": "pending",
+    "storageObjectRestoreStatus": "pending",
+    "measuredRpo": null,
+    "measuredRto": null
+  },
+  "artifacts": {
+    "android": {
+      "status": "missing",
+      "buildId": null,
+      "sourceCommitSha": null,
+      "versionCode": 53,
+      "sha256": null,
+      "signatureVerified": false,
+      "certificateFingerprint": null,
+      "internalTrackEvidencePath": null
+    },
+    "ios": {
+      "status": "missing",
+      "buildId": null,
+      "sourceCommitSha": null,
+      "buildNumber": "55",
+      "sha256": null,
+      "signatureVerified": false,
+      "certificateFingerprint": null,
+      "testFlightEvidencePath": null
+    }
+  },
+  "otaEvidence": {
+    "classification": "NATIVE_BUILD_REQUIRED",
+    "classifierStatus": "pending",
+    "channels": ["development", "preview", "production"],
+    "preview": {
+      "status": "pending",
+      "unsigned": true,
+      "updateGroupId": null,
+      "sourceCommitSha": null,
+      "runtimeVersion": "1.0.51",
+      "deviceEvidencePath": null
+    },
+    "production": {
+      "status": "pending",
+      "updateGroupId": null,
+      "sourceCommitSha": null,
+      "runtimeVersion": "1.0.51",
+      "environment": "production",
+      "rolloutPercentagesCompleted": [],
+      "rollbackGroupId": null,
+      "rollbackEvidencePath": null
+    },
+    "codeSigning": {
+      "enabled": false,
+      "accountPlanVerified": false,
+      "binaryCertificateVerified": false,
+      "invalidSignatureTestStatus": "pending"
+    }
+  },
+  "runtimeEvidence": {
+    "androidDevices": [],
+    "iosDevices": [],
+    "accessibilityStatus": "pending",
+    "offlineProcessKillStatus": "pending",
+    "loadStatus": "pending",
+    "observabilityStatus": "pending",
+    "alertDeliveryStatus": "pending",
+    "restoreDrillStatus": "pending",
+    "storeReviewStatus": "pending"
+  },
+  "manualGates": {
+    "cloudflareAccountAndToken": "pending",
+    "stableDnsAndApiHost": "pending",
+    "wafRateLimitAccess": "pending",
+    "supabaseSecretsAndOriginHmac": "pending",
+    "easProjectChannelsEnvironments": "pending",
+    "otaSigningPlan": "pending",
+    "androidIosSigning": "pending",
+    "sentryDashboardAndAlert": "pending",
+    "providerCredentials": "pending",
+    "stagingDeploy": "pending",
+    "realDeviceMatrix": "pending",
+    "testFlightAndInternalTrack": "pending",
+    "storePrivacyAndUgcForms": "pending",
+    "backupPitrAndRestore": "pending",
+    "canaryAndRollbackApproval": "pending"
+  },
+  "scorecard": {
+    "source": "docs/release-readiness.md",
+    "areasTotal": 35,
+    "areasAtOrAbove9_80": 0,
+    "allAreasSameShaEvidenceComplete": false,
+    "average": null
+  },
+  "riskAcceptance": [],
+  "releaseDecision": {
+    "status": "NO-GO",
+    "approvedBy": [],
+    "approvedAtUtc": null,
+    "statement": "IMPLEMENTATION COMPLETE, RELEASE NO-GO UNTIL LISTED MANUAL/RUNTIME EVIDENCE IS ATTACHED TO THE SAME COMMIT SHA."
+  }
+}

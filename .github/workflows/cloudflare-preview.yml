@@ -1,0 +1,243 @@
+name: Cloudflare Worker Preview
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cloudflare-preview.yml"
+      - "infra/cloudflare/wmatch-edge/**"
+      - "docs/cloudflare-architecture.md"
+      - "docs/cloudflare-route-matrix.md"
+      - "docs/cloudflare-threat-model.md"
+      - "docs/cache-and-rate-limit-policy.md"
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Upload and deploy this SHA to the isolated preview Worker"
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: cloudflare-preview-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: infra/cloudflare/wmatch-edge
+
+jobs:
+  verify:
+    name: Verify Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/cloudflare/wmatch-edge/package-lock.json
+
+      - name: Activate pinned npm policy engine
+        run: |
+          npm install --global --ignore-scripts npm@11.19.0
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Audit production dependency graph
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Verify generated bindings, types, and runtime tests
+        run: |
+          npm run types:check
+          npm run typecheck
+          npm test
+
+      - name: Compile preview upload without publishing
+        run: npx wrangler versions upload --env preview --dry-run
+
+  deploy-preview:
+    name: Manual preview deployment
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: cloudflare-preview
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      EDGE_ALLOWED_ORIGINS: ${{ vars.WMATCH_EDGE_ALLOWED_ORIGINS }}
+      EDGE_ALLOWED_REDIRECT_ORIGINS: ${{ vars.WMATCH_EDGE_ALLOWED_REDIRECT_ORIGINS }}
+      EDGE_BASE_URL: ${{ vars.WMATCH_EDGE_BASE_URL }}
+      EDGE_CACHE_VERSION: ${{ vars.WMATCH_EDGE_CACHE_VERSION }}
+      EDGE_JWT_AUDIENCE: ${{ vars.WMATCH_EDGE_JWT_AUDIENCE }}
+      EDGE_JWT_ISSUER: ${{ vars.WMATCH_EDGE_JWT_ISSUER }}
+      EDGE_JWT_JWKS_URL: ${{ vars.WMATCH_EDGE_JWT_JWKS_URL }}
+      EDGE_ORIGIN_BASE_URL: ${{ vars.WMATCH_EDGE_ORIGIN_BASE_URL }}
+      EDGE_ORIGIN_HMAC_KEY_ID: ${{ vars.WMATCH_EDGE_ORIGIN_HMAC_KEY_ID }}
+    steps:
+      - name: Checkout immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/cloudflare/wmatch-edge/package-lock.json
+
+      - name: Activate pinned npm policy engine
+        run: |
+          npm install --global --ignore-scripts npm@11.19.0
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Fail closed on missing preview ownership inputs
+        run: |
+          set -euo pipefail
+          required=(
+            CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN EDGE_ALLOWED_ORIGINS
+            EDGE_ALLOWED_REDIRECT_ORIGINS EDGE_BASE_URL EDGE_CACHE_VERSION
+            EDGE_JWT_AUDIENCE EDGE_JWT_ISSUER EDGE_JWT_JWKS_URL
+            EDGE_ORIGIN_BASE_URL EDGE_ORIGIN_HMAC_KEY_ID
+          )
+          for name in "${required[@]}"; do
+            value="${!name:-}"
+            test -n "$value" || { echo "::error::$name is required"; exit 1; }
+            [[ "$value" != *REQUIRED__* ]] || { echo "::error::$name is still a placeholder"; exit 1; }
+            [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { echo "::error::$name contains a newline"; exit 1; }
+          done
+          [[ "$EDGE_BASE_URL" =~ ^https://[^/]+$ ]] || { echo "::error::EDGE_BASE_URL must be an exact HTTPS origin"; exit 1; }
+          [[ "$EDGE_ORIGIN_BASE_URL" =~ ^https://[^/]+/functions/v1/[^/?#]+$ ]] || { echo "::error::EDGE_ORIGIN_BASE_URL must be one Supabase Function base URL"; exit 1; }
+          [[ "$EDGE_JWT_ISSUER" =~ ^https://[^/]+/auth/v1$ ]] || { echo "::error::EDGE_JWT_ISSUER must be a Supabase Auth issuer"; exit 1; }
+          [[ "$EDGE_JWT_JWKS_URL" =~ ^https://[^/]+/auth/v1/\.well-known/jwks\.json$ ]] || { echo "::error::EDGE_JWT_JWKS_URL must be a Supabase JWKS URL"; exit 1; }
+          [[ "$EDGE_CACHE_VERSION" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || { echo "::error::EDGE_CACHE_VERSION is invalid"; exit 1; }
+          [[ "$EDGE_ORIGIN_HMAC_KEY_ID" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "::error::EDGE_ORIGIN_HMAC_KEY_ID is invalid"; exit 1; }
+
+      - name: Verify versioned secrets already exist
+        run: |
+          set -euo pipefail
+          npx wrangler secret list --env preview --format json > "$RUNNER_TEMP/preview-secrets.json"
+          node scripts/release-evidence.mjs assert-secrets "$RUNNER_TEMP/preview-secrets.json"
+
+      - name: Capture current preview deployment
+        id: baseline
+        run: |
+          set -euo pipefail
+          if npx wrangler deployments status --env preview --json > "$RUNNER_TEMP/preview-before.json"; then
+            baseline_id="$(node scripts/release-evidence.mjs primary "$RUNNER_TEMP/preview-before.json")"
+          else
+            printf '{"versions":[]}\n' > "$RUNNER_TEMP/preview-before.json"
+            baseline_id=""
+          fi
+          echo "version_id=$baseline_id" >> "$GITHUB_OUTPUT"
+
+      - name: Reuse or upload immutable preview version
+        id: upload
+        run: |
+          set -euo pipefail
+          npx wrangler versions list --env preview --json > "$RUNNER_TEMP/preview-versions-before.json"
+          target_id="$(node scripts/release-evidence.mjs find-tag "$RUNNER_TEMP/preview-versions-before.json" "$GITHUB_SHA")"
+          if [[ -z "$target_id" ]]; then
+            npx wrangler versions upload \
+              --env preview \
+              --strict \
+              --tag "$GITHUB_SHA" \
+              --message "preview ${GITHUB_SHA} run ${GITHUB_RUN_ID}" \
+              --var "ALLOWED_ORIGINS:$EDGE_ALLOWED_ORIGINS" \
+              --var "ALLOWED_REDIRECT_ORIGINS:$EDGE_ALLOWED_REDIRECT_ORIGINS" \
+              --var "CACHE_VERSION:$EDGE_CACHE_VERSION" \
+              --var "ENVIRONMENT:preview" \
+              --var "JWT_AUDIENCE:$EDGE_JWT_AUDIENCE" \
+              --var "JWT_ISSUER:$EDGE_JWT_ISSUER" \
+              --var "JWT_JWKS_URL:$EDGE_JWT_JWKS_URL" \
+              --var "ORIGIN_BASE_URL:$EDGE_ORIGIN_BASE_URL" \
+              --var "ORIGIN_HMAC_KEY_ID:$EDGE_ORIGIN_HMAC_KEY_ID" \
+              --var "ORIGIN_HMAC_MAX_SKEW_SECONDS:60" \
+              --var "ORIGIN_MAX_RESPONSE_BYTES:2097152" \
+              --var "ORIGIN_TIMEOUT_MS:8000" \
+              2>&1 | tee "$RUNNER_TEMP/preview-upload.txt"
+            npx wrangler versions list --env preview --json > "$RUNNER_TEMP/preview-versions-after.json"
+            target_id="$(node scripts/release-evidence.mjs resolve-tag "$RUNNER_TEMP/preview-versions-after.json" "$GITHUB_SHA")"
+          else
+            printf 'Reusing existing immutable version %s\n' "$target_id" | tee "$RUNNER_TEMP/preview-upload.txt"
+          fi
+          npx wrangler versions view "$target_id" --env preview --json > "$RUNNER_TEMP/preview-target.json"
+          node scripts/release-evidence.mjs assert-version "$RUNNER_TEMP/preview-target.json" "$target_id" "$GITHUB_SHA"
+          echo "version_id=$target_id" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy preview at 100 percent
+        run: |
+          set -euo pipefail
+          npx wrangler versions deploy "${{ steps.upload.outputs.version_id }}@100%" \
+            --env preview \
+            --message "preview 100% ${GITHUB_SHA}" \
+            --yes \
+            2>&1 | tee "$RUNNER_TEMP/preview-deploy.txt"
+          npx wrangler deployments status --env preview --json > "$RUNNER_TEMP/preview-after.json"
+          node scripts/release-evidence.mjs assert-deployment \
+            "$RUNNER_TEMP/preview-after.json" \
+            "${{ steps.baseline.outputs.version_id }}" \
+            "${{ steps.upload.outputs.version_id }}" \
+            100
+
+      - name: Smoke preview and roll back on failure
+        run: |
+          set -euo pipefail
+          if ! curl --fail --silent --show-error --max-time 10 --retry 2 --max-filesize 65536 \
+            --output "$RUNNER_TEMP/preview-health.json" \
+            --dump-header "$RUNNER_TEMP/preview-health-headers.txt" \
+            "$EDGE_BASE_URL/health" || \
+             ! grep -Eiq '^cache-control:.*no-store' "$RUNNER_TEMP/preview-health-headers.txt"; then
+            baseline_id="${{ steps.baseline.outputs.version_id }}"
+            target_id="${{ steps.upload.outputs.version_id }}"
+            if [[ -n "$baseline_id" && "$baseline_id" != "$target_id" ]]; then
+              npx wrangler versions deploy "$baseline_id@100%" \
+                --env preview \
+                --message "automatic preview rollback after failed health ${GITHUB_SHA}" \
+                --yes \
+                2>&1 | tee "$RUNNER_TEMP/preview-rollback.txt"
+              npx wrangler deployments status --env preview --json > "$RUNNER_TEMP/preview-rollback-after.json"
+              node scripts/release-evidence.mjs assert-rollback \
+                "$RUNNER_TEMP/preview-rollback-after.json" \
+                "$baseline_id"
+            fi
+            exit 1
+          fi
+
+      - name: Publish immutable evidence summary
+        if: always()
+        run: |
+          {
+            echo "### Cloudflare preview evidence"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Baseline: \`${{ steps.baseline.outputs.version_id || 'none' }}\`"
+            echo "- Target: \`${{ steps.upload.outputs.version_id || 'upload-failed' }}\`"
+            echo "- Workflow run: \`$GITHUB_RUN_ID\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain preview deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloudflare-preview-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/preview-*.json
+            ${{ runner.temp }}/preview-*.txt
+          if-no-files-found: warn
+          retention-days: 30

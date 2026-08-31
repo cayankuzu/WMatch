@@ -25,6 +25,7 @@ jest.mock('expo-image', () => ({
 
 jest.mock('../../utils/supabase/client', () => ({
   API_BASE: 'https://api.example.test',
+  resolveApiUrl: (path: string) => `https://api.example.test${path}`,
   fetchWithRetry: (...args: [string, RequestInit?]) => mockFetchWithRetry(...args),
   getPublicApiHeaders: jest.fn(async () => ({
     Authorization: 'Bearer test-anon-key',

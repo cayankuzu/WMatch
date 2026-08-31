@@ -1,0 +1,339 @@
+name: EAS update production
+
+permissions:
+  actions: read
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Publish the preview-verified commit, advance its rollout, or republish a known-good production group
+        required: true
+        default: promote
+        type: choice
+        options: [promote, advance, rollback]
+      commit_sha:
+        description: Immutable main-branch control commit SHA
+        required: true
+        type: string
+      base_ref:
+        description: Required for promote; last binary/update commit used for OTA classification
+        required: false
+        type: string
+      preview_group_id:
+        description: Required for promote; same-SHA preview group
+        required: false
+        type: string
+      production_group_id:
+        description: Required for advance; active production rollout group
+        required: false
+        type: string
+      rollback_group_id:
+        description: Required for rollback; known-good group originally published on production
+        required: false
+        type: string
+      rollout_percentage:
+        description: Promote must use 5; advance must follow 5 -> 20 -> 50 -> 100; rollback must use 100
+        required: true
+        default: '5'
+        type: choice
+        options: ['5', '20', '50', '100']
+
+concurrency:
+  group: eas-update-production
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    env:
+      EXPO_PUBLIC_API_BASE_URL: ${{ vars.EXPO_PUBLIC_API_BASE_URL }}
+      EXPO_PUBLIC_APP_ENV: production
+      EXPO_PUBLIC_RELEASE_SHA: ${{ inputs.commit_sha }}
+      EXPO_PUBLIC_SENTRY_DSN: ${{ vars.EXPO_PUBLIC_SENTRY_DSN }}
+      EXPO_PUBLIC_SENTRY_TRACES_SAMPLE_RATE: ${{ vars.EXPO_PUBLIC_SENTRY_TRACES_SAMPLE_RATE }}
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+      EXPO_PUBLIC_SUPABASE_PROJECT_ID: ${{ vars.EXPO_PUBLIC_SUPABASE_PROJECT_ID }}
+      EAS_UPDATE_CODE_SIGNING_ENABLED: ${{ vars.EAS_UPDATE_CODE_SIGNING_ENABLED }}
+    steps:
+      - name: Checkout requested commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert immutable main-branch inputs
+        shell: bash
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+          OPERATION: ${{ inputs.operation }}
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git cat-file -e "${EXPECTED_SHA}^{commit}"
+          git show-ref --verify --quiet refs/remotes/origin/main
+          git merge-base --is-ancestor "$EXPECTED_SHA" refs/remotes/origin/main
+          if [[ "$OPERATION" == "promote" ]]; then
+            [[ "$BASE_REF" =~ ^[0-9a-f]{40}$ ]]
+            git cat-file -e "${BASE_REF}^{commit}"
+            git merge-base --is-ancestor "$BASE_REF" HEAD
+          fi
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Pin npm policy engine and audited EAS CLI
+        run: |
+          npm install --global npm@11.19.0 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "11.19.0"
+          npm install --global eas-cli@22.0.0 --ignore-scripts --no-audit --no-fund
+          eas --version | grep -F "eas-cli/22.0.0"
+
+      - name: Require successful same-SHA CI and security gates
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+          GH_READ_TOKEN: ${{ github.token }}
+        run: |
+          require_successful_workflow() {
+            workflow_file="$1"
+            response="$(curl --fail --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${EXPECTED_SHA}&status=success&per_page=1")"
+            jq -e --arg sha "$EXPECTED_SHA" \
+              '.workflow_runs | length == 1 and .[0].head_sha == $sha and .[0].conclusion == "success"' \
+              <<< "$response" >/dev/null
+          }
+          require_successful_workflow ci.yml
+          require_successful_workflow quality.yml
+
+      - name: Install and verify exact control commit
+        shell: bash
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+          OPERATION: ${{ inputs.operation }}
+        run: |
+          npm ci
+          npm run verify:release
+          if [[ "$OPERATION" == "promote" ]]; then
+            node scripts/guards/classify-ota-change.mjs --base "$BASE_REF" --head HEAD --assert-ota-safe
+          fi
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Validate operation, EAS environment, and source provenance
+        shell: bash
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPECTED_API_BASE_URL: ${{ vars.EXPO_PUBLIC_API_BASE_URL }}
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+          OPERATION: ${{ inputs.operation }}
+          PREVIEW_GROUP_ID: ${{ inputs.preview_group_id }}
+          PRODUCTION_GROUP_ID: ${{ inputs.production_group_id }}
+          ROLLBACK_GROUP_ID: ${{ inputs.rollback_group_id }}
+          ROLLOUT_PERCENTAGE: ${{ inputs.rollout_percentage }}
+        run: |
+          test -n "$EXPO_TOKEN"
+          [[ "$EAS_UPDATE_CODE_SIGNING_ENABLED" == "true" || "$EAS_UPDATE_CODE_SIGNING_ENABLED" == "false" ]]
+          # EXPECTED_SHA is injected by the protected workflow environment above.
+          # shellcheck disable=SC2153
+          control_sha="$EXPECTED_SHA"
+          runtime_version="$(node -p "require('./app.json').expo.version")"
+          validate_group_id() {
+            [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+          }
+          validate_group_json() {
+            file="$1"
+            group="$2"
+            branch="$3"
+            expected_sha="$4"
+            jq -e --arg branch "$branch" --arg group "$group" --arg runtime "$runtime_version" --arg sha "$expected_sha" '
+              type == "array" and length == 2 and
+              all(.[];
+                .group == $group and .runtimeVersion == $runtime and .branch == $branch and
+                .isRollBackToEmbedded != true and ($sha == "" or .gitCommitHash == $sha)
+              ) and
+              ([.[].platform | ascii_downcase] | unique | sort) == ["android", "ios"]
+            ' "$file" >/dev/null
+          }
+
+          case "$OPERATION" in
+            promote)
+              test "$ROLLOUT_PERCENTAGE" = "5"
+              validate_group_id "$PREVIEW_GROUP_ID"
+              # Expand these variables only inside the environment loaded by EAS.
+              # shellcheck disable=SC2016
+              WMATCH_EXPECTED_API_BASE_URL="$EXPECTED_API_BASE_URL" WMATCH_EXPECTED_RELEASE_SHA="$control_sha" \
+                eas env:exec production \
+                'test "$EXPO_PUBLIC_APP_ENV" = "production" && test "$EXPO_PUBLIC_API_BASE_URL" = "$WMATCH_EXPECTED_API_BASE_URL" && test "$EXPO_PUBLIC_RELEASE_SHA" = "$WMATCH_EXPECTED_RELEASE_SHA" && test -n "$EXPO_PUBLIC_SUPABASE_PROJECT_ID" && test -n "$EXPO_PUBLIC_SUPABASE_ANON_KEY"' \
+                --non-interactive
+              eas update:view "$PREVIEW_GROUP_ID" --json \
+                > "${RUNNER_TEMP}/source-update.json"
+              validate_group_json "${RUNNER_TEMP}/source-update.json" "$PREVIEW_GROUP_ID" preview "$control_sha"
+              printf '%s\n' "$control_sha" > "${RUNNER_TEMP}/source-commit-sha.txt"
+              ;;
+            advance)
+              validate_group_id "$PRODUCTION_GROUP_ID"
+              eas update:view "$PRODUCTION_GROUP_ID" --json \
+                > "${RUNNER_TEMP}/source-update.json"
+              validate_group_json "${RUNNER_TEMP}/source-update.json" "$PRODUCTION_GROUP_ID" production "$control_sha"
+              eas channel:view production --json --non-interactive \
+                > "${RUNNER_TEMP}/production-channel-before.json"
+              jq -e --arg group "$PRODUCTION_GROUP_ID" '
+                .currentPage.name == "production" and .currentPage.isPaused == false and
+                any(.currentPage.updateBranches[]?;
+                  .name == "production" and any(.updateGroups[]?; .group == $group)
+                )
+              ' "${RUNNER_TEMP}/production-channel-before.json" >/dev/null
+              current_percentage="$(jq -er --arg group "$PRODUCTION_GROUP_ID" '
+                first(.currentPage.updateBranches[]?.updateGroups[]? | select(.group == $group) | .rolloutPercentage)
+              ' "${RUNNER_TEMP}/production-channel-before.json")"
+              case "${current_percentage}:${ROLLOUT_PERCENTAGE}" in
+                5:20|20:50|50:100) ;;
+                *) exit 1 ;;
+              esac
+              printf '%s\n' "$control_sha" > "${RUNNER_TEMP}/source-commit-sha.txt"
+              ;;
+            rollback)
+              test "$ROLLOUT_PERCENTAGE" = "100"
+              validate_group_id "$ROLLBACK_GROUP_ID"
+              eas update:view "$ROLLBACK_GROUP_ID" --json \
+                > "${RUNNER_TEMP}/source-update.json"
+              validate_group_json "${RUNNER_TEMP}/source-update.json" "$ROLLBACK_GROUP_ID" production ""
+              source_sha="$(jq -er 'if ([.[].gitCommitHash] | unique | length) == 1 then .[0].gitCommitHash else error("source SHA mismatch") end' "${RUNNER_TEMP}/source-update.json")"
+              [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+              printf '%s\n' "$source_sha" > "${RUNNER_TEMP}/source-commit-sha.txt"
+              ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Prepare ephemeral production signing key
+        if: vars.EAS_UPDATE_CODE_SIGNING_ENABLED == 'true' && inputs.operation != 'advance'
+        shell: bash
+        env:
+          EAS_UPDATE_PRIVATE_KEY_PEM: ${{ secrets.EAS_UPDATE_PRIVATE_KEY_PEM }}
+        run: |
+          test -n "$EAS_UPDATE_PRIVATE_KEY_PEM"
+          umask 077
+          printf '%s' "$EAS_UPDATE_PRIVATE_KEY_PEM" > "${RUNNER_TEMP}/eas-update-private-key.pem"
+          openssl pkey -in "${RUNNER_TEMP}/eas-update-private-key.pem" -noout -check >/dev/null
+
+      - name: Promote, advance, or roll back
+        shell: bash
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+          OPERATION: ${{ inputs.operation }}
+          PREVIEW_GROUP_ID: ${{ inputs.preview_group_id }}
+          PRODUCTION_GROUP_ID: ${{ inputs.production_group_id }}
+          ROLLBACK_GROUP_ID: ${{ inputs.rollback_group_id }}
+          ROLLOUT_PERCENTAGE: ${{ inputs.rollout_percentage }}
+        run: |
+          test -n "$EXPO_TOKEN"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          signing_args=()
+          if [[ "$EAS_UPDATE_CODE_SIGNING_ENABLED" == "true" && "$OPERATION" != "advance" ]]; then
+            test -s "${RUNNER_TEMP}/eas-update-private-key.pem"
+            signing_args=(--private-key-path "${RUNNER_TEMP}/eas-update-private-key.pem")
+          fi
+
+          case "$OPERATION" in
+            promote)
+              eas update \
+                --channel production \
+                --environment production \
+                --emit-metadata \
+                --source-maps true \
+                --rollout-percentage "$ROLLOUT_PERCENTAGE" \
+                --message "production sha=${EXPECTED_SHA} preview_group=${PREVIEW_GROUP_ID}" \
+                --non-interactive --json "${signing_args[@]}"
+              ;;
+            advance)
+              eas update:edit "$PRODUCTION_GROUP_ID" \
+                --rollout-percentage "$ROLLOUT_PERCENTAGE" --non-interactive --json
+              ;;
+            rollback)
+              eas update:republish \
+                --group "$ROLLBACK_GROUP_ID" \
+                --destination-channel production \
+                --rollout-percentage 100 \
+                --message "rollback source_group=${ROLLBACK_GROUP_ID} control_sha=${EXPECTED_SHA}" \
+                --platform all \
+                --non-interactive --json "${signing_args[@]}"
+              ;;
+          esac | tee "${RUNNER_TEMP}/eas-production-operation.json"
+
+          if [[ "$OPERATION" == "promote" ]]; then
+            test -f dist/eas-update-metadata.json
+            cp dist/eas-update-metadata.json "${RUNNER_TEMP}/eas-production-update-metadata.json"
+          fi
+
+          result_group="$(jq -er \
+            'if type == "array" and length > 0 and ([.[].group] | unique | length) == 1 then .[0].group else error("invalid operation response") end' \
+            "${RUNNER_TEMP}/eas-production-operation.json")"
+          if [[ "$OPERATION" == "advance" ]]; then
+            test "$result_group" = "$PRODUCTION_GROUP_ID"
+          fi
+          eas update:view "$result_group" --json \
+            > "${RUNNER_TEMP}/eas-production-result-view.json"
+          runtime_version="$(node -p "require('./app.json').expo.version")"
+          source_sha="$(tr -d '\r\n' < "${RUNNER_TEMP}/source-commit-sha.txt")"
+          jq -e --arg group "$result_group" --arg runtime "$runtime_version" --arg sha "$source_sha" '
+            type == "array" and length == 2 and
+            all(.[]; .group == $group and .runtimeVersion == $runtime and .branch == "production" and .gitCommitHash == $sha) and
+            ([.[].platform | ascii_downcase] | unique | sort) == ["android", "ios"]
+          ' "${RUNNER_TEMP}/eas-production-result-view.json" >/dev/null
+          eas channel:view production --json --non-interactive \
+            > "${RUNNER_TEMP}/production-channel-after.json"
+          jq -e --arg group "$result_group" --argjson percentage "$ROLLOUT_PERCENTAGE" '
+            .currentPage.name == "production" and .currentPage.isPaused == false and
+            any(.currentPage.updateBranches[]?;
+              .name == "production" and
+              any(.updateGroups[]?; .group == $group and .rolloutPercentage == $percentage)
+            )
+          ' "${RUNNER_TEMP}/production-channel-after.json" >/dev/null
+          test -z "$(git status --porcelain --untracked-files=all)"
+          evidence_files=(
+            "${RUNNER_TEMP}/source-update.json"
+            "${RUNNER_TEMP}/eas-production-operation.json"
+            "${RUNNER_TEMP}/eas-production-result-view.json"
+            "${RUNNER_TEMP}/production-channel-after.json"
+          )
+          if [[ -f "${RUNNER_TEMP}/eas-production-update-metadata.json" ]]; then
+            evidence_files+=("${RUNNER_TEMP}/eas-production-update-metadata.json")
+          fi
+          sha256sum "${evidence_files[@]}" > "${RUNNER_TEMP}/eas-production-operation.sha256"
+
+      - name: Remove ephemeral production signing key
+        if: always()
+        shell: bash
+        run: rm -f "${RUNNER_TEMP}/eas-update-private-key.pem"
+
+      - name: Upload production evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: eas-production-${{ inputs.operation }}-${{ inputs.commit_sha }}
+          path: |
+            ${{ runner.temp }}/source-update.json
+            ${{ runner.temp }}/source-commit-sha.txt
+            ${{ runner.temp }}/production-channel-before.json
+            ${{ runner.temp }}/eas-production-operation.json
+            ${{ runner.temp }}/eas-production-result-view.json
+            ${{ runner.temp }}/eas-production-update-metadata.json
+            ${{ runner.temp }}/production-channel-after.json
+            ${{ runner.temp }}/eas-production-operation.sha256
+          if-no-files-found: error
+          retention-days: 180

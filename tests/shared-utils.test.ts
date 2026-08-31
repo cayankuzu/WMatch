@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { COMPATIBILITY_ALGORITHM_VERSION } from '../src/shared/constants/index.ts';
+
 import {
   normalizeWhitespace,
   validateCoordinate,
@@ -245,6 +247,7 @@ describe('compatibility utilities', () => {
     expect(breakdown.commonFavoriteIds).toEqual([2, 3]);
     expect(breakdown.commonWatchedIds).toEqual([11]);
     expect(breakdown.commonLibraryIds).toEqual([2, 3, 11]);
+    expect(breakdown.algorithmVersion).toBe(COMPATIBILITY_ALGORITHM_VERSION);
     expect(breakdown.score).toBe(44);
     expect(calculateCompatibilityScore([1, 2, 3], [10, 11], [2, 3, 4], [11, 12])).toBe(44);
   });
@@ -270,6 +273,52 @@ describe('compatibility utilities', () => {
 
     expect(typedMatch.commonFavoriteRefs).toEqual([{ id: 123, mediaType: 'tv' }]);
     expect(typedMatch.score).toBe(100);
+  });
+
+  it('preserves symmetry, permutation, duplicate, type, and bounds invariants across generated libraries', () => {
+    let state = 0x5eed1234;
+    const nextInt = (max: number) => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state % max;
+    };
+    const buildLibrary = () => Array.from({ length: nextInt(24) }, () => ({
+      id: nextInt(40) + 1,
+      mediaType: nextInt(2) === 0 ? 'movie' as const : 'tv' as const,
+    }));
+    const canonicalRefs = (refs: Array<{ id: number; mediaType: 'movie' | 'tv' }>) => (
+      refs.map((ref) => `${ref.mediaType}:${ref.id}`).sort()
+    );
+
+    for (let example = 0; example < 300; example += 1) {
+      const favoritesA = buildLibrary();
+      const watchedA = buildLibrary();
+      const favoritesB = buildLibrary();
+      const watchedB = buildLibrary();
+      const forward = getCompatibilityBreakdown(favoritesA, watchedA, favoritesB, watchedB);
+      const reverse = getCompatibilityBreakdown(favoritesB, watchedB, favoritesA, watchedA);
+      const permuted = getCompatibilityBreakdown(
+        [...favoritesA].reverse(),
+        [...watchedA].reverse(),
+        [...favoritesB].reverse(),
+        [...watchedB].reverse(),
+      );
+      const duplicated = getCompatibilityBreakdown(
+        [...favoritesA, ...favoritesA],
+        [...watchedA, ...watchedA],
+        [...favoritesB, ...favoritesB],
+        [...watchedB, ...watchedB],
+      );
+
+      expect(forward.algorithmVersion).toBe(1);
+      expect(Number.isInteger(forward.score)).toBe(true);
+      expect(forward.score).toBeGreaterThanOrEqual(0);
+      expect(forward.score).toBeLessThanOrEqual(100);
+      expect(reverse.score).toBe(forward.score);
+      expect(permuted.score).toBe(forward.score);
+      expect(duplicated.score).toBe(forward.score);
+      expect(canonicalRefs(reverse.commonFavoriteRefs)).toEqual(canonicalRefs(forward.commonFavoriteRefs));
+      expect(canonicalRefs(reverse.commonWatchedRefs)).toEqual(canonicalRefs(forward.commonWatchedRefs));
+    }
   });
 });
 
