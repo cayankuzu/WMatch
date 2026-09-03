@@ -1431,6 +1431,21 @@ describe('production guardrails', () => {
     expect(migrationSource).toContain('Service boundary moderation reports');
   });
 
+  it('keeps the existing profile report surface fail-closed and reporter-rate-limited', () => {
+    const moderationSource = read(
+      'supabase/functions/make-server-d962235e/domains/moderation.ts',
+    );
+
+    expect(moderationSource).toContain('value.trim().toLowerCase() === "profile"');
+    expect(moderationSource).toContain('if (!targetType)');
+    expect(moderationSource).toContain(
+      'buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c)])',
+    );
+    expect(moderationSource).not.toContain(
+      'buildAbuseKey([currentUserId, targetUserId, getRequestRateLimitIdentity(c)])',
+    );
+  });
+
   it('keeps the UI hardening primitives wired to semantic tokens', () => {
     const rootSource = read('App.tsx');
     const appSource = read('src/app/App.tsx');

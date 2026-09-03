@@ -1,4 +1,5 @@
 import {
+  cleanupStaleProfilePhotoQuarantine,
   finalizeValidatedProfilePhotos,
   hasForbiddenProfilePhotoMetadata,
   inspectProfilePhotoBlob,
@@ -153,5 +154,42 @@ Deno.test("profile photo quarantine stages only owner paths and finalizes idempo
       [staged.photos[0]],
       [],
     )
+  );
+});
+
+Deno.test("stale quarantine cleanup paginates and deletes only safe owner objects", async () => {
+  const createdAt = "2026-08-01T00:00:00.000Z";
+  const entries = Array.from({ length: 150 }, (_, index) => ({
+    name: `photo-${String(index).padStart(3, "0")}.webp`,
+    created_at: createdAt,
+  }));
+  const removedPaths: string[] = [];
+  const bucket = {
+    list: async (
+      _path: string,
+      options: { limit: number; offset: number },
+    ) => ({
+      data: entries.slice(options.offset, options.offset + options.limit),
+      error: null,
+    }),
+    remove: async (paths: string[]) => {
+      removedPaths.push(...paths);
+      return { data: paths, error: null };
+    },
+  };
+  const supabase = { storage: { from: () => bucket } } as unknown as Parameters<
+    typeof cleanupStaleProfilePhotoQuarantine
+  >[0];
+
+  await cleanupStaleProfilePhotoQuarantine(
+    supabase,
+    OWNER_ID,
+    new Date("2026-08-31T00:00:00.000Z").getTime(),
+  );
+
+  assert(removedPaths.length === 150, "all stale pages must be removed");
+  assert(
+    removedPaths.every((path) => path.startsWith(`${OWNER_ID}/.quarantine/`)),
+    "cleanup must remain owner scoped",
   );
 });

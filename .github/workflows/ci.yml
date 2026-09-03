@@ -16,6 +16,7 @@ on:
 
 jobs:
   verify:
+    name: CI verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -88,6 +89,9 @@ jobs:
 
       - name: Edge contract guard
         run: npm run check:edge
+
+      - name: Deno lockfile freshness
+        run: npm run check:deno:lock
 
       - name: Edge Function typecheck
         run: npm run check:edge:type

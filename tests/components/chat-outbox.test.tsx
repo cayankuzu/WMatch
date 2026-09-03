@@ -28,6 +28,7 @@ import {
   flushPendingChatMessages,
   listPendingChatMessages,
   purgeChatOutbox,
+  purgeChatOutboxForPeer,
 } from '../../src/services/chatOutbox';
 
 const USER_ID = 'user-00000001';
@@ -78,7 +79,7 @@ describe('encrypted chat outbox', () => {
       .mockRejectedValueOnce(new Error('offline'));
 
     await expect(flushPendingChatMessages(USER_ID)).resolves.toBe(1);
-    expect(mockSendMessage.mock.calls).toEqual([
+    expect(mockSendMessage.mock.calls.map((call) => call.slice(0, 3))).toEqual([
       [PEER_ID, 'ilk', 'message-00000001'],
       [PEER_ID, 'ikinci', 'message-00000002'],
     ]);
@@ -149,5 +150,46 @@ describe('encrypted chat outbox', () => {
     await expect(
       enqueuePendingChatMessage(USER_ID, pending('../unsafe', 'metin', 3_000)),
     ).rejects.toThrow('Invalid chat outbox message identifier.');
+  });
+
+  it('tombstones a peer so pre-block messages cannot replay after a later enqueue', async () => {
+    await enqueuePendingChatMessage(USER_ID, pending('message-00000007', 'eski', 1_000));
+    await purgeChatOutboxForPeer(USER_ID, PEER_ID);
+    await enqueuePendingChatMessage(USER_ID, pending('message-00000008', 'yeni', 2_000));
+    mockSendMessage.mockResolvedValue({ id: 'server-new' });
+
+    await expect(flushPendingChatMessages(USER_ID)).resolves.toBe(1);
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(mockSendMessage.mock.calls[0]?.slice(0, 3)).toEqual([
+      PEER_ID,
+      'yeni',
+      'message-00000008',
+    ]);
+    await expect(listPendingChatMessages(USER_ID)).resolves.toEqual([]);
+  });
+
+  it('aborts an active peer delivery before persisting its relationship tombstone', async () => {
+    await enqueuePendingChatMessage(USER_ID, pending('message-00000009', 'bekleyen', 1_000));
+    let markDeliveryStarted: (() => void) | undefined;
+    const deliveryStarted = new Promise<void>((resolve) => {
+      markDeliveryStarted = resolve;
+    });
+    mockSendMessage.mockImplementation((_peer, _text, _id, signal: AbortSignal) => (
+      new Promise((_resolve, reject) => {
+        markDeliveryStarted?.();
+        signal.addEventListener('abort', () => {
+          const abortError = new Error('aborted');
+          abortError.name = 'AbortError';
+          reject(abortError);
+        }, { once: true });
+      })
+    ));
+
+    const flushPromise = flushPendingChatMessages(USER_ID);
+    await deliveryStarted;
+    await purgeChatOutboxForPeer(USER_ID, PEER_ID);
+
+    await expect(flushPromise).resolves.toBe(0);
+    await expect(listPendingChatMessages(USER_ID)).resolves.toEqual([]);
   });
 });

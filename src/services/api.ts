@@ -1,4 +1,4 @@
-import { fetchWithRetry, getAuthHeaders, resolveApiUrl } from '../../utils/supabase/client';
+import { getAuthHeaders, resolveApiUrl } from '../../utils/supabase/client';
 import type {
   ApiChat,
   ApiChatThread,
@@ -45,6 +45,7 @@ import type {
   WatchDiscoveryResponse,
 } from './api/contracts';
 import { assertArrayField, assertObjectPayload, assertValidatedPayload } from './api/validation';
+import { fetchWithAuthRefresh } from './api/authReplay';
 
 export type { ApiChat, ApiChatThread, ApiMatch, ApiMessage, ApiUser } from '../shared/types';
 export {
@@ -354,11 +355,10 @@ async function request<T>(path: string, init?: RequestInit, authHeaders?: Header
   let response: Response;
 
   try {
-    response = await fetchWithRetry(resolveApiUrl(path), {
+    response = await fetchWithAuthRefresh(resolveApiUrl(path), {
       ...init,
       method,
-      headers: requestHeaders,
-    });
+    }, requestHeaders);
   } catch (error) {
     recordApiDuration(path, method, startedAt, 'transport_error');
     throw normalizeTransportError(error, path, method, clientRequestId);
@@ -852,10 +852,16 @@ export async function getChatThread(
   return thread ? normalizeChatThread(assertValidatedPayload(thread, isApiChatThread, null, path)) : null;
 }
 
-export async function sendMessage(userId: string, text: string, clientMessageId?: string): Promise<ApiMessage> {
+export async function sendMessage(
+  userId: string,
+  text: string,
+  clientMessageId?: string,
+  signal?: AbortSignal,
+): Promise<ApiMessage> {
   const path = `/messages/${userId}`;
   const data = await request<Record<string, unknown>>(path, {
     method: 'POST',
+    signal,
     headers: clientMessageId ? { 'Idempotency-Key': `message:${clientMessageId}` } : undefined,
     body: JSON.stringify({ text: text.trim(), clientMessageId }),
   });

@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import * as Device from 'expo-device';
@@ -28,7 +29,9 @@ const PUSH_RETRY_DELAYS_MS = [5_000, 15_000, 60_000, 5 * 60_000] as const;
 const LOCAL_PRESENTATION_FLAG = '__localPresentation';
 const LOCAL_PRESENTATION_TTL_MS = 90_000;
 const ANDROID_NOTIFICATION_CHANNEL_ID = 'wmatch-alerts-v2';
-const PUSH_REGISTRATION_STORAGE_KEY = '@wmatch/push-registration-v1';
+const LEGACY_PUSH_REGISTRATION_STORAGE_KEY = '@wmatch/push-registration-v1';
+const PUSH_REGISTRATION_STORAGE_KEY = 'wmatch.push-registration.v2';
+const PUSH_REVOCATION_STORAGE_KEY = 'wmatch.push-revocations.v1';
 const recentlyPresentedNotificationKeys = new Map<string, number>();
 const activeLocalNotificationIdsByGroup = new Map<string, string>();
 
@@ -58,16 +61,20 @@ type StoredPushRegistration = {
   userId: string;
 };
 
-async function readStoredPushRegistration(): Promise<StoredPushRegistration | null> {
+type StoredPushRevocation = StoredPushRegistration & {
+  attempts: number;
+  createdAt: string;
+};
+
+function parseStoredPushRegistration(value: string | null): StoredPushRegistration | null {
+  if (!value) {
+    return null;
+  }
+
   try {
-    const storedValue = await AsyncStorage.getItem(PUSH_REGISTRATION_STORAGE_KEY);
-
-    if (!storedValue) {
-      return null;
-    }
-
-    const parsed = JSON.parse(storedValue) as Partial<StoredPushRegistration>;
-    return typeof parsed.token === 'string' && typeof parsed.userId === 'string'
+    const parsed = JSON.parse(value) as Partial<StoredPushRegistration>;
+    return typeof parsed.token === 'string' && parsed.token.length > 0 && parsed.token.length <= 4096
+      && typeof parsed.userId === 'string' && parsed.userId.length > 0 && parsed.userId.length <= 128
       ? { token: parsed.token, userId: parsed.userId }
       : null;
   } catch {
@@ -75,12 +82,120 @@ async function readStoredPushRegistration(): Promise<StoredPushRegistration | nu
   }
 }
 
+async function readStoredPushRegistration(): Promise<StoredPushRegistration | null> {
+  try {
+    const secureRegistration = parseStoredPushRegistration(
+      await SecureStore.getItemAsync(PUSH_REGISTRATION_STORAGE_KEY),
+    );
+    if (secureRegistration) {
+      return secureRegistration;
+    }
+
+    const legacyRegistration = parseStoredPushRegistration(
+      await AsyncStorage.getItem(LEGACY_PUSH_REGISTRATION_STORAGE_KEY),
+    );
+    if (legacyRegistration) {
+      await SecureStore.setItemAsync(PUSH_REGISTRATION_STORAGE_KEY, JSON.stringify(legacyRegistration));
+      await AsyncStorage.removeItem(LEGACY_PUSH_REGISTRATION_STORAGE_KEY);
+    }
+    return legacyRegistration;
+  } catch {
+    return null;
+  }
+}
+
 async function storePushRegistration(registration: StoredPushRegistration) {
-  await AsyncStorage.setItem(PUSH_REGISTRATION_STORAGE_KEY, JSON.stringify(registration));
+  await SecureStore.setItemAsync(PUSH_REGISTRATION_STORAGE_KEY, JSON.stringify(registration));
+  await AsyncStorage.removeItem(LEGACY_PUSH_REGISTRATION_STORAGE_KEY).catch(() => undefined);
 }
 
 async function removeStoredPushRegistration() {
-  await AsyncStorage.removeItem(PUSH_REGISTRATION_STORAGE_KEY);
+  await Promise.allSettled([
+    SecureStore.deleteItemAsync(PUSH_REGISTRATION_STORAGE_KEY),
+    AsyncStorage.removeItem(LEGACY_PUSH_REGISTRATION_STORAGE_KEY),
+  ]);
+}
+
+async function readPendingPushRevocations(): Promise<StoredPushRevocation[]> {
+  try {
+    const rawValue = await SecureStore.getItemAsync(PUSH_REVOCATION_STORAGE_KEY);
+    if (!rawValue) {
+      return [];
+    }
+
+    const parsedValue = JSON.parse(rawValue) as unknown;
+    if (!Array.isArray(parsedValue)) {
+      return [];
+    }
+
+    return parsedValue.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') {
+        return [];
+      }
+      const candidate = entry as Partial<StoredPushRevocation>;
+      const registration = parseStoredPushRegistration(JSON.stringify(candidate));
+      if (!registration) {
+        return [];
+      }
+      return [{
+        ...registration,
+        attempts: Number.isSafeInteger(candidate.attempts) && Number(candidate.attempts) >= 0
+          ? Number(candidate.attempts)
+          : 0,
+        createdAt: typeof candidate.createdAt === 'string'
+          && Number.isFinite(new Date(candidate.createdAt).getTime())
+          ? candidate.createdAt
+          : new Date().toISOString(),
+      }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function writePendingPushRevocations(revocations: StoredPushRevocation[]) {
+  if (revocations.length === 0) {
+    await SecureStore.deleteItemAsync(PUSH_REVOCATION_STORAGE_KEY);
+    return;
+  }
+
+  await SecureStore.setItemAsync(
+    PUSH_REVOCATION_STORAGE_KEY,
+    JSON.stringify(revocations),
+  );
+}
+
+async function queuePushRevocation(registration: StoredPushRegistration) {
+  const pending = await readPendingPushRevocations();
+  const retained = pending.filter((entry) => (
+    entry.token !== registration.token || entry.userId !== registration.userId
+  ));
+  await writePendingPushRevocations([
+    ...retained,
+    { ...registration, attempts: 0, createdAt: new Date().toISOString() },
+  ]);
+}
+
+async function retryPendingPushRevocations(userId: string) {
+  const pending = await readPendingPushRevocations();
+  if (pending.length === 0) {
+    return;
+  }
+
+  const retained: StoredPushRevocation[] = [];
+  for (const revocation of pending) {
+    if (revocation.userId !== userId) {
+      retained.push(revocation);
+      continue;
+    }
+
+    try {
+      await unregisterPushToken(revocation.token);
+    } catch {
+      retained.push({ ...revocation, attempts: revocation.attempts + 1 });
+    }
+  }
+  await writePendingPushRevocations(retained);
 }
 
 function normalizeString(value: unknown) {
@@ -361,6 +476,7 @@ async function deactivateStoredPushRegistration(userId: string) {
       lastPushSyncAt = 0;
     }
   } catch (error) {
+    await queuePushRevocation({ token: registeredToken, userId });
     console.warn('Disabled push token cleanup will be retried:', error);
   }
 }
@@ -525,17 +641,20 @@ export function resetPushNotificationSyncState() {
 export async function clearPushNotifications() {
   await pushSyncInFlight?.promise;
   const storedRegistration = await readStoredPushRegistration();
-  const tokensToRemove = new Set(
-    [activePushToken, storedRegistration?.token ?? null].filter(
-      (token): token is string => typeof token === 'string' && token.length > 0,
-    ),
-  );
+  const registrationsToRemove = new Map<string, StoredPushRegistration>();
+  if (activePushToken && activePushUserId) {
+    registrationsToRemove.set(activePushToken, { token: activePushToken, userId: activePushUserId });
+  }
+  if (storedRegistration) {
+    registrationsToRemove.set(storedRegistration.token, storedRegistration);
+  }
 
-  for (const token of tokensToRemove) {
+  for (const registration of registrationsToRemove.values()) {
     try {
-      await unregisterPushToken(token);
+      await unregisterPushToken(registration.token);
     } catch (error) {
-      console.warn('Push token cleanup skipped:', error);
+      await queuePushRevocation(registration);
+      console.warn('Push token cleanup will be retried:', error);
     }
   }
 
@@ -554,6 +673,8 @@ async function syncPushNotificationsOnce(
       lastPushSkipReason = null;
       return { status: 'skipped' };
     }
+
+    await retryPendingPushRevocations(userId);
 
     if (!Device.isDevice) {
       if (lastPushSkipReason !== 'simulator') {
@@ -627,7 +748,13 @@ async function syncPushNotificationsOnce(
     await registerPushToken(token, Platform.OS);
 
     if (previousToken && previousToken !== token) {
-      await unregisterPushToken(previousToken).catch(() => undefined);
+      try {
+        await unregisterPushToken(previousToken);
+      } catch {
+        if (previousUserId) {
+          await queuePushRevocation({ token: previousToken, userId: previousUserId });
+        }
+      }
     }
 
     await storePushRegistration({ token, userId });

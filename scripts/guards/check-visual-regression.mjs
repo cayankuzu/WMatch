@@ -43,9 +43,20 @@ function normalizeNonVisualImageCachePolicy(buffer) {
 function normalizeNonVisualChatOutboxCancellation(buffer) {
   return normalizeText(buffer)
     .replace(/^\s*cancelPendingChatMessage,\n/m, '')
+    .replace(', purgeChatOutboxForPeer', '')
     .replace(
       'await cancelPendingChatMessage(currentUserId, message.id);',
       'await removePendingChatMessage(currentUserId, message.id);',
+    )
+    .replace(
+      'threadChat.canSend && threadChat.settings.typingIndicator && isTypingForPresence',
+      'threadChat.canSend && isTypingForPresence',
+    )
+    .replace(/^\s*await purgeChatOutboxForPeer\(currentUserId, threadChat\.userId\);\n/gm, '')
+    .replace(/^\s*await purgeChatOutboxForPeer\(currentUserId, targetUserId\);\n/gm, '')
+    .replace(
+      'const CHAT_BOTTOM_PROXIMITY_PX = 120;\nexport default function',
+      'const CHAT_BOTTOM_PROXIMITY_PX = 120;\n\nexport default function',
     );
 }
 

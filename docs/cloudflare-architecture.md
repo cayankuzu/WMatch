@@ -153,6 +153,11 @@ There are no unattended promotion timers and no `wrangler deploy` latest-code sh
 
 ## Owner-controlled production prerequisites
 
+GitHub tarafında `cloudflare-preview` ve `cloudflare-production` environment'ları oluşturulmuştur;
+`cloudflare-production` reviewer `cayankuzu` ve protected-branch deployment policy kullanır. Gerekli
+vars/secrets henüz yüklenmemiştir ve gerçek approval/deploy run'ı yoktur; bu nedenle bu control-plane
+hazırlığı production Worker kanıtı değildir.
+
 Production traffic remains **NO-GO** until the checklist in
 [`cloudflare-threat-model.md`](cloudflare-threat-model.md) is closed. In particular, the owner must
 verify origin HMAC plus replay enforcement, create/attach the approved custom domain, configure

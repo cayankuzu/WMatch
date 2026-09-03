@@ -897,6 +897,7 @@ export type Database = {
           push_next_attempt_at: string | null
           push_status: string
           push_submitted_at: string | null
+          push_suppressed_at: string | null
           read_at: string | null
           route_kind: string
           route_user_id: string | null
@@ -917,6 +918,7 @@ export type Database = {
           push_next_attempt_at?: string | null
           push_status?: string
           push_submitted_at?: string | null
+          push_suppressed_at?: string | null
           read_at?: string | null
           route_kind: string
           route_user_id?: string | null
@@ -937,6 +939,7 @@ export type Database = {
           push_next_attempt_at?: string | null
           push_status?: string
           push_submitted_at?: string | null
+          push_suppressed_at?: string | null
           read_at?: string | null
           route_kind?: string
           route_user_id?: string | null
@@ -1282,6 +1285,25 @@ export type Database = {
           version: number
         }[]
       }
+      authorize_push_delivery_job: {
+        Args: { p_event_id: string }
+        Returns: {
+          authorized: boolean
+          reason: string | null
+        }[]
+      }
+      can_access_conversation_realtime: {
+        Args: { p_mode: string; p_user1: string; p_user2: string }
+        Returns: boolean
+      }
+      can_access_presence_realtime: {
+        Args: { p_owner_user_id: string }
+        Returns: boolean
+      }
+      can_publish_app_presence: {
+        Args: Record<PropertyKey, never>
+        Returns: boolean
+      }
       calculate_discovery_compatibility_score: {
         Args: {
           p_candidate_favorite_count: number
@@ -1556,6 +1578,16 @@ export type Database = {
         }[]
       }
       refresh_chat_repair_audit: { Args: { p_limit?: number }; Returns: number }
+      register_device_push_token_atomic: {
+        Args: {
+          p_max_tokens_per_user?: number
+          p_platform: string
+          p_stale_after_days?: number
+          p_token: string
+          p_user_id: string
+        }
+        Returns: boolean
+      }
       replace_user_media_collections: {
         Args: { p_favorites?: Json; p_user_id: string; p_watched?: Json }
         Returns: undefined
@@ -1572,6 +1604,14 @@ export type Database = {
         Args: { p_media_type: string; p_repair_id: string; p_status?: string }
         Returns: undefined
       }
+      prune_device_push_tokens: {
+        Args: {
+          p_max_tokens_per_user?: number
+          p_stale_after_days?: number
+          p_user_id?: string | null
+        }
+        Returns: number
+      }
       reward_swipe_quota_atomic: {
         Args: { p_kind: string; p_user_id: string; p_window_hours: number }
         Returns: {
@@ -1581,6 +1621,36 @@ export type Database = {
           user_id: string
           window_started_at: string
         }[]
+      }
+      send_chat_message_atomic: {
+        Args: {
+          p_client_message_id?: string | null
+          p_client_payload_hash?: string | null
+          p_receiver_user_id: string
+          p_sender_user_id: string
+          p_text: string
+        }
+        Returns: {
+          client_message_id: string | null
+          client_request_id: string | null
+          idempotency_replayed: boolean
+          message_created_at: string | null
+          message_id: string | null
+          message_read: boolean | null
+          message_text: string | null
+          outcome: string
+          receiver_chat_deleted_at: string | null
+          receiver_id: string | null
+          sender_id: string | null
+        }[]
+      }
+      suppress_pair_push_events: {
+        Args: {
+          p_left_user_id: string
+          p_reason?: string
+          p_right_user_id: string
+        }
+        Returns: number
       }
       transition_moderation_report_ops: {
         Args: {

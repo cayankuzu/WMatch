@@ -7,7 +7,7 @@ const fail = (message) => {
 };
 
 const migrationsDir = 'supabase/migrations';
-const expectedLatest = '20260830120000_security_privacy_closures.sql';
+const expectedLatest = '20260831153000_chat_privacy_push_invariants.sql';
 const historicalNoopMigrations = new Set([
   '20260703131500_per_user_chat_deletion_state.sql',
 ]);
@@ -57,12 +57,17 @@ const requiredTokens = [
   'CREATE TABLE IF NOT EXISTS public.notification_events',
   'CREATE OR REPLACE FUNCTION public.claim_push_delivery_jobs',
   'CREATE OR REPLACE FUNCTION public.complete_push_delivery_job',
+  'CREATE OR REPLACE FUNCTION public.authorize_push_delivery_job',
+  'CREATE OR REPLACE FUNCTION public.suppress_pair_push_events',
+  'CREATE OR REPLACE FUNCTION public.register_device_push_token_atomic',
+  'CREATE OR REPLACE FUNCTION public.prune_device_push_tokens',
   'CREATE OR REPLACE FUNCTION public.get_push_delivery_health',
   'CREATE TABLE IF NOT EXISTS public.push_delivery_receipts',
   'CREATE OR REPLACE FUNCTION public.claim_push_receipt_jobs',
   'CREATE OR REPLACE FUNCTION public.complete_push_receipt_job',
   'CREATE OR REPLACE FUNCTION public.undo_like_action_atomic',
   'CREATE OR REPLACE FUNCTION public.update_pair_relationship_atomic',
+  'CREATE OR REPLACE FUNCTION public.send_chat_message_atomic',
   'CREATE OR REPLACE FUNCTION public.delete_chat_for_user_atomic',
   'CREATE OR REPLACE FUNCTION public.get_chat_list_stats',
   'CREATE TABLE IF NOT EXISTS public.chat_pair_summaries',
@@ -79,6 +84,9 @@ const requiredTokens = [
   'REVOKE SELECT, INSERT, UPDATE, DELETE ON TABLE public.currently_watching FROM PUBLIC, anon, authenticated',
   'DROP POLICY IF EXISTS "WMatch private realtime select" ON realtime.messages',
   "split_part(realtime.topic(), ':', 2) = (SELECT auth.uid())::TEXT",
+  'CREATE OR REPLACE FUNCTION public.can_access_conversation_realtime',
+  'CREATE OR REPLACE FUNCTION public.can_access_presence_realtime',
+  'CREATE OR REPLACE FUNCTION public.can_publish_app_presence',
   'CREATE OR REPLACE FUNCTION public.resolve_media_identity_repair',
   'CREATE OR REPLACE FUNCTION public.replace_user_movie_collections',
   'CREATE OR REPLACE FUNCTION public.apply_watch_session_transition',
@@ -118,8 +126,24 @@ for (const token of requiredTokens) {
   }
 }
 
-if (!latestSource.includes("'20260830120000'")) {
+if (!latestSource.includes("'20260831153000'")) {
   fail('latest migration does not advance the schema contract');
+}
+
+for (const invariant of [
+  'CREATE OR REPLACE FUNCTION public.send_chat_message_atomic',
+  'CREATE OR REPLACE FUNCTION public.authorize_push_delivery_job',
+  'CREATE OR REPLACE FUNCTION public.register_device_push_token_atomic',
+  'CREATE OR REPLACE FUNCTION public.prune_device_push_tokens',
+  "push_status = 'suppressed'",
+  'public.can_access_conversation_realtime',
+  'public.can_access_presence_realtime',
+  'public.can_publish_app_presence',
+  'USING ((SELECT auth.uid()) = id)',
+]) {
+  if (!latestSource.includes(invariant)) {
+    fail(`latest migration is missing chat/privacy invariant: ${invariant}`);
+  }
 }
 
 if (

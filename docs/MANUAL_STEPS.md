@@ -6,6 +6,13 @@ artifact'ine yazmayın. Bütün kanıtlar aynı immutable candidate SHA altında
 
 ## 1. Cloudflare account, zone, domain ve API token
 
+- **Mevcut dış durum (2026-08-31):** GitHub `development`, `preview`, `production`,
+  `cloudflare-preview` ve `cloudflare-production` environment'ları oluşturuldu;
+  `production`/`cloudflare-production` için `cayankuzu` required reviewer ve protected-branch policy
+  etkin. `main` strict `CI verify` + `Quality verify` required checks, admin enforcement,
+  conversation resolution ve force-push/delete engeliyle korunur. Environment secrets/vars ve
+  Cloudflare provider kurulumu eksik; adım **PENDING** kalır.
+
 - **Durum:** [ ] Bekliyor.
 - **Neden:** Seçici edge deployment'ın doğru hesap/zone ve minimum yetkiyle yapılması gerekir.
 - **Nerede:** Cloudflare Dashboard; GitHub `preview`/`production` protected environments.
@@ -65,6 +72,10 @@ artifact'ine yazmayın. Bütün kanıtlar aynı immutable candidate SHA altında
 - **Owner/evidence:** Supabase/security owner (atanmadı), `release-evidence/<SHA>/manual/supabase-secrets/`.
 
 ## 5. EAS owner, project, channel ve environment
+
+- **Mevcut dış durum (2026-08-31):** Gerekli GitHub environment adları oluşturuldu ve production
+  reviewer/policy etkin. Expo/EAS environment değerleri, channel bağlantıları, secrets ve gerçek
+  approval/publish run'ı doğrulanmadı; adım **PENDING** kalır.
 
 - **Durum:** [ ] Bekliyor.
 - **Neden:** `development`, `preview`, `production` bundle'ları ve public env değerleri karışmamalıdır.
@@ -152,10 +163,10 @@ artifact'ine yazmayın. Bütün kanıtlar aynı immutable candidate SHA altında
 - **Değer adları:** Candidate SHA, staging project ref, preview host/channel, fixture namespace.
 - **Doğrulama:** `npm run verify:release`; DB replay/RLS; preview `/health`; EAS preview update JSON;
   clean-tree ve checksum manifest.
-- **Mevcut kanıt sınırı:** Dirty working tree'de 44/44 ilk apply ve ikinci full replay, boş
-  `public,storage,realtime` diff, source/restored pgTAP üç dosya/`117/117`, warn-level advisor sıfır
-  issue ve atomic nonce pgbench 32/32 geçmiştir. Bunlar staging attack matrix, deploy veya immutable
-  same-SHA evidence değildir.
+- **Mevcut kanıt sınırı:** Dirty working tree'de 45/45 ilk apply ve ikinci full replay, boş
+  `public,storage,realtime` diff, source/restored pgTAP dört dosya/`166/166`, warn-level advisor sıfır
+  issue ve atomic nonce concurrency 32/32 geçmiştir. Bunlar staging attack matrix, deploy veya
+  immutable same-SHA evidence değildir.
 - **Güvenli sonuç:** Migration iki kez replay, schema diff temiz, attack matrix expected, preview group
   SHA/runtime doğru; production kullanıcı/verisi/provider delivery kullanılmaz.
 - **Rollback:** Preview deployments'ı known-good version'a alın ve fixture project'i izole edin;

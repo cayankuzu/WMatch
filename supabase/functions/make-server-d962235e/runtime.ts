@@ -98,6 +98,18 @@ import {
   validateAndStageOwnedProfilePhotos,
   validateOwnedProfilePhotos,
 } from "./domains/storage.ts";
+import { canViewProfileIdentityField } from "./domains/privacy.ts";
+import { normalizeExpoPushToken } from "./domains/pushTokens.ts";
+import {
+  authorizeClaimedPushDelivery,
+  prunePushTokenRegistry,
+} from "./domains/pushDeliveryPolicy.ts";
+import {
+  persistNotificationEvents,
+  type NotificationEventDraft,
+  type NotificationEventKind,
+  type NotificationRouteKind,
+} from "./domains/notificationOutbox.ts";
 
 type DatabaseRow = Record<string, unknown>;
 type ChatSettingsRow = Tables<"chat_settings">;
@@ -138,11 +150,11 @@ const MONETIZATION_ENABLED = Deno.env.get("MONETIZATION_ENABLED") === "true";
 const WATCH_SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
 const API_VERSION = "2026-08-19";
 const RELEASE_VERSION = "1.0.51";
-const REQUIRED_SCHEMA_VERSION = "20260830120000";
+const REQUIRED_SCHEMA_VERSION = "20260831153000";
 const ANDROID_NOTIFICATION_CHANNEL_ID = "wmatch-alerts-v2";
 const EXPO_PUSH_MAX_HTTP_ATTEMPTS = 3;
 const EXPO_PUSH_RETRY_BASE_DELAY_MS = 400;
-const MAX_PUSH_TOKENS_PER_USER = 16;
+const MAX_PUSH_TOKENS_PER_USER = 8;
 const DEFAULT_CHAT_SETTINGS = {
   readReceipts: true,
   onlineStatus: true,
@@ -433,14 +445,31 @@ const getPairKey = (leftUserId: string, rightUserId: string) =>
 const serializeProfile = (
   profile: DatabaseRow,
   extras: Record<string, unknown> = {},
+  viewerUserId: string | null = null,
 ) => ({
   id: typeof profile.id === "string" ? profile.id : "",
   name: typeof profile.name === "string" ? profile.name : "User",
-  age: typeof profile.age === "number" ? profile.age : 18,
+  age: canViewProfileIdentityField({
+      fieldEnabled: typeof profile.show_age_on_profile === "boolean"
+        ? profile.show_age_on_profile
+        : true,
+      profileUserId: typeof profile.id === "string" ? profile.id : "",
+      viewerUserId,
+    })
+    ? typeof profile.age === "number" ? profile.age : 18
+    : null,
   showAgeOnProfile: typeof profile.show_age_on_profile === "boolean"
     ? profile.show_age_on_profile
     : true,
-  gender: isUserGender(profile.gender) ? profile.gender : "other",
+  gender: canViewProfileIdentityField({
+      fieldEnabled: typeof profile.show_gender_on_profile === "boolean"
+        ? profile.show_gender_on_profile
+        : true,
+      profileUserId: typeof profile.id === "string" ? profile.id : "",
+      viewerUserId,
+    })
+    ? isUserGender(profile.gender) ? profile.gender : "other"
+    : null,
   showGenderOnProfile: typeof profile.show_gender_on_profile === "boolean"
     ? profile.show_gender_on_profile
     : true,
@@ -507,6 +536,7 @@ const buildUserPayload = (
     version?: number | null;
   } | null = null,
   discoveryPreferences: DiscoveryPreferences = DEFAULT_DISCOVERY_PREFERENCES,
+  viewerUserId: string | null = null,
 ) =>
   serializeProfile(profile, {
     favoriteMovies: movies.filter((item) => item.type === "favorite").map((
@@ -542,7 +572,7 @@ const buildUserPayload = (
       : null,
     locationUpdatedAt: null,
     discoveryPreferences,
-  });
+  }, viewerUserId);
 
 const buildFallbackUserPayload = (userId: string) =>
   buildUserPayload({
@@ -905,25 +935,6 @@ const getProfileCoordinates = (profile: DatabaseRow) => {
 };
 
 type MatchSourceType = "watch" | "compatibility" | "like";
-type NotificationEventKind =
-  | "like"
-  | "match"
-  | "message"
-  | "chat_ended"
-  | "chat_blocked"
-  | "chat_unblocked";
-type NotificationRouteKind = "likes" | "chat";
-
-interface NotificationEventDraft {
-  userId: string;
-  actorUserId?: string | null;
-  kind: NotificationEventKind;
-  routeKind: NotificationRouteKind;
-  routeUserId?: string | null;
-  title: string;
-  body: string;
-  payload?: JsonObject;
-}
 
 interface NotificationDispatchOptions {
   deferPush?: boolean;
@@ -1545,15 +1556,9 @@ const loadPushTokenMap = async (
     if (!row.user_id) {
       return;
     }
-    const normalizedToken = typeof row.token === "string"
-      ? row.token.trim()
-      : "";
+    const normalizedToken = normalizeExpoPushToken(row.token);
 
-    if (
-      !normalizedToken ||
-      (!normalizedToken.startsWith("ExpoPushToken[") &&
-        !normalizedToken.startsWith("ExponentPushToken["))
-    ) {
+    if (!normalizedToken) {
       return;
     }
 
@@ -1976,47 +1981,6 @@ const sendPushNotifications = async (
   }
 };
 
-const createNotificationEvents = async (
-  supabase: SupabaseAdminClient,
-  notifications: NotificationEventDraft[],
-) => {
-  const results = await Promise.all(
-    notifications.map(async (notification) => {
-      try {
-        const { data, error } = await supabase
-          .from("notification_events")
-          .insert({
-            user_id: notification.userId,
-            actor_user_id: notification.actorUserId ?? null,
-            kind: notification.kind,
-            route_kind: notification.routeKind,
-            route_user_id: notification.routeUserId ?? null,
-            title: notification.title,
-            body: notification.body,
-            payload: notification.payload ?? {},
-          })
-          .select("id")
-          .single();
-
-        if (error) {
-          if (isMissingRelationError(error, "notification_events")) {
-            return { ...notification, eventId: null };
-          }
-
-          throw error;
-        }
-
-        return { ...notification, eventId: data?.id ?? null };
-      } catch (error) {
-        console.error("Create notification event error:", error);
-        return { ...notification, eventId: null };
-      }
-    }),
-  );
-
-  return results;
-};
-
 const drainPushDeliveryOutbox = async (
   supabase: SupabaseAdminClient,
   eventIds: string[] | null = null,
@@ -2028,6 +1992,8 @@ const drainPushDeliveryOutbox = async (
   if (eventIds && uniqueEventIds?.length === 0) {
     return 0;
   }
+
+  await prunePushTokenRegistry(supabase);
 
   const { data, error } = await supabase.rpc("claim_push_delivery_jobs", {
     p_event_ids: uniqueEventIds ?? undefined,
@@ -2052,6 +2018,10 @@ const drainPushDeliveryOutbox = async (
   }>;
 
   const processJob = async (job: typeof jobs[number]) => {
+    if (!await authorizeClaimedPushDelivery(supabase, job.id)) {
+      return;
+    }
+
     const payload = job.payload && typeof job.payload === "object"
       ? job.payload
       : {};
@@ -2227,7 +2197,7 @@ const dispatchNotificationEvents = async (
     return;
   }
 
-  const storedNotifications = await createNotificationEvents(
+  const storedNotifications = await persistNotificationEvents(
     supabase,
     notifications,
   );
@@ -2564,6 +2534,7 @@ const getChatState = (
 const loadUserPayloadMap = async (
   supabase: SupabaseAdminClient,
   userIds: string[],
+  viewerUserId: string | null = null,
 ): Promise<Map<string, DatabaseRow>> => {
   if (userIds.length === 0) {
     return new Map<string, DatabaseRow>();
@@ -2690,6 +2661,7 @@ const loadUserPayloadMap = async (
         watchingByUserId.get(profile.id) ?? null,
         discoveryPreferencesMap.get(profile.id) ??
           DEFAULT_DISCOVERY_PREFERENCES,
+        viewerUserId,
       )
     );
   const signedPayloads = await signProfilePhotosForPayloads(
@@ -3490,7 +3462,7 @@ export {
   cleanupStaleProfilePhotoQuarantine,
   consumeSwipeQuota,
   createEmptyMovieCollections,
-  createNotificationEvents,
+  persistNotificationEvents,
   DAILY_DISLIKE_SWIPE_LIMIT,
   DAILY_LIKE_SWIPE_LIMIT,
   DAILY_UNDO_LIMIT,

@@ -1,6 +1,7 @@
 name: Release evidence
 
 permissions:
+  actions: read
   contents: read
 
 on:
@@ -35,11 +36,201 @@ jobs:
       - name: Verify exact and clean tree
         shell: bash
         env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXPECTED_SHA: ${{ inputs.commit_sha }}
         run: |
+          set -euo pipefail
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH"
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          test -z "$(git status --porcelain)"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git merge-base --is-ancestor "$EXPECTED_SHA" "origin/$DEFAULT_BRANCH"
+
+      - name: Require successful same-SHA upstream gates
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+          GH_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          evidence_root="${RUNNER_TEMP}/release-evidence"
+          mkdir -p "${evidence_root}/repository"
+          : > "${evidence_root}/repository/upstream-gates.ndjson"
+
+          require_successful_workflow() {
+            workflow_file="$1"
+            allowed_events="$2"
+            response="$(curl --fail --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${EXPECTED_SHA}&per_page=100")"
+
+            selected="$(jq -ce \
+              --arg workflow "$workflow_file" \
+              --arg sha "$EXPECTED_SHA" \
+              --arg branch "$DEFAULT_BRANCH" \
+              --argjson allowed_events "$allowed_events" '
+                [
+                  .workflow_runs[]?
+                  | select(
+                      .head_sha == $sha
+                      and .head_branch == $branch
+                      and (.event as $event | $allowed_events | index($event) != null)
+                    )
+                ]
+                | sort_by([.run_number // 0, .run_attempt // 0, .created_at // "", .id // 0])
+                | last
+                | select(.status == "completed" and .conclusion == "success")
+                | {
+                    workflow: $workflow,
+                    runId: .id,
+                    runAttempt: .run_attempt,
+                    status,
+                    event,
+                    headBranch: .head_branch,
+                    headSha: .head_sha,
+                    conclusion,
+                    htmlUrl: .html_url,
+                    createdAt: .created_at,
+                    updatedAt: .updated_at
+                  }
+              ' <<< "$response")" || {
+                echo "::error::The newest ${workflow_file} default-branch run for ${EXPECTED_SHA} is not successful"
+                exit 1
+              }
+            printf '%s\n' "$selected" >> "${evidence_root}/repository/upstream-gates.ndjson"
+          }
+
+          # A release manifest never accepts a PR synthetic merge checkout as same-SHA evidence.
+          require_successful_workflow ci.yml '["push"]'
+          require_successful_workflow quality.yml '["push"]'
+          require_successful_workflow database-validation.yml '["push", "workflow_dispatch"]'
+          require_successful_workflow docker-validation.yml '["push", "workflow_dispatch"]'
+          jq -s . "${evidence_root}/repository/upstream-gates.ndjson" \
+            > "${evidence_root}/repository/upstream-gates.json"
+
+      - name: Download and verify same-SHA Docker evidence
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
+          GH_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          evidence_root="${RUNNER_TEMP}/release-evidence"
+          docker_root="${evidence_root}/docker"
+          artifact_root="${docker_root}/artifact"
+          artifact_name="docker-evidence-${EXPECTED_SHA}"
+          mkdir -p "$artifact_root"
+
+          docker_gate="$(jq -ce '
+            [.[] | select(.workflow == "docker-validation.yml")]
+            | select(length == 1)
+            | .[0]
+          ' "${evidence_root}/repository/upstream-gates.json")"
+          docker_run_id="$(jq -r '.runId' <<< "$docker_gate")"
+          docker_run_attempt="$(jq -r '.runAttempt' <<< "$docker_gate")"
+
+          artifact_response="$(curl --fail --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${docker_run_id}/artifacts?name=${artifact_name}&per_page=100")"
+          selected_artifact="$(jq -ce \
+            --arg name "$artifact_name" \
+            --arg sha "$EXPECTED_SHA" \
+            --arg branch "$DEFAULT_BRANCH" \
+            --argjson run_id "$docker_run_id" '
+              [.artifacts[]? | select(.name == $name)]
+              | select(length == 1)
+              | .[0]
+              | select(
+                  .expired == false
+                  and .workflow_run.id == $run_id
+                  and .workflow_run.head_sha == $sha
+                  and .workflow_run.head_branch == $branch
+                  and (.digest | test("^sha256:[0-9a-f]{64}$"))
+                )
+              | {
+                  id,
+                  name,
+                  sizeInBytes: .size_in_bytes,
+                  digest,
+                  expired,
+                  createdAt: .created_at,
+                  expiresAt: .expires_at,
+                  archiveDownloadUrl: .archive_download_url,
+                  workflowRun: {
+                    id: .workflow_run.id,
+                    headBranch: .workflow_run.head_branch,
+                    headSha: .workflow_run.head_sha
+                  }
+                }
+            ' <<< "$artifact_response")" || {
+              echo "::error::Exactly one unexpired ${artifact_name} artifact must belong to Docker run ${docker_run_id} and ${EXPECTED_SHA}"
+              exit 1
+            }
+
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg workflow ".github/workflows/docker-validation.yml" \
+            --argjson runId "$docker_run_id" \
+            --argjson runAttempt "$docker_run_attempt" \
+            --arg commitSha "$EXPECTED_SHA" \
+            --arg branch "$DEFAULT_BRANCH" \
+            --argjson artifact "$selected_artifact" \
+            '{
+              schemaVersion: 1,
+              repository: $repository,
+              workflow: $workflow,
+              runId: $runId,
+              runAttempt: $runAttempt,
+              commitSha: $commitSha,
+              branch: $branch,
+              artifact: $artifact
+            }' > "${docker_root}/artifact-metadata.json"
+
+          artifact_id="$(jq -r '.id' <<< "$selected_artifact")"
+          archive_path="${docker_root}/artifact.zip"
+          curl --fail --silent --show-error --location \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            --output "$archive_path"
+          expected_archive_sha="$(jq -r '.digest | sub("^sha256:"; "")' <<< "$selected_artifact")"
+          printf '%s  %s\n' "$expected_archive_sha" "$archive_path" | sha256sum --check --strict
+
+          archive_members="$(zipinfo -1 "$archive_path")"
+          test -n "$archive_members"
+          while IFS= read -r archive_member; do
+            normalized_member="${archive_member//\\//}"
+            [[ "$normalized_member" != /* ]]
+            [[ ! "$normalized_member" =~ (^|/)\.\.(/|$) ]]
+          done <<< "$archive_members"
+          unzip -q "$archive_path" -d "$artifact_root"
+
+          test -f "${artifact_root}/SHA256SUMS"
+          test -f "${artifact_root}/docker-validation-manifest.json"
+          test -f "${artifact_root}/buildkit-provenance.json"
+          (
+            cd "$artifact_root"
+            sha256sum --check --strict SHA256SUMS
+          )
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg sha "$EXPECTED_SHA" \
+            --arg run_id "$docker_run_id" \
+            --arg run_attempt "$docker_run_attempt" '
+              .schemaVersion == 1
+              and .repository == $repository
+              and .commitSha == $sha
+              and .workflowRunId == $run_id
+              and .workflowRunAttempt == $run_attempt
+              and ([.gates[]] | length > 0 and all(. == "success"))
+            ' "${artifact_root}/docker-validation-manifest.json" > /dev/null
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -57,27 +248,156 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.commit_sha }}
         run: |
-          npm ci
-          npm ci --prefix infra/cloudflare/wmatch-edge
-          npm run verify:release
-          npm run check --prefix infra/cloudflare/wmatch-edge
+          set -euo pipefail
+          evidence_root="${RUNNER_TEMP}/release-evidence"
+          mkdir -p "${evidence_root}/repository" "${evidence_root}/ota"
+          : > "${evidence_root}/repository/commands.ndjson"
+
+          record_command() {
+            command_text="$1"
+            log_path="$2"
+            tool_version="$3"
+            shift 3
+            started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            set +e
+            "$@" 2>&1 | tee "${evidence_root}/${log_path}"
+            exit_code="${PIPESTATUS[0]}"
+            set -e
+            ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            jq -cn \
+              --arg command "$command_text" \
+              --arg toolVersion "$tool_version" \
+              --arg startedAtUtc "$started_at" \
+              --arg endedAtUtc "$ended_at" \
+              --arg logPath "$log_path" \
+              --argjson exitCode "$exit_code" \
+              '{command: $command, toolVersion: $toolVersion, startedAtUtc: $startedAtUtc, endedAtUtc: $endedAtUtc, exitCode: $exitCode, logPath: $logPath}' \
+              >> "${evidence_root}/repository/commands.ndjson"
+            return "$exit_code"
+          }
+
+          node_npm_version="node $(node --version); npm $(npm --version)"
+          record_command \
+            "npm ci" \
+            "repository/npm-ci.log" \
+            "$node_npm_version" \
+            npm ci
+          record_command \
+            "npm ci --prefix infra/cloudflare/wmatch-edge" \
+            "repository/worker-npm-ci.log" \
+            "$node_npm_version" \
+            npm ci --prefix infra/cloudflare/wmatch-edge
+          expo_version="${node_npm_version}; expo $(npx expo --version)"
+          record_command \
+            "npm run verify:release" \
+            "repository/verify-release.log" \
+            "$node_npm_version" \
+            npm run verify:release
+          record_command \
+            "npm run check --prefix infra/cloudflare/wmatch-edge" \
+            "repository/worker-check.log" \
+            "$node_npm_version" \
+            npm run check --prefix infra/cloudflare/wmatch-edge
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           test -z "$(git status --porcelain --untracked-files=all)"
-          npx expo export --platform android --source-maps external --dump-assetmap --output-dir "${RUNNER_TEMP}/expo-export/android"
-          npx expo export --platform ios --source-maps external --dump-assetmap --output-dir "${RUNNER_TEMP}/expo-export/ios"
+          record_command \
+            "npx expo export --platform android --source-maps external --dump-assetmap" \
+            "ota/expo-export-android.log" \
+            "$expo_version" \
+            npx expo export --platform android --source-maps external --dump-assetmap \
+              --output-dir "${evidence_root}/ota/expo-export/android"
+          record_command \
+            "npx expo export --platform ios --source-maps external --dump-assetmap" \
+            "ota/expo-export-ios.log" \
+            "$expo_version" \
+            npx expo export --platform ios --source-maps external --dump-assetmap \
+              --output-dir "${evidence_root}/ota/expo-export/ios"
+          jq -s . "${evidence_root}/repository/commands.ndjson" \
+            > "${evidence_root}/repository/commands.json"
           test -z "$(git status --porcelain --untracked-files=all)"
 
       - name: Build evidence manifest and SBOM
         shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.commit_sha }}
         run: |
-          mkdir -p "${RUNNER_TEMP}/release-evidence"
-          npm sbom --sbom-format cyclonedx > "${RUNNER_TEMP}/release-evidence/sbom.cdx.json"
-          npm sbom --prefix infra/cloudflare/wmatch-edge --sbom-format cyclonedx > "${RUNNER_TEMP}/release-evidence/worker-sbom.cdx.json"
-          cp app.json eas.json package.json package-lock.json "${RUNNER_TEMP}/release-evidence/"
-          git rev-parse HEAD > "${RUNNER_TEMP}/release-evidence/commit-sha.txt"
-          git status --porcelain > "${RUNNER_TEMP}/release-evidence/git-status.txt"
-          find "${RUNNER_TEMP}/expo-export" -type f -print0 | sort -z | xargs -0 sha256sum > "${RUNNER_TEMP}/release-evidence/expo-export.sha256"
-          find "${RUNNER_TEMP}/release-evidence" -type f ! -name manifest.sha256 -print0 | sort -z | xargs -0 sha256sum > "${RUNNER_TEMP}/release-evidence/manifest.sha256"
+          set -euo pipefail
+          evidence_root="${RUNNER_TEMP}/release-evidence"
+          mkdir -p "${evidence_root}/config" "${evidence_root}/repository" "${evidence_root}/ota"
+          record_artifact_command() {
+            command_text="$1"
+            output_path="$2"
+            log_path="$3"
+            shift 3
+            started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            set +e
+            "$@" > "${evidence_root}/${output_path}" 2> "${evidence_root}/${log_path}"
+            exit_code="$?"
+            set -e
+            ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            jq -cn \
+              --arg command "$command_text" \
+              --arg toolVersion "node $(node --version); npm $(npm --version)" \
+              --arg startedAtUtc "$started_at" \
+              --arg endedAtUtc "$ended_at" \
+              --arg logPath "$log_path" \
+              --argjson exitCode "$exit_code" \
+              '{command: $command, toolVersion: $toolVersion, startedAtUtc: $startedAtUtc, endedAtUtc: $endedAtUtc, exitCode: $exitCode, logPath: $logPath}' \
+              >> "${evidence_root}/repository/commands.ndjson"
+            return "$exit_code"
+          }
+
+          record_artifact_command \
+            "npm sbom --sbom-format cyclonedx" \
+            "repository/sbom.cdx.json" \
+            "repository/sbom.log" \
+            npm sbom --sbom-format cyclonedx
+          record_artifact_command \
+            "npm sbom --prefix infra/cloudflare/wmatch-edge --sbom-format cyclonedx" \
+            "repository/worker-sbom.cdx.json" \
+            "repository/worker-sbom.log" \
+            npm sbom --prefix infra/cloudflare/wmatch-edge --sbom-format cyclonedx
+          jq -s . "${evidence_root}/repository/commands.ndjson" \
+            > "${evidence_root}/repository/commands.json"
+          cp app.json eas.json package.json package-lock.json "${evidence_root}/config/"
+          git rev-parse HEAD > "${evidence_root}/repository/commit-sha.txt"
+          git status --porcelain --untracked-files=all > "${evidence_root}/repository/git-status.txt"
+          test "$(tr -d '\r\n' < "${evidence_root}/repository/commit-sha.txt")" = "$EXPECTED_SHA"
+          test ! -s "${evidence_root}/repository/git-status.txt"
+
+          (
+            cd "${evidence_root}/ota/expo-export"
+            test -n "$(find android -type f -print -quit)"
+            test -n "$(find ios -type f -print -quit)"
+            find . -type f -print0 | sort -z | xargs -0 sha256sum
+          ) > "${evidence_root}/ota/expo-export.sha256"
+          (
+            cd "${evidence_root}/ota/expo-export"
+            sha256sum --check --strict "${evidence_root}/ota/expo-export.sha256"
+          )
+
+          created_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          node scripts/build-release-evidence.mjs build \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --evidence-root "$evidence_root" \
+            --template "$GITHUB_WORKSPACE/release-evidence/manifest.template.json" \
+            --output "${evidence_root}/manifest.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit-sha "$EXPECTED_SHA" \
+            --ref-name "$GITHUB_REF_NAME" \
+            --created-at-utc "$created_at_utc"
+          node scripts/build-release-evidence.mjs verify \
+            --evidence-root "$evidence_root" \
+            --manifest "${evidence_root}/manifest.json" \
+            --commit-sha "$EXPECTED_SHA"
+
+          (
+            cd "$evidence_root"
+            find . -type f ! -name manifest.sha256 -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > manifest.sha256
+            sha256sum --check manifest.sha256
+          )
 
       - name: Upload same-SHA repository evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -85,6 +405,5 @@ jobs:
           name: release-evidence-${{ inputs.commit_sha }}
           path: |
             ${{ runner.temp }}/release-evidence
-            ${{ runner.temp }}/expo-export
           if-no-files-found: error
           retention-days: 180

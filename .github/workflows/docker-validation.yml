@@ -1,0 +1,442 @@
+name: Docker validation
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'infra/docker/**'
+      - 'infra/cloudflare/wmatch-edge/**'
+      - 'supabase/**'
+      - 'scripts/database/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'deno.lock'
+      - '.npmrc'
+      - '.github/dependabot.yml'
+      - '.github/workflows/docker-validation.yml'
+      - 'release-evidence/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'infra/docker/**'
+      - 'infra/cloudflare/wmatch-edge/**'
+      - 'supabase/**'
+      - 'scripts/database/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'deno.lock'
+      - '.npmrc'
+      - '.github/dependabot.yml'
+      - '.github/workflows/docker-validation.yml'
+      - 'release-evidence/**'
+  workflow_dispatch:
+
+concurrency:
+  group: docker-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HADOLINT_VERSION: v2.15.1
+  HADOLINT_LINUX_AMD64_SHA256: c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507
+  TRIVY_VERSION: 0.74.0
+  TRIVY_LINUX_AMD64_SHA256: 2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+  SYFT_VERSION: 1.51.1
+  SYFT_LINUX_AMD64_SHA256: 8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3
+  BUILDX_METADATA_PROVENANCE: max
+
+jobs:
+  validate:
+    name: Docker validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      EVIDENCE_DIR: tmp/docker-validation/${{ github.sha }}
+      WMATCH_EVIDENCE_DIR: tmp/docker-profile-evidence
+    steps:
+      - name: Checkout complete immutable source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup exact Node runtime
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.23.2
+          cache: npm
+
+      - name: Setup pinned Buildx and BuildKit
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          version: v0.32.2
+          driver-opts: image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+          buildkitd-flags: --debug=false
+          cleanup: true
+
+      - name: Initialize same-SHA evidence paths
+        id: initialize
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          short_sha="${GITHUB_SHA:0:12}"
+          install -d -m 0700 "$EVIDENCE_DIR" "${RUNNER_TEMP}/pinned-tools"
+          {
+            echo "SHORT_SHA=$short_sha"
+            echo "COMPOSE_PROJECT_NAME=wmatch-$short_sha"
+            echo "WMATCH_GIT_SHA=$GITHUB_SHA"
+            echo "WMATCH_TOOLING_IMAGE=wmatch-tooling:$short_sha"
+            echo "TRIVY_CACHE_DIR=${RUNNER_TEMP}/trivy-cache"
+          } >> "$GITHUB_ENV"
+          printf '%s\n' "$GITHUB_SHA" > "$EVIDENCE_DIR/commit-sha.txt"
+
+      - name: Install locked repository dependencies
+        id: dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --global npm@11.19.0 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "11.19.0"
+          npm ci
+
+      - name: Install checksum-pinned Docker security tools
+        id: tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_bin="${RUNNER_TEMP}/pinned-tools"
+
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-linux-x86_64" \
+            --output "$tool_bin/hadolint"
+          printf '%s  %s\n' "$HADOLINT_LINUX_AMD64_SHA256" "$tool_bin/hadolint" | sha256sum --check --strict
+          chmod 0755 "$tool_bin/hadolint"
+
+          trivy_archive="${RUNNER_TEMP}/trivy.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            --output "$trivy_archive"
+          printf '%s  %s\n' "$TRIVY_LINUX_AMD64_SHA256" "$trivy_archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$trivy_archive" --directory "$tool_bin" trivy
+          chmod 0755 "$tool_bin/trivy"
+
+          syft_archive="${RUNNER_TEMP}/syft.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz" \
+            --output "$syft_archive"
+          printf '%s  %s\n' "$SYFT_LINUX_AMD64_SHA256" "$syft_archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$syft_archive" --directory "$tool_bin" syft
+          chmod 0755 "$tool_bin/syft"
+
+          echo "$tool_bin" >> "$GITHUB_PATH"
+          rm -f -- "$trivy_archive" "$syft_archive"
+
+      - name: Validate Compose profiles and lint Dockerfile
+        id: config
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run docker:config 2>&1 | tee "$EVIDENCE_DIR/docker-config.log"
+          docker compose \
+            --file infra/docker/compose.yaml \
+            --env-file infra/docker/env/.env.example \
+            --profile test \
+            --profile resilience \
+            --profile load \
+            config > "$EVIDENCE_DIR/compose.config.yaml"
+          hadolint --failure-threshold warning infra/docker/Dockerfile.tooling \
+            2>&1 | tee "$EVIDENCE_DIR/hadolint.log"
+
+      - name: Build tooling image reproducibility sample A
+        id: tooling_build_a
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: infra/docker/Dockerfile.tooling
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            SOURCE_DATE_EPOCH=0
+          load: true
+          no-cache: true
+          pull: true
+          provenance: mode=max
+          sbom: true
+          tags: wmatch-tooling:repro-a-${{ github.sha }}
+
+      - name: Build tooling image reproducibility sample B
+        id: tooling_build_b
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: infra/docker/Dockerfile.tooling
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            SOURCE_DATE_EPOCH=0
+          load: true
+          no-cache: true
+          pull: true
+          provenance: mode=max
+          sbom: true
+          tags: wmatch-tooling:repro-b-${{ github.sha }}
+
+      - name: Assert reproducible build and hardened smoke
+        id: reproducibility
+        shell: bash
+        env:
+          IMAGE_A_ID: ${{ steps.tooling_build_a.outputs.imageid }}
+          IMAGE_B_ID: ${{ steps.tooling_build_b.outputs.imageid }}
+        run: |
+          set -euo pipefail
+          test -n "$IMAGE_A_ID"
+          test "$IMAGE_A_ID" = "$IMAGE_B_ID"
+          docker tag "wmatch-tooling:repro-b-${GITHUB_SHA}" "$WMATCH_TOOLING_IMAGE"
+
+          test "$(docker image inspect --format '{{.Config.User}}' "$WMATCH_TOOLING_IMAGE")" = 'node:node'
+          test "$(docker image inspect --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}' "$WMATCH_TOOLING_IMAGE")" = "$GITHUB_SHA"
+          docker run --rm \
+            --read-only \
+            --network none \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --pids-limit 64 \
+            --memory 256m \
+            --cpus 0.50 \
+            --tmpfs /tmp:rw,noexec,nosuid,size=32m,uid=1000,gid=1000 \
+            "$WMATCH_TOOLING_IMAGE" \
+            node -e "const p=require('./package.json'); if(p.name!=='wmatch-mobile') process.exit(1)"
+
+          {
+            printf 'image_a=%s\n' "$IMAGE_A_ID"
+            printf 'image_b=%s\n' "$IMAGE_B_ID"
+            printf 'result=reproducible\n'
+          } > "$EVIDENCE_DIR/reproducibility.txt"
+          docker image inspect "$WMATCH_TOOLING_IMAGE" > "$EVIDENCE_DIR/tooling-image-inspect.json"
+
+      - name: Run deterministic Docker test profile
+        id: docker_test
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run docker:test 2>&1 | tee "$EVIDENCE_DIR/docker-test.log"
+
+      - name: Run deterministic resilience profile
+        id: resilience
+        shell: bash
+        env:
+          WMATCH_DOCKER_FULL_SUPABASE: 'true'
+        run: |
+          set -euo pipefail
+          npm run docker:resilience 2>&1 | tee "$EVIDENCE_DIR/docker-resilience.log"
+
+      - name: Run deterministic load smoke profile
+        id: load
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run docker:load 2>&1 | tee "$EVIDENCE_DIR/docker-load-smoke.log"
+
+      - name: Scan every Compose image and generate container SBOMs
+        id: supply_chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          scan_failed=0
+          profile_runtime_image_id="$(docker image inspect --format '{{.Id}}' "$WMATCH_TOOLING_IMAGE")"
+          reproducible_image="wmatch-tooling:repro-b-${GITHUB_SHA}"
+          reproducible_image_id="$(docker image inspect --format '{{.Id}}' "$reproducible_image")"
+          printf 'profile_runtime_image_id=%s\nreproducible_image_id=%s\n' \
+            "$profile_runtime_image_id" "$reproducible_image_id" \
+            > "$EVIDENCE_DIR/profile-and-reproducible-image-ids.txt"
+          docker tag "$reproducible_image" "$WMATCH_TOOLING_IMAGE"
+
+          : > "$EVIDENCE_DIR/image-map.tsv"
+          mapfile -t images < <(docker compose \
+            --file infra/docker/compose.yaml \
+            --env-file infra/docker/env/.env.example \
+            --profile test \
+            --profile resilience \
+            --profile load \
+            config --images | LC_ALL=C sort --unique)
+          test "${#images[@]}" -ge 5
+
+          for image in "${images[@]}"; do
+            image_key="$(printf '%s' "$image" | sha256sum | cut -d' ' -f1)"
+            printf '%s\t%s\n' "$image_key" "$image" >> "$EVIDENCE_DIR/image-map.tsv"
+            if ! trivy image \
+              --cache-dir "$TRIVY_CACHE_DIR" \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --timeout 10m \
+              --format json \
+              --output "$EVIDENCE_DIR/trivy-${image_key}.json" \
+              "$image"; then
+              scan_failed=1
+            fi
+            syft scan "docker:$image" \
+              --output "cyclonedx-json=$EVIDENCE_DIR/sbom-${image_key}.cdx.json"
+          done
+
+          test "$scan_failed" -eq 0
+
+      - name: Persist BuildKit provenance
+        id: provenance
+        shell: bash
+        env:
+          BUILDKIT_METADATA_JSON: ${{ steps.tooling_build_b.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$BUILDKIT_METADATA_JSON" > "$EVIDENCE_DIR/buildkit-metadata.json"
+          jq -e '.["buildx.build.provenance"].buildType | type == "string"' \
+            "$EVIDENCE_DIR/buildkit-metadata.json" > /dev/null
+          jq '.["buildx.build.provenance"]' \
+            "$EVIDENCE_DIR/buildkit-metadata.json" > "$EVIDENCE_DIR/buildkit-provenance.json"
+
+      - name: Clean exact test resources and assert no orphans
+        id: cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          cleanup_failed=0
+          tooling_image="${WMATCH_TOOLING_IMAGE:-wmatch-tooling:${GITHUB_SHA:0:12}}"
+          npm run docker:down || cleanup_failed=1
+
+          supabase_tmp="/tmp/wmatch-docker-supabase/${GITHUB_SHA:0:12}"
+          if [[ -d "$supabase_tmp/supabase" ]]; then
+            npx --no-install supabase --workdir "$supabase_tmp" stop --no-backup || cleanup_failed=1
+            case "$supabase_tmp" in
+              /tmp/wmatch-docker-supabase/*) rm -rf -- "$supabase_tmp" ;;
+              *) echo "Unsafe Supabase cleanup path: $supabase_tmp"; cleanup_failed=1 ;;
+            esac
+          fi
+
+          compose_containers="$(docker ps --all --quiet --filter "label=com.docker.compose.project=wmatch-${GITHUB_SHA:0:12}")"
+          compose_networks="$(docker network ls --quiet --filter "label=com.docker.compose.project=wmatch-${GITHUB_SHA:0:12}")"
+          supabase_containers="$(docker ps --all --quiet --filter "label=com.supabase.cli.project=wmatch_docker_${GITHUB_SHA:0:12}")"
+          if [[ -n "$compose_containers" || -n "$compose_networks" || -n "$supabase_containers" ]]; then
+            printf 'Orphan resources remain. compose_containers=%s compose_networks=%s supabase_containers=%s\n' \
+              "$compose_containers" "$compose_networks" "$supabase_containers"
+            cleanup_failed=1
+          fi
+
+          image_id_evidence="$EVIDENCE_DIR/profile-and-reproducible-image-ids.txt"
+          if [[ -f "$image_id_evidence" ]]; then
+            profile_runtime_image_id="$(sed -n 's/^profile_runtime_image_id=//p' "$image_id_evidence")"
+            if [[ "$profile_runtime_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              docker image rm --force "$profile_runtime_image_id" >/dev/null 2>&1 || true
+            fi
+          fi
+          docker image rm --force \
+            "wmatch-tooling:repro-a-${GITHUB_SHA}" \
+            "wmatch-tooling:repro-b-${GITHUB_SHA}" \
+            "$tooling_image" >/dev/null 2>&1 || true
+          exit "$cleanup_failed"
+
+      - name: Finalize checksummed same-SHA evidence
+        id: evidence
+        if: always()
+        shell: bash
+        env:
+          INITIALIZE_OUTCOME: ${{ steps.initialize.outcome }}
+          DEPENDENCIES_OUTCOME: ${{ steps.dependencies.outcome }}
+          TOOLS_OUTCOME: ${{ steps.tools.outcome }}
+          CONFIG_OUTCOME: ${{ steps.config.outcome }}
+          BUILD_A_OUTCOME: ${{ steps.tooling_build_a.outcome }}
+          BUILD_B_OUTCOME: ${{ steps.tooling_build_b.outcome }}
+          REPRODUCIBILITY_OUTCOME: ${{ steps.reproducibility.outcome }}
+          TEST_OUTCOME: ${{ steps.docker_test.outcome }}
+          RESILIENCE_OUTCOME: ${{ steps.resilience.outcome }}
+          LOAD_OUTCOME: ${{ steps.load.outcome }}
+          SUPPLY_CHAIN_OUTCOME: ${{ steps.supply_chain.outcome }}
+          PROVENANCE_OUTCOME: ${{ steps.provenance.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup.outcome }}
+          IMAGE_ID: ${{ steps.tooling_build_b.outputs.imageid }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$EVIDENCE_DIR"
+          tooling_image="${WMATCH_TOOLING_IMAGE:-wmatch-tooling:${GITHUB_SHA:0:12}}"
+          profile_dir="${WMATCH_EVIDENCE_DIR}/${GITHUB_SHA}"
+          if [[ -d "$profile_dir" ]]; then
+            cp -a "$profile_dir"/. "$EVIDENCE_DIR"/
+          fi
+
+          printf '%s\n' \
+            "node=$(node --version 2>/dev/null || true)" \
+            "npm=$(npm --version 2>/dev/null || true)" \
+            "docker=$(docker version --format '{{.Server.Version}}' 2>/dev/null || true)" \
+            "compose=$(docker compose version --short 2>/dev/null || true)" \
+            "buildx=$(docker buildx version 2>/dev/null || true)" \
+            "hadolint=$(hadolint --version 2>/dev/null || true)" \
+            "trivy=$(trivy --version 2>/dev/null | head -n 1 || true)" \
+            "syft=$(syft version -o json 2>/dev/null | jq -r '.version // empty' || true)" \
+            > "$EVIDENCE_DIR/tool-versions.txt"
+
+          jq -n \
+            --arg commitSha "$GITHUB_SHA" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg image "$tooling_image" \
+            --arg imageId "$IMAGE_ID" \
+            --arg initialize "$INITIALIZE_OUTCOME" \
+            --arg dependencies "$DEPENDENCIES_OUTCOME" \
+            --arg tools "$TOOLS_OUTCOME" \
+            --arg config "$CONFIG_OUTCOME" \
+            --arg buildA "$BUILD_A_OUTCOME" \
+            --arg buildB "$BUILD_B_OUTCOME" \
+            --arg reproducibility "$REPRODUCIBILITY_OUTCOME" \
+            --arg test "$TEST_OUTCOME" \
+            --arg resilience "$RESILIENCE_OUTCOME" \
+            --arg load "$LOAD_OUTCOME" \
+            --arg supplyChain "$SUPPLY_CHAIN_OUTCOME" \
+            --arg provenance "$PROVENANCE_OUTCOME" \
+            --arg cleanup "$CLEANUP_OUTCOME" \
+            '{
+              schemaVersion: 1,
+              repository: $repository,
+              commitSha: $commitSha,
+              workflowRunId: $runId,
+              workflowRunAttempt: $runAttempt,
+              toolingImage: { reference: $image, imageId: $imageId },
+              gates: {
+                initialize: $initialize,
+                dependencies: $dependencies,
+                pinnedTools: $tools,
+                composeAndHadolint: $config,
+                reproducibleBuildA: $buildA,
+                reproducibleBuildB: $buildB,
+                reproducibilityAndSmoke: $reproducibility,
+                dockerTest: $test,
+                resilience: $resilience,
+                loadSmoke: $load,
+                imageScanAndSbom: $supplyChain,
+                provenance: $provenance,
+                cleanup: $cleanup
+              }
+            }' > "$EVIDENCE_DIR/docker-validation-manifest.json"
+
+          git status --porcelain --untracked-files=all > "$EVIDENCE_DIR/git-status.txt"
+          (
+            cd "$EVIDENCE_DIR"
+            find . -type f ! -name SHA256SUMS -print0 \
+              | LC_ALL=C sort --zero-terminated \
+              | xargs --null sha256sum > SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
+          )
+          test ! -s "$EVIDENCE_DIR/git-status.txt"
+
+      - name: Upload Docker validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: docker-evidence-${{ github.sha }}
+          path: ${{ env.EVIDENCE_DIR }}
+          if-no-files-found: error
+          retention-days: 90

@@ -22,13 +22,14 @@ frekansı, veri büyüklüğü ve drill süresinden türetip manifest'e eklemede
 
 Dirty working tree'deki izole PostgreSQL 17 stack'inde:
 
-- full custom-format dump SHA-256 değeri
-  `f96ca69d2e264e045dc0ab53996589c4b9369ce8eeb1f45d5eec4be9002ea095` olarak doğrulandı;
+- full custom-format dump'ın SHA-256 değeri drill sırasında hesaplanıp evidence'a yazıldı; `pg_dump`
+  custom formatı çalışma zamanı metadata'sı taşıdığı için bu digest run'a özgüdür ve iki farklı
+  drill'de aynı çıkması beklenmez, bu yüzden sabit bir beklenen değer olarak kullanılmaz;
 - dump temiz `template0` tabanlı hedef DB'ye `supabase_admin` ile, OWNER metadata'sı korunarak full
   `pg_restore` edildi;
-- restored schema contract `20260830120000`, public tablo sayısı 28, public index sayısı 88 ve RLS
+- restored schema contract `20260831153000`, public tablo sayısı 28, public index sayısı 89 ve RLS
   açık public tablo sayısı 27 olarak doğrulandı;
-- restored DB üzerinde üç pgTAP dosyasındaki `117/117` test geçti.
+- restored DB üzerinde dört pgTAP dosyasındaki `166/166` test geçti.
 
 İlk denemede `postgres --no-owner` kullanılması managed Realtime/Vault privilege ve owner
 semantiğini bozdu; sonraki pgTAP read-model kontrolleri `permission denied` verdi. Bu başarısız
@@ -97,7 +98,7 @@ pg_restore --dbname "$DRILL_DB_URL" --role=supabase_admin --single-transaction -
 `pg_restore` komutuna **`--no-owner` eklenmez**. Managed Realtime/Vault nesnelerinin owner ve grant
 semantiğini generic `postgres` rolüne zorlamak kabul edilmez. Target boş değilse cleanup bayrağı
 eklemek yerine yeni `template0` tabanlı izole DB hazırlanır. Restore başarılı exit code verse bile
-aşağıdaki owner/grant kontrolleri ve üç dosya/117 pgTAP testi geçmeden drill tamamlanmış sayılmaz.
+aşağıdaki owner/grant kontrolleri ve dört dosya/166 pgTAP testi geçmeden drill tamamlanmış sayılmaz.
 
 Custom dump role tanımlarını tek başına taşımaz. Hedefte gerekli Supabase managed rollerinin aynı
 stack/template tarafından oluşturulmuş olması zorunludur; eksik rolü geniş yetkili bir substitute'a
@@ -142,10 +143,10 @@ göre güvenli biçimde imha edilir.
 
 | Kontrol                   | Beklenen sonuç                                                                                                      |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| Migration/schema contract | History local migration setiyle uyumlu; `20260830120000` yalnız gerçekten uygulanmışsa current                      |
+| Migration/schema contract | History local migration setiyle uyumlu; `20260831153000` yalnız gerçekten uygulanmışsa current                      |
 | Owner/grant bütünlüğü     | Managed Realtime/Vault ve application object owner/grant'ları kaynak contract ile eşleşir; `--no-owner` kullanılmaz |
-| Restored schema sayımları | Beklenen candidate için public tables `28`, public indexes `88`, RLS-enabled public tables `27`                     |
-| pgTAP                     | Restored DB üzerinde üç dosyanın tüm `117/117` testi geçer; permission-denied kabul edilmez                         |
+| Restored schema sayımları | Beklenen candidate için public tables `28`, public indexes `89`, RLS-enabled public tables `27`                     |
+| pgTAP                     | Restored DB üzerinde dört dosyanın tüm `166/166` testi geçer; permission-denied kabul edilmez                       |
 | RLS/IDOR                  | anon, user-A, user-B, blocked ve service-role attack matrix beklenen deny/allow sonuçlarını verir                   |
 | Auth                      | Test hesaplarıyla session/refresh/logout; production kullanıcıya mail/push gönderilmez                              |
 | Profile/private media     | Yalnız owner-scoped object path; eksik/orphan object inventory raporlanır                                           |

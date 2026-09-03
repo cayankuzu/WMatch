@@ -6,9 +6,6 @@ permissions:
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - chore/aaa-mvp-feature-freeze-cloudflare-ota
 
 concurrency:
   group: quality-${{ github.workflow }}-${{ github.ref }}
@@ -16,6 +13,7 @@ concurrency:
 
 jobs:
   verify:
+    name: Quality verify
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -73,6 +71,10 @@ jobs:
           infra/cloudflare/wmatch-edge/src
           infra/cloudflare/wmatch-edge/test
           infra/cloudflare/wmatch-edge/scripts
+          infra/docker/scripts
+          infra/docker/mocks
+          infra/docker/tests
+          infra/docker/load
 
       - name: Aggregate repository release gate
         run: npm run verify:release
