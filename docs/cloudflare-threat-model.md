@@ -51,6 +51,46 @@ forgers, and an actor with a leaked deployment or origin credential.
 - No Worker HMAC secret is sufficient to secure the origin unless the origin also verifies freshness
   and atomically rejects replay.
 
+## Client transport security and the certificate-pinning decision
+
+The mobile client is the other half of this boundary, so the transport decisions it depends on are
+recorded here rather than left implicit.
+
+Enforced today:
+
+- `EXPO_PUBLIC_SUPABASE_*` configuration is schema-validated at startup; a non-`https:` origin, or a
+  URL carrying embedded credentials, fails closed before any request is made. Plain `http:` is
+  accepted only for an explicitly recognised local development URL.
+- The release Android manifest sets `android:usesCleartextTraffic="false"`. The Android project is
+  checked into this repository, so that manifest — not `app.json` — owns the flag; Expo's config
+  schema has no such field, and `npm run check:native-parity` fails if anyone adds one. Only the
+  `debug` and `debugOptimized` variants re-enable cleartext, and they do so through an explicit
+  `tools:replace` override so a local Metro bundler keeps working. This is defence in depth: the
+  platform default already denies cleartext at the current target SDK, and the explicit flag plus
+  the parity guard stop a future config change from silently reopening it.
+- iOS relies on App Transport Security defaults. `app.json` declares no `NSAppTransportSecurity`
+  exception, and the same parity guard fails the build if `NSAllowsArbitraryLoads` or
+  `NSAllowsArbitraryLoadsInWebContent` is ever set to `true`.
+- The client never takes a caller-supplied host. Every request resolves through the central
+  transport to either the fixed Supabase project origin or the configured `api.*` gateway.
+
+Certificate pinning is **deliberately not implemented**, and this is a decision rather than an
+omission:
+
+- Both upstreams are provider-managed. Supabase and Cloudflare rotate leaf certificates, and may
+  change issuing intermediates, on their own schedule and without notifying this repository.
+- A pin baked into a store binary cannot be corrected by an OTA update, because trust evaluation
+  happens below the JavaScript runtime. A rotation the pin does not anticipate would take every
+  installed build offline until a new binary cleared review, which is a larger and less recoverable
+  availability risk than the man-in-the-middle risk it removes.
+- The residual MITM risk is already narrowed by the controls above plus origin-side authorisation:
+  a proxy that terminates TLS still cannot mint a valid Supabase JWT, satisfy RLS, or produce a
+  fresh, non-replayable Worker origin HMAC.
+
+Revisit this decision only alongside a documented rotation contract from both providers, pin sets
+that include backup keys, a remote kill switch for the pin, and a rehearsed recovery path. Until
+then, treat certificate pinning as accepted risk with the compensating controls named above.
+
 ## Production NO-GO checklist
 
 Production traffic must remain disabled until an owner records evidence for every item:
