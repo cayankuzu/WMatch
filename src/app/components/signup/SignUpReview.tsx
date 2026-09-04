@@ -95,13 +95,13 @@ const styles = StyleSheet.create({
   photo: {
     width: 72,
     height: 80,
-    borderRadius: 14,
+    borderRadius: theme.radius.card,
     backgroundColor: theme.colors.surfaceStrong,
   },
   photoFallback: {
     width: 72,
     height: 80,
-    borderRadius: 14,
+    borderRadius: theme.radius.card,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.primarySurface,
@@ -134,7 +134,7 @@ const styles = StyleSheet.create({
   metric: {
     flex: 1,
     minHeight: 46,
-    borderRadius: 14,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,

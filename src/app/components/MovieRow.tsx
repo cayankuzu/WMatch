@@ -182,7 +182,7 @@ const styles = StyleSheet.create({
   skeletonTitle: {
     width: 82,
     height: 12,
-    borderRadius: 6,
+    borderRadius: theme.radius.xs,
   },
   skeletonMeta: {
     width: 52,

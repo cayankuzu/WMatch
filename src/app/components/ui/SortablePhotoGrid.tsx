@@ -254,7 +254,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    borderRadius: 14,
+    borderRadius: theme.radius.card,
     borderWidth: 1,
     borderColor: theme.alpha.brand24,
     backgroundColor: theme.colors.primarySurface,

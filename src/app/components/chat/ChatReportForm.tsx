@@ -148,12 +148,12 @@ const styles = StyleSheet.create({
   },
   detailsLabel: {
     color: theme.colors.text,
-    fontSize: 12,
+    fontSize: theme.typography.caption,
     fontFamily: theme.fonts.bold,
   },
   detailsInput: {
     minHeight: 124,
-    borderRadius: 16,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,

@@ -401,7 +401,7 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.bold,
   },
   matchContextScore: {
-    fontSize: 16,
+    fontSize: theme.typography.section,
     fontFamily: theme.fonts.extraBold,
   },
   matchContextBody: {
