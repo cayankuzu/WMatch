@@ -83,6 +83,26 @@ Uygulamadaki 264 tipografi kullanımının punto dağılımı:
 | **Neden bu çözüm** | Bu ekran ve modal dosyaları `check:visual-regression` tarafından **byte düzeyinde dondurulmuş** durumda. Skaleri rolün puntosuna çekmek, altı başlığı da tek boya getiriyor ve dondurulmuş hiçbir dosyaya dokunmuyor. Çağrı yerlerini role taşımak dört ayrı muafiyet gerektirirdi — bir başlık hizalaması için dondurma sözleşmesini aşındırmaya değmez. |
 | **Kalan borç** | `typography.section` ile `roles.sectionTitle.fontSize` artık aynı değeri iki yerde tutuyor. Feature freeze kalktığında altı çağrı yeri role taşınıp skaler silinmeli. Bu, `visual-regression.snapshot.json` içindeki gerekçeye yazıldı. |
 
+### P2 — Girdi metni üç farklı puntoda çiziliyordu
+
+| | |
+|---|---|
+| **Bulgu** | Kullanıcının **yazdığı** metin uygulamada üç boyda render ediliyordu: `AppTextField`, `SearchBar` ve `ChatReportForm` 13 (`body`); `ChatComposer` 12 (`roles.meta`); `SwipeActionMenuOverlay.detailsInput` ham 12. |
+| **Kullanıcı etkisi** | Sohbet kompozisyonu — uygulamanın en çok kullanılan girdisi — yazılanı caption puntosunda gösteriyordu. Yazdığın metin, onu tarif eden etiketten küçük kalıyordu. |
+| **Minimum çözüm** | Üçü de `roles.body` (13). Çoğunluk deseni ve doğru olan buydu. |
+| **Kanıt** | `ChatComposer.tsx`, `SwipeActionMenuOverlay.tsx`, `AppTextField.tsx`, `SearchBar.tsx` |
+
+### P2 — Ham stil değerleri token merdivenine katılmıyordu
+
+| | |
+|---|---|
+| **Bulgu** | 57 ham `fontSize`/`borderRadius` değeri token sistemini atlıyordu. Ham renk **sıfır** — renk disiplini zaten tamdı, sorun yalnız punto ve köşe. |
+| **Neden önemli** | Teorik değil: `control` 12 → 13 taşındığında ham `fontSize: 12` yazan her yer geride kaldı. Bir sayı token'a bağlı değilse ölçek değişiminden pay almaz. |
+| **Aynı dosyada iki desen** | `SwipeActionMenuOverlay` içinde `detailsCounter` boyunu `roles.meta`'dan okurken `detailsLabel` ve `detailsInput` çıplak sayı taşıyordu. `AuthWordmark` `tagline`'ı `typography.body`'den alıp `taglineSplash` için aynı 13'ü elle yazıyordu. |
+| **Yapılan** | Dondurulmamış 10 dosyadaki 21 değer, zaten kopyaladıkları token'a bağlandı: `caption`, `body`, `section`, `title`, `radius.xs/sm/card/lg`. |
+| **Dokunulmayanlar** | `AuthWordmark` 24/28 bir logotype; `Skeleton` 27/28, `MovieRow` 5, `ErrorBoundary` 32, `ChatMessageBubble` 12 hiçbir token'a karşılık gelmiyor — tek çağrı yeri için token uydurmak sabit sayıdan kötü olurdu. |
+| **Kalıcı hâle getirme** | `scripts/guards/check-style-literals.mjs`, `npm run check` ve `verify:release` zincirlerinde. Yalnız **token'ın zaten sahip olduğu** bir değeri kopyalayan sabiti bulgu sayıyor. Kalan 27 site dosya başına gerekçesiyle allowlist'te; guard, allowlist girdisi bayatladığında da kırılıyor, yani liste yalnız küçülebilir. |
+
 ### P3 — Ölü token'lar
 
 | Token | Kullanım | İşlem |
@@ -154,6 +174,7 @@ Merdiven artık **12 → 13 → 14 → 16 → 18 → 20 → 26**; her basamak ay
 | `npm run check:touch` | PASS |
 | `npm run check:i18n` | PASS — 538 anahtar |
 | `npm run check:architecture` | PASS — 193 dosya |
+| `npm run check:style-literals` | PASS — 11 allowlist dosyası, kasıtlı regresyonda kırıldığı doğrulandı |
 | `npm run check:feature-surface` | PASS — yüzey değişmedi |
 
 `tests/production-guards.test.ts` içindeki `control` token assertion'ı 12'den 13'e güncellendi. **Gevşetilmedi** — hâlâ tam değeri sabitliyor, yalnız gözden geçirilmiş değeri sabitliyor.
