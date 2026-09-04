@@ -55,6 +55,7 @@ export const tr = {
   'a11y.profileAction': 'Profil eylemi',
   'a11y.reportProfile': 'Profili bildir',
   'a11y.secondaryProfileAction': 'İkincil profil eylemi',
+  'a11y.openPhoto': 'Fotoğrafı tam ekran aç',
   'a11y.profilePhoto': '{index}. profil fotoğrafı',
   'a11y.removeProfilePhoto': '{index}. profil fotoğrafını kaldır',
 

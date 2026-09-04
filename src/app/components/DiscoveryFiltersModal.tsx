@@ -482,6 +482,8 @@ function DualRangeSlider({
           style={styles.sliderTrack}
         >
           <Pressable
+            accessible={false}
+            importantForAccessibility="no-hide-descendants"
             onPress={(event) => {
               const position = event.nativeEvent.locationX;
               const nearestThumb = Math.abs(position - minPosition) <= Math.abs(position - maxPosition) ? 'min' : 'max';
