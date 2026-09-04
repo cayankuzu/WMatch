@@ -1466,7 +1466,10 @@ describe('production guardrails', () => {
 
     expect(themeSource).toContain('controlMinUnified: 48');
     expect(themeSource).toContain("body: { fontFamily: 'Inter_400Regular', fontSize: 13");
-    expect(themeSource).toContain("control: { fontFamily: 'Inter_600SemiBold', fontSize: 12");
+    // Pinned, not relaxed: the control role moved 12 -> 13 so a primary CTA
+    // label stops being the smallest type in the system. The measurement and
+    // the review sit in quality/visual-regression.snapshot.json.
+    expect(themeSource).toContain("control: { fontFamily: 'Inter_600SemiBold', fontSize: 13");
     expect(themeSource).toContain('dangerText');
     expect(themeSource).toContain('contentMaxNarrow');
     expect(screenSource).toContain('useWindowClass');

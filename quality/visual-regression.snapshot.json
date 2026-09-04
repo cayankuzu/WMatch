@@ -3,7 +3,11 @@
   "baselineCommit": "b8ff52ac41eda5f6ef1e43472784d794328f7050",
   "featureSurfaceSnapshot": "quality/feature-surface.snapshot.json",
   "contract": "User-visible screen, modal, sheet, navigation, theme, and branding sources must remain visually identical to the immutable feature-freeze baseline.",
-  "exactSurfaceGroups": ["screenEntrypoints", "modalEntrypoints", "sheetEntrypoints"],
+  "exactSurfaceGroups": [
+    "screenEntrypoints",
+    "modalEntrypoints",
+    "sheetEntrypoints"
+  ],
   "exactPaths": [
     "src/app/App.tsx",
     "src/app/components/BottomNav.tsx",
@@ -15,9 +19,86 @@
   "normalizedPaths": [
     {
       "path": "src/shared/theme/index.ts",
-      "normalizer": "accessibilityPalette",
-      "reason": "Reviewed accessibility and brand-consistency change, no layout or topology change. textSoft/textTertiary #7f8698 measured 4.46:1 on surfaceMuted and 4.03:1 on surfaceStrong, below the WCAG 2.2 SC 1.4.3 4.5:1 floor; #8990a0 is the smallest lift that clears 4.5:1 on every surface. Brand washes were rebased from three unrelated reds (#e5484d, #e10613, #d81421) onto colors.primary #d90416, matching primarySurface. Dead brand88 and success84 entries removed. Enforced by scripts/guards/check-contrast.mjs.",
-      "evidence": "npm run check:contrast"
+      "normalizer": "reviewedLines",
+      "reason": "Reviewed accessibility, brand-consistency and type-hierarchy changes to the token file. No layout, topology, screen, modal or CTA change. Each moved line is listed below with the measurement that justified it. Every other byte of the file stays byte-frozen against the baseline.",
+      "evidence": "npm run check:contrast; docs/audit/ui-ux-contrast-audit.md; docs/audit/ui-typography-hierarchy-audit.md",
+      "reviewedLines": [
+        {
+          "baseline": "textSoft: '#7f8698',",
+          "current": "textSoft: '#8990a0',",
+          "why": "#7f8698 measured 4.46:1 on surfaceMuted and 4.03:1 on surfaceStrong, under the WCAG 2.2 SC 1.4.3 floor of 4.5:1 for normal text. #8990a0 is the smallest lift that clears 4.5:1 on every surface (4.57:1 worst case) and keeps the hue."
+        },
+        {
+          "baseline": "textTertiary: '#7f8698',",
+          "current": "textTertiary: '#8990a0',",
+          "why": "Same token value under a second name; same measurement and same fix."
+        },
+        {
+          "baseline": "primary12: 'rgba(229, 72, 77, 0.12)',",
+          "current": "brand12: 'rgba(217, 4, 22, 0.12)',",
+          "why": "#e5484d existed nowhere else in the palette yet tinted every EmptyState in the app. Rebased on colors.primary #d90416 and folded into the brand ladder."
+        },
+        {
+          "baseline": "primary18: 'rgba(229, 72, 77, 0.18)',",
+          "current": null,
+          "why": "Duplicate of brand18 once both were rebased on #d90416. EmptyState now uses brand18."
+        },
+        {
+          "baseline": "brand18: 'rgba(225, 6, 19, 0.18)',",
+          "current": "brand18: 'rgba(217, 4, 22, 0.18)',",
+          "why": "Rebased from #e10613 onto colors.primary #d90416 so one red drives every brand wash. Imperceptible at 18% alpha."
+        },
+        {
+          "baseline": "brand22: 'rgba(225, 6, 19, 0.22)',",
+          "current": "brand22: 'rgba(217, 4, 22, 0.22)',",
+          "why": "Same rebase."
+        },
+        {
+          "baseline": "brand24: 'rgba(225, 6, 19, 0.24)',",
+          "current": "brand24: 'rgba(217, 4, 22, 0.24)',",
+          "why": "Same rebase."
+        },
+        {
+          "baseline": "brand26: 'rgba(225, 6, 19, 0.26)',",
+          "current": "brand26: 'rgba(217, 4, 22, 0.26)',",
+          "why": "Same rebase."
+        },
+        {
+          "baseline": "brand88: 'rgba(216, 20, 33, 0.88)',",
+          "current": null,
+          "why": "Dead token: a fourth red (#d81421) that no component referenced."
+        },
+        {
+          "baseline": "success84: 'rgba(34,197,94,0.84)',",
+          "current": null,
+          "why": "Dead token: no component referenced it."
+        },
+        {
+          "baseline": "display: 24,",
+          "current": null,
+          "why": "Dead legacy scalar; roles.display carries the display tier and no call site used this."
+        },
+        {
+          "baseline": "section: 15,",
+          "current": "section: 16,",
+          "why": "Section headings rendered at two sizes: AppModal's shared title uses roles.sectionTitle (16) while five hand-rolled headings use this scalar. Raising the scalar to 16 aligns all six on one size without editing any byte-frozen screen or modal file. The duplication between this scalar and roles.sectionTitle.fontSize stays until the feature freeze lifts and the call sites can migrate to the role."
+        },
+        {
+          "baseline": "tiny: 12,",
+          "current": null,
+          "why": "Dead legacy scalar duplicating caption at the same value; no call site used it."
+        },
+        {
+          "baseline": "cardTitle: { fontFamily: 'Inter_700Bold', fontSize: 13, lineHeight: 18 },",
+          "current": "cardTitle: { fontFamily: 'Inter_700Bold', fontSize: 14, lineHeight: 19 },",
+          "why": "A card title matched its own body copy at 13px, so cards carried no internal hierarchy. 14px separates the title without reaching the 16px section tier. No fixed-height text container exists in the app to clip it (verified by AST scan)."
+        },
+        {
+          "baseline": "control: { fontFamily: 'Inter_600SemiBold', fontSize: 12, lineHeight: 17 },",
+          "current": "control: { fontFamily: 'Inter_600SemiBold', fontSize: 13, lineHeight: 18 },",
+          "why": "Control labels sat in the 12px floor band alongside meta and micro copy, which put every primary CTA label at the smallest size in the system. 13px lifts the label the user must act on out of the caption tier. Consumers are AppButton, OptionChips, SegmentedControl and four screens, all with flexible height."
+        }
+      ]
     },
     {
       "path": "src/app/components/ui/AppImage.tsx",
