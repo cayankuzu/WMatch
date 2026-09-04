@@ -47,6 +47,7 @@
     "check:audit": "node scripts/check-dependency-audit.mjs",
     "check:i18n": "node scripts/check-i18n.mjs",
     "check:touch": "node scripts/check-touch-targets.mjs",
+    "check:contrast": "node scripts/guards/check-contrast.mjs",
     "check:architecture": "node scripts/guards/check-dependency-direction.mjs",
     "check:visual-regression": "node scripts/guards/check-visual-regression.mjs",
     "check:db:advisors": "node scripts/database/local-db-validation.mjs advisors",
@@ -63,7 +64,7 @@
     "docker:load": "node infra/docker/scripts/run-load-profile.mjs",
     "docker:down": "node infra/docker/scripts/compose-control.mjs down",
     "docker:clean": "node infra/docker/scripts/cleanup.mjs",
-    "check": "npm run check:signing && npm run check:native-parity && npm run check:secrets && npm run check:i18n && npm run check:architecture && npm run check:visual-regression && npm run check:feature-surface && npm run typecheck && npm test",
+    "check": "npm run check:signing && npm run check:native-parity && npm run check:secrets && npm run check:i18n && npm run check:contrast && npm run check:architecture && npm run check:visual-regression && npm run check:feature-surface && npm run typecheck && npm test",
     "verify:release": "npm run format:check && npm run lint && npm run check:signing && npm run check:native-parity && npm run check:secrets && npm run check:licenses && npm run check:audit && npm run check:i18n && npm run check:touch && npm run check:architecture && npm run check:visual-regression && npm run check:feature-surface && npm run typecheck && npm run test:unit && npm run test:component && npm run test:contract && npm run test:edge:hmac && npm run test:edge:storage && npm run test:edge:privacy && npm run test:edge:account-deletion && npm run test:rls:static && npm run check:edge && npm run check:deno:lock && npm run check:edge:type && npm run check:migrations && npx expo install --check && npm run doctor",
     "doctor": "npx expo-doctor"
   },

@@ -14,6 +14,12 @@
   ],
   "normalizedPaths": [
     {
+      "path": "src/shared/theme/index.ts",
+      "normalizer": "accessibilityPalette",
+      "reason": "Reviewed accessibility and brand-consistency change, no layout or topology change. textSoft/textTertiary #7f8698 measured 4.46:1 on surfaceMuted and 4.03:1 on surfaceStrong, below the WCAG 2.2 SC 1.4.3 4.5:1 floor; #8990a0 is the smallest lift that clears 4.5:1 on every surface. Brand washes were rebased from three unrelated reds (#e5484d, #e10613, #d81421) onto colors.primary #d90416, matching primarySurface. Dead brand88 and success84 entries removed. Enforced by scripts/guards/check-contrast.mjs.",
+      "evidence": "npm run check:contrast"
+    },
+    {
       "path": "src/app/components/ui/AppImage.tsx",
       "normalizer": "nonVisualImageCachePolicy",
       "reason": "The cache storage policy was privacy-hardened without changing rendered layout, content, styling, accessibility, or failure-state topology."
