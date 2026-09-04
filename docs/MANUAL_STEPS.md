@@ -250,6 +250,27 @@ artifact'ine yazmayın. Bütün kanıtlar aynı immutable candidate SHA altında
 - **Owner/evidence:** Incident commander + release owner (atanmadı),
   `release-evidence/<SHA>/manual/canary-approval/`.
 
+## 16. Store görselleri ve pazarlama materyali
+
+- **Durum:** [ ] Bekliyor.
+- **Neden:** Store ve reklamda gösterilen her ekranın candidate build'de gerçekten bulunduğu, repo
+  tarafından kanıtlanamaz; ekran görüntüsü gerçek cihazdan alınır ve gösterilen kontrol ile
+  `quality/feature-surface.snapshot.json` elle karşılaştırılır.
+- **Nerede:** Gerçek cihaz (simulator kabul edilmez: status bar ve font render'ı farklıdır),
+  App Store Connect Media Manager, Play Console Store listing.
+- **Değer adları:** Candidate SHA, build 55 / Android 53, cihaz modeli, ekran boyutu sınıfı,
+  `docs/marketing/screenshot-storyboard.md` içindeki export adları.
+- **Doğrulama:** Altı karenin her biri storyboard'daki ekran, başlık ve durumla eşleşir;
+  `docs/marketing/claims-register.md` içindeki her kullanılan iddia `ONAYLI`;
+  `docs/marketing/brand-and-design-system.md` §8 kontrol listesi geçilir.
+- **Güvenli sonuç:** Sahte sayı, sahte sohbet, sahte profil, var olmayan kontrol yok; kota çubuğu
+  kırpılmamış; ilk üç kare birbirini tekrar etmiyor.
+- **Bloke eden:** `claims-register.md` P-05 — hesap silme akışının candidate build'de doğrulanması.
+  Bu kapanmadan Play Data Safety formu tamamlanamaz ve gönderim yapılamaz.
+- **Rollback:** Store listing'i önceki sürüme döndürün; yayımlanmış reklam setini durdurun.
+- **Owner/evidence:** Store release owner + marketing owner (atanmadı),
+  `release-evidence/<SHA>/manual/store-assets/`.
+
 ## Final kontrol
 
 Tüm checkbox'lar evidence path, owner, UTC zaman ve candidate SHA ile tamamlanmadan release kararı:
