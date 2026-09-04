@@ -61,58 +61,75 @@ function normalizeNonVisualChatOutboxCancellation(buffer) {
 }
 
 /**
- * Canonicalises the theme lines that a reviewer has explicitly signed off, so
- * the baseline and the candidate are compared on equal terms. It runs over
- * BOTH sides, so it maps each side to the same canonical form rather than
+ * Canonicalises the source a reviewer has explicitly signed off, so the
+ * baseline and the candidate are compared on equal terms. It runs over BOTH
+ * sides, so it maps each side to the same canonical form rather than
  * translating one into the other.
  *
- * The exemptions are data, not code: each entry in the path's `reviewedLines`
- * carries the exact baseline text, the exact current text (or null when the
- * line was removed) and the reason it was allowed to move. Every other byte of
- * the file stays byte-frozen, so an unreviewed edit anywhere else still fails.
+ * The exemptions are data, not code. Each entry in the path's `reviewedLines`
+ * carries the exact baseline text, the exact current text, and the reason the
+ * change was allowed. `baseline` and `current` accept either one line or an
+ * array of contiguous lines, so a block that moved or was deleted can be
+ * described precisely instead of by matching lines that repeat elsewhere in
+ * the file. `current: null` means the block was removed.
+ *
+ * Everything outside these entries stays byte-frozen, so an unreviewed edit
+ * anywhere else still fails.
  *
  * Adding an entry here is the review step. It should be uncomfortable, and it
  * should be readable a year from now without asking anyone what happened.
  */
 function makeReviewedLinesNormalizer(entry) {
-  const reviewed = entry.reviewedLines ?? [];
-  const marker = (index) => '<REVIEWED ' + String(index) + '>';
-  // A reviewed line is either a value move (both sides carry a line, so both
-  // sides emit the same marker) or a removal (only the baseline carries a
-  // line, so both sides drop it and emit nothing). Emitting a marker for a
-  // removal would leave the two sides with a different line count.
-  const removed = new Set();
-  const baselineText = new Map();
-  const currentText = new Map();
-  reviewed.forEach((line, index) => {
-    if (line.current === null || line.current === undefined) {
-      if (line.baseline) removed.add(line.baseline.trim());
-      return;
-    }
-    if (line.baseline) baselineText.set(line.baseline.trim(), index);
-    currentText.set(line.current.trim(), index);
+  const asLines = (value) =>
+    value === null || value === undefined
+      ? null
+      : (Array.isArray(value) ? value : [value]).map((line) => line.trim());
+
+  // A run is matched by its whole contiguous text, so a generic line such as a
+  // closing brace only matches as part of the block it was declared in.
+  const runs = [];
+  (entry.reviewedLines ?? []).forEach((line, index) => {
+    const baseline = asLines(line.baseline);
+    const current = asLines(line.current);
+    // A pure addition or a pure removal emits nothing on either side, because
+    // only one side has anything to drop. A change that exists on both sides
+    // emits one marker, so a rename or a length change stays aligned.
+    const replacement =
+      baseline === null || current === null ? null : '<REVIEWED ' + String(index) + '>';
+    if (baseline) runs.push({ index, lines: baseline, replacement });
+    if (current) runs.push({ index, lines: current, replacement });
   });
+  // Longest first: a short run must never shadow a longer one that starts at
+  // the same line.
+  runs.sort((a, b) => b.lines.length - a.lines.length);
 
   return (buffer) => {
     const LF = String.fromCharCode(10);
+    const source = normalizeText(buffer).split(LF);
+    const trimmed = source.map((line) => line.trim());
     const out = [];
     const emitted = new Set();
-    for (const line of normalizeText(buffer).split(LF)) {
-      const key = line.trim();
-      if (removed.has(key)) continue;
-      const index = baselineText.has(key) ? baselineText.get(key) : currentText.get(key);
-      if (index === undefined) {
-        out.push(line);
+
+    for (let position = 0; position < source.length; ) {
+      const run = runs.find(
+        (candidate) =>
+          candidate.lines.length <= source.length - position &&
+          candidate.lines.every((line, offset) => trimmed[position + offset] === line),
+      );
+
+      if (!run) {
+        out.push(source[position]);
+        position += 1;
         continue;
       }
-      // A reviewed line may be a rename or a removal, so the two sides can hold
-      // a different number of lines for the same entry. Emitting each entry's
-      // marker once keeps the sides aligned.
-      if (!emitted.has(index)) {
-        out.push(marker(index));
-        emitted.add(index);
+
+      if (run.replacement !== null && !emitted.has(run.index)) {
+        out.push(run.replacement);
+        emitted.add(run.index);
       }
+      position += run.lines.length;
     }
+
     return out.join(LF);
   };
 }

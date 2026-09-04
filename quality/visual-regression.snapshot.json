@@ -109,6 +109,76 @@
       "path": "src/app/components/ChatModal.tsx",
       "normalizer": "nonVisualChatOutboxCancellation",
       "reason": "Only the failed-message cancellation persistence primitive changed from deletion to a durable cancellation tombstone; rendered content, action labels, accessibility, and topology are unchanged."
+    },
+    {
+      "path": "src/app/components/CompatibilityScreen.tsx",
+      "normalizer": "reviewedLines",
+      "reason": "Non-visual de-duplication. The stale-data banner now goes through SwipeModal's banner prop, the same path MatchScreen already used, instead of a second copy of SwipeModal's overlay declared locally. SwipeModal renders it at the identical position (absolute, top 12, left 12, right 12, zIndex 5), so the rendered result is unchanged, and it adds pointerEvents=\"box-none\" which the local copy lacked. No content, label, state topology or accessibility change.",
+      "evidence": "git diff shows one prop added and nine lines removed; SwipeModal.tsx styles.bannerOverlay carries the same five positioning values.",
+      "reviewedLines": [
+        {
+          "baseline": null,
+          "current": "banner={staleBanner}",
+          "why": "Routes the banner through SwipeModal, which owns the overlay for both sibling swipe screens."
+        },
+        {
+          "baseline": [
+            "",
+            "{staleBanner ? <View style={styles.bannerOverlay}>{staleBanner}</View> : null}"
+          ],
+          "current": null,
+          "why": "The local overlay this replaced. SwipeModal renders the same node at the same coordinates."
+        },
+        {
+          "baseline": [
+            "bannerOverlay: {",
+            "position: 'absolute',",
+            "top: 12,",
+            "left: 12,",
+            "right: 12,",
+            "zIndex: 5,",
+            "},"
+          ],
+          "current": null,
+          "why": "The duplicated positioning block. Identical to SwipeModal.tsx styles.bannerOverlay, which is now the single owner."
+        }
+      ]
+    },
+    {
+      "path": "src/app/components/MovieDetailModal.tsx",
+      "normalizer": "reviewedLines",
+      "reason": "Accessibility-only change, committed in eddbc55. The hero Pressable opens the full-screen photo preview and announced neither a role nor a name, so a screen reader user could not discover that the photo opens at all. It now carries accessibilityRole and a Turkish label. Screen reader metadata does not render, so layout, content, styling and state topology are unchanged.",
+      "evidence": "npm run check:i18n (538 keys, a11y.openPhoto present); npm run check:touch",
+      "reviewedLines": [
+        {
+          "baseline": "<Pressable onPress={() => setShowImagePreview(true)} style={styles.heroCard}>",
+          "current": [
+            "<Pressable",
+            "accessibilityLabel={t('a11y.openPhoto')}",
+            "accessibilityRole=\"button\"",
+            "onPress={() => setShowImagePreview(true)}",
+            "style={styles.heroCard}",
+            ">"
+          ],
+          "why": "Adds a role and a name to the control that opens the photo preview. No rendered change."
+        }
+      ]
+    },
+    {
+      "path": "src/app/components/DiscoveryFiltersModal.tsx",
+      "normalizer": "reviewedLines",
+      "reason": "Accessibility-only change, committed in eddbc55. The range slider's track Pressable is a pointer convenience that sat between the two properly labelled adjustable thumbs, where it became a nameless focus stop in the accessibility tree. It is now hidden from that tree; the thumbs already carry the role, value and increment actions. Screen reader metadata does not render, so the visible slider is unchanged.",
+      "evidence": "npm run check:touch; the two thumbs retain accessibilityRole=\"adjustable\" with their value and actions",
+      "reviewedLines": [
+        {
+          "baseline": null,
+          "current": [
+            "accessible={false}",
+            "importantForAccessibility=\"no-hide-descendants\""
+          ],
+          "why": "Removes a nameless focus stop between the two labelled thumbs. No rendered change."
+        }
+      ]
     }
   ],
   "runtimePixelEvidence": "Manual same-SHA device screenshots remain a release gate; this repository guard is the deterministic pre/post source golden."

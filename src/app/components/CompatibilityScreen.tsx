@@ -161,11 +161,10 @@ export default function CompatibilityScreen({
         activeQuotaKinds={['like', 'dislike', 'undo']}
         onSwipeRightUser={(user) => likeUser(user.id, 'compatibility')}
         onUndoSwipeRightUser={(user) => undoLikeUser(user.id)}
+        banner={staleBanner}
         modeTitle={t('compatibility.modeTitle')}
         modeSubtitle={t('compatibility.modeSubtitle')}
       />
-
-      {staleBanner ? <View style={styles.bannerOverlay}>{staleBanner}</View> : null}
     </View>
   );
 }
@@ -181,12 +180,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: theme.colors.background,
     paddingHorizontal: 12,
-  },
-  bannerOverlay: {
-    position: 'absolute',
-    top: 12,
-    left: 12,
-    right: 12,
-    zIndex: 5,
   },
 });
