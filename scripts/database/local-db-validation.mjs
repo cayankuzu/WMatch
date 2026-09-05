@@ -1,13 +1,15 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parsePgTapOutput } from './pg-tap-output.mjs';
 
-const configSource = readFileSync('supabase/config.toml', 'utf8');
+const validationWorkdir = process.env.WMATCH_SUPABASE_WORKDIR?.trim() || '.';
+const validationSupabaseDirectory = resolve(validationWorkdir, 'supabase');
+const configSource = readFileSync(join(validationSupabaseDirectory, 'config.toml'), 'utf8');
 const projectId = configSource.match(/^project_id\s*=\s*"([A-Za-z0-9_-]+)"\s*$/m)?.[1];
 const apiSchemasSource = configSource.match(/^schemas\s*=\s*(\[[^\r\n]+\])\s*$/m)?.[1];
 const apiSchemas = apiSchemasSource ? JSON.parse(apiSchemasSource) : [];
-const migrationVersions = readdirSync('supabase/migrations')
+const migrationVersions = readdirSync(join(validationSupabaseDirectory, 'migrations'))
   .map((file) => file.match(/^(\d{14})_.+\.sql$/)?.[1])
   .filter(Boolean)
   .sort();
@@ -208,6 +210,8 @@ function checkAdvisors() {
 
     const output = run(process.execPath, [
       join('node_modules', 'supabase', 'dist', 'supabase.js'),
+      '--workdir',
+      validationWorkdir,
       'db',
       'advisors',
       '--local',

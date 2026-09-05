@@ -132,7 +132,12 @@ export default function MovieDetailModal({ movie, onClose }: MovieDetailModalPro
             contentContainerStyle={[styles.scrollContent, { paddingBottom: bottomInset + 24 }]}
           >
             <View style={[styles.heroStage, { paddingTop: topInset + 42 }]}>
-              <Pressable onPress={() => setShowImagePreview(true)} style={styles.heroCard}>
+              <Pressable
+                accessibilityLabel={t('a11y.openPhoto')}
+                accessibilityRole="button"
+                onPress={() => setShowImagePreview(true)}
+                style={styles.heroCard}
+              >
                 <AppImage
                   contentFit="contain"
                   recyclingKey={`${activeMovie.media_type ?? 'movie'}:${activeMovie.id}:detail`}

@@ -19,6 +19,10 @@ vi.mock('@supabase/supabase-js', () => ({
   createClient: vi.fn(() => ({
     auth: {
       getSession: vi.fn(async () => ({ data: { session: null } })),
+      refreshSession: vi.fn(async () => ({
+        data: { session: { access_token: 'refreshed-token' } },
+        error: null,
+      })),
     },
   })),
 }));
@@ -31,9 +35,11 @@ vi.mock('../utils/supabase/info', () => ({
 
 import {
   fetchWithRetry,
+  refreshAuthSessionSingleFlight,
   RequestTimeoutError,
   resolveApiUrl,
   shouldUseEdgeGateway,
+  supabase,
 } from '../utils/supabase/client';
 
 function createAbortAwareFetch() {
@@ -112,5 +118,24 @@ describe('selective edge routing', () => {
     expect(() => resolveApiUrl('tmdb/trending/all/week')).toThrow(
       'API paths must start with a forward slash.',
     );
+  });
+});
+
+describe('authentication refresh coordination', () => {
+  it('coalesces concurrent refresh callers into one provider request', async () => {
+    let resolveRefresh: ((value: unknown) => void) | undefined;
+    const refreshResult = new Promise((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const refreshSession = vi.mocked(supabase.auth.refreshSession);
+    refreshSession.mockReturnValueOnce(refreshResult as ReturnType<typeof supabase.auth.refreshSession>);
+
+    const first = refreshAuthSessionSingleFlight();
+    const second = refreshAuthSessionSingleFlight();
+    expect(first).toBe(second);
+    expect(refreshSession).toHaveBeenCalledTimes(1);
+
+    resolveRefresh?.({ data: { session: { access_token: 'fresh-token' } }, error: null });
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
   });
 });

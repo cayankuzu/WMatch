@@ -35,9 +35,9 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.alpha.primary12,
+    backgroundColor: theme.alpha.brand12,
     borderWidth: 1,
-    borderColor: theme.alpha.primary18,
+    borderColor: theme.alpha.brand18,
     marginBottom: 4,
   },
   title: {

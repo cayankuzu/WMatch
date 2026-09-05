@@ -248,7 +248,7 @@ const styles = StyleSheet.create({
     right: 16,
     zIndex: 24,
     minWidth: 164,
-    borderRadius: 16,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
@@ -297,7 +297,7 @@ const styles = StyleSheet.create({
   },
   reportTitle: {
     color: theme.colors.text,
-    fontSize: 16,
+    fontSize: theme.typography.section,
     fontFamily: theme.fonts.extraBold,
   },
   reportSubtitle: {
@@ -335,20 +335,20 @@ const styles = StyleSheet.create({
   },
   detailsLabel: {
     color: theme.colors.text,
-    fontSize: 12,
+    fontSize: theme.typography.caption,
     fontFamily: theme.fonts.bold,
   },
   detailsInput: {
     minHeight: 124,
-    borderRadius: 16,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
     color: theme.colors.text,
     paddingHorizontal: 10,
     paddingVertical: 10,
-    fontSize: 12,
-    lineHeight: 20,
+    fontSize: theme.typography.roles.body.fontSize,
+    lineHeight: theme.typography.roles.body.lineHeight,
   },
   detailsCounter: {
     color: theme.colors.textSoft,

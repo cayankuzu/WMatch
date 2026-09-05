@@ -257,7 +257,12 @@ export default function ProfileCard({
                       transition={90}
                     />
                     <View style={styles.heroScrim} />
-                    <Pressable onPress={() => setShowImagePreview(true)} style={StyleSheet.absoluteFill} />
+                    <Pressable
+                      accessibilityLabel={t('a11y.openPhoto')}
+                      accessibilityRole="button"
+                      onPress={() => setShowImagePreview(true)}
+                      style={StyleSheet.absoluteFill}
+                    />
                   </View>
                 )}
               />

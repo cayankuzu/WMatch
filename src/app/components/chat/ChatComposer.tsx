@@ -103,8 +103,8 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
     color: theme.colors.text,
     paddingHorizontal: 8,
-    fontSize: theme.typography.roles.meta.fontSize,
-    lineHeight: theme.typography.roles.meta.lineHeight,
+    fontSize: theme.typography.roles.body.fontSize,
+    lineHeight: theme.typography.roles.body.lineHeight,
   },
   sendButton: {
     minWidth: theme.layout.controlMinUnified,

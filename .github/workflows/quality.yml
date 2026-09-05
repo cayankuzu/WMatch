@@ -6,9 +6,6 @@ permissions:
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - chore/aaa-mvp-feature-freeze-cloudflare-ota
 
 concurrency:
   group: quality-${{ github.workflow }}-${{ github.ref }}
@@ -16,6 +13,7 @@ concurrency:
 
 jobs:
   verify:
+    name: Quality verify
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -44,7 +42,7 @@ jobs:
       - name: Install pinned security scanners
         shell: bash
         run: |
-          go install github.com/gitleaks/gitleaks/v8@v8.30.1
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           python -m pip install --disable-pip-version-check semgrep==1.169.0
 
@@ -73,6 +71,10 @@ jobs:
           infra/cloudflare/wmatch-edge/src
           infra/cloudflare/wmatch-edge/test
           infra/cloudflare/wmatch-edge/scripts
+          infra/docker/scripts
+          infra/docker/mocks
+          infra/docker/tests
+          infra/docker/load
 
       - name: Aggregate repository release gate
         run: npm run verify:release

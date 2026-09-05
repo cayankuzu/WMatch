@@ -72,6 +72,11 @@ SHA'da başarılı `ci.yml` + `quality.yml` run'ı arar. Production ayrıca cont
 geçmişinde olmasını ve protected environment onayını zorunlu tutar. Workflow dosyasının varlığı bir
 EAS yayınının yapıldığını kanıtlamaz.
 
+2026-08-31 GitHub control-plane durumunda `development`, `preview` ve `production` environment'ları
+oluşturulmuş; `production` reviewer `cayankuzu` ve protected-branch policy ile korunmuştur. Gerekli
+secrets/vars, Expo/EAS environment/channel doğrulaması ve gerçek approval/publish run'ı bulunmadığı
+için OTA provider durumu yine **NO-GO**'dur.
+
 ## Environment ve API cutover
 
 - Preview update yalnız preview environment değerlerini; production yalnız production protected

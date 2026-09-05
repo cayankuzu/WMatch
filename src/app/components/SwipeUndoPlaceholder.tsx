@@ -278,7 +278,7 @@ const styles = StyleSheet.create({
   },
   undoCueText: {
     color: theme.colors.white,
-    fontSize: 12,
+    fontSize: theme.typography.caption,
     fontFamily: theme.fonts.extraBold,
   },
   downArrow: {
@@ -313,12 +313,12 @@ const styles = StyleSheet.create({
   },
   title: {
     color: theme.colors.text,
-    fontSize: 18,
+    fontSize: theme.typography.title,
     fontFamily: theme.fonts.extraBold,
   },
   description: {
     color: theme.colors.textMuted,
-    fontSize: 12,
+    fontSize: theme.typography.caption,
     lineHeight: 20,
     fontFamily: theme.fonts.semibold,
   },
@@ -331,7 +331,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    borderRadius: 14,
+    borderRadius: theme.radius.card,
     backgroundColor: theme.colors.surface,
     paddingHorizontal: 10,
     paddingVertical: 8,

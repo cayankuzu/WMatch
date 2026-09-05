@@ -170,19 +170,35 @@ SELECT ok(
   ),
   'conversation authorization uses exact topic segments'
 );
-SELECT is(
-  (
-    SELECT COUNT(*)
+SELECT ok(
+  EXISTS (
+    SELECT 1
     FROM pg_policies
     WHERE schemaname = 'realtime'
       AND tablename = 'messages'
-      AND policyname LIKE 'WMatch private realtime %'
-      AND COALESCE(qual, with_check, '') ILIKE '%matches%'
-      AND COALESCE(qual, with_check, '') ILIKE '%user_blocks%'
-      AND COALESCE(qual, with_check, '') ILIKE '%active%'
-  ),
-  2::BIGINT,
-  'both Realtime policies require active matches and bilateral block checks'
+      AND policyname = 'WMatch private realtime select'
+      AND qual ILIKE '%can_access_conversation_realtime%'
+      AND qual ILIKE '%can_access_presence_realtime%'
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM pg_policies
+    WHERE schemaname = 'realtime'
+      AND tablename = 'messages'
+      AND policyname = 'WMatch private realtime insert'
+      AND with_check ILIKE '%can_access_conversation_realtime%'
+      AND with_check ILIKE '%can_publish_app_presence%'
+  )
+  AND pg_get_functiondef(
+    'public.can_access_conversation_realtime(text,text,text)'::REGPROCEDURE
+  ) ILIKE ALL (ARRAY['%public.matches%', '%public.user_blocks%', '%active%'])
+  AND pg_get_functiondef(
+    'public.can_access_presence_realtime(text)'::REGPROCEDURE
+  ) ILIKE ALL (ARRAY['%public.matches%', '%public.user_blocks%', '%active%'])
+  AND pg_get_functiondef(
+    'public.can_publish_app_presence()'::REGPROCEDURE
+  ) ILIKE ALL (ARRAY['%public.matches%', '%public.user_blocks%', '%active%']),
+  'both Realtime policies delegate active-match and bilateral-block checks to audited helpers'
 );
 
 SELECT ok(

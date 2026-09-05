@@ -117,7 +117,11 @@ export const registerProfileDiscoveryRoutes = () => {
           }
         }
 
-        const payloadMap = await loadUserPayloadMap(supabase, [userId]);
+        const payloadMap = await loadUserPayloadMap(
+          supabase,
+          [userId],
+          currentUserId,
+        );
         const profile = payloadMap.get(userId);
 
         if (!profile) {
@@ -812,6 +816,7 @@ export const registerProfileDiscoveryRoutes = () => {
           movies ?? [],
           refreshedCurrentlyWatching,
           nextDiscoveryPreferences,
+          userId,
         ),
       ]);
 

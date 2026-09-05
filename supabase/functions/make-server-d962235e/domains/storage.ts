@@ -1,5 +1,16 @@
 import { MAX_PROFILE_PHOTOS } from "../../../../src/shared/constants/index.ts";
 import type { SupabaseAdminClient } from "../sharedMiddleware.ts";
+import {
+  cleanupStaleProfilePhotoQuarantine,
+  PROFILE_PHOTO_QUARANTINE_MAX_AGE_MS,
+  PROFILE_PHOTO_QUARANTINE_SEGMENT,
+} from "./profilePhotoQuarantine.ts";
+
+export {
+  cleanupStaleProfilePhotoQuarantine,
+  PROFILE_PHOTO_QUARANTINE_MAX_AGE_MS,
+  PROFILE_PHOTO_QUARANTINE_SEGMENT,
+};
 
 type DatabaseRow = Record<string, unknown>;
 
@@ -17,8 +28,6 @@ export const MAX_PROFILE_PHOTO_SIGNED_URL_CACHE_ENTRIES = 1_000;
 export const MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024;
 export const MAX_PROFILE_PHOTO_DIMENSION = 4_096;
 export const MAX_PROFILE_PHOTO_PIXELS = 16_000_000;
-export const PROFILE_PHOTO_QUARANTINE_SEGMENT = ".quarantine";
-export const PROFILE_PHOTO_QUARANTINE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const ALLOWED_PROFILE_PHOTO_MIME_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -521,38 +530,6 @@ export const finalizeValidatedProfilePhotos = async (
       );
     }
     throw error;
-  }
-};
-
-export const cleanupStaleProfilePhotoQuarantine = async (
-  supabase: SupabaseAdminClient,
-  ownerUserId: string,
-  now = Date.now(),
-) => {
-  const quarantinePath = `${ownerUserId}/${PROFILE_PHOTO_QUARANTINE_SEGMENT}`;
-  const { data, error } = await supabase.storage.from(PROFILE_PHOTOS_BUCKET)
-    .list(quarantinePath, {
-      limit: 100,
-      sortBy: { column: "created_at", order: "asc" },
-    });
-  if (error || !data) {
-    return;
-  }
-
-  const stalePaths = data.flatMap(
-    (item: { name?: string | null; created_at?: string | null }) => {
-      const createdAt = typeof item.created_at === "string"
-        ? new Date(item.created_at).getTime()
-        : Number.NaN;
-      return item.name &&
-          Number.isFinite(createdAt) &&
-          now - createdAt >= PROFILE_PHOTO_QUARANTINE_MAX_AGE_MS
-        ? [`${quarantinePath}/${item.name}`]
-        : [];
-    },
-  );
-  if (stalePaths.length > 0) {
-    await supabase.storage.from(PROFILE_PHOTOS_BUCKET).remove(stalePaths);
   }
 };
 

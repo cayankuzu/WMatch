@@ -31,7 +31,7 @@ import {
 import {
   cancelPendingChatMessage,
   enqueuePendingChatMessage,
-  listPendingChatMessages,
+  listPendingChatMessages, purgeChatOutboxForPeer,
   removePendingChatMessage,
 } from '../../services/chatOutbox';
 import {
@@ -84,7 +84,6 @@ interface ChatModalProps {
 
 const TYPING_IDLE_TIMEOUT_MS = 1800;
 const CHAT_BOTTOM_PROXIMITY_PX = 120;
-
 export default function ChatModal({
   chat,
   onClose,
@@ -132,7 +131,7 @@ export default function ChatModal({
   const olderMessagesCursorRef = useRef<string | null>(initialCachedThread?.pageInfo?.nextCursor ?? null);
   const typingIdleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const acknowledgedReadIdsRef = useRef<Set<string>>(new Set());
-  const shouldBroadcastTyping = threadChat.canSend && isTypingForPresence;
+  const shouldBroadcastTyping = threadChat.canSend && threadChat.settings.typingIndicator && isTypingForPresence;
   const {
     androidInset: androidKeyboardInset,
     dismiss: dismissComposer,
@@ -678,6 +677,7 @@ export default function ChatModal({
 
             try {
               await endChat(currentUserId, threadChat.userId);
+              await purgeChatOutboxForPeer(currentUserId, threadChat.userId);
               refreshAfterMutation();
             } catch (error) {
               restoreThreadChat(previousChat);
@@ -705,6 +705,7 @@ export default function ChatModal({
 
     try {
       await deleteChat(targetUserId, mode);
+      await purgeChatOutboxForPeer(currentUserId, targetUserId);
       onChatUpdated?.();
     } catch (error) {
       onChatRestored?.(previousChat);
@@ -785,6 +786,7 @@ export default function ChatModal({
               await unblockUser(threadChat.userId);
             } else {
               await blockUser(threadChat.userId);
+              await purgeChatOutboxForPeer(currentUserId, threadChat.userId);
             }
 
             refreshAfterMutation();

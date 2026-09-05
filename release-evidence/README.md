@@ -50,18 +50,23 @@ find "release-evidence/$CANDIDATE_SHA" -type f ! -name manifest.sha256 -print0 \
   | xargs -0 sha256sum > "release-evidence/$CANDIDATE_SHA/manifest.sha256"
 ```
 
-`.github/workflows/release-evidence.yml` clean immutable checkout üzerinde repository gates, Expo
-export, SBOM ve checksum artifact'i üretir. Workflow tanımı veya eski successful run yeni candidate
-kanıtı değildir.
+`.github/workflows/release-evidence.yml` yalnız default branch tarihindeki clean immutable checkout'u
+kabul eder. Exact SHA için en yeni başarılı push `CI`, push `Quality`, push/manual `Database validation`
+ve `Docker validation` run'larını doğrular; seçilen run kimliklerini, exact command/UTC/exit-code
+loglarını, yalnız preview-configured bundle doğrulaması olan Expo export'u,
+SBOM'ları ve checksum'ları saklar. `scripts/build-release-evidence.mjs`, template'i değiştirmeden
+candidate/native/migration identity'sini türetir, dosya hash'lerini doğrular ve gerçek
+`manifest.json` üretir. Provider/device/manual alanları otomatik olarak `passed` yapılmaz; üretilen
+repository-only manifest zorunlu olarak `NO-GO` kalır. Workflow tanımı veya eski successful run yeni
+candidate kanıtı değildir.
 
-`docs/release-readiness.md` içinde listelenen iki yerel PostgreSQL 17 replay'i, final source DB pgTAP
-üç dosya/`117/117`, DB lint/advisor, atomic nonce pgbench ve boş schema diff gerçek yerel
+`docs/release-readiness.md` içinde listelenen iki yerel PostgreSQL 17 replay'i, her iki turdaki source
+DB pgTAP dört dosya/`166/166`, DB lint/advisor, atomic nonce concurrency ve boş schema diff gerçek yerel
 sonuçlardır; working tree dirty olduğu için template alanları yine `pending` kalır. Aynı kontroller
 clean immutable candidate SHA'da checksum'lı loglara bağlanmadan manifest'te `passed` yapılmaz.
 
-Aynı sınır, SHA-256 değeri
-`f96ca69d2e264e045dc0ab53996589c4b9369ce8eeb1f45d5eec4be9002ea095` olan yerel custom dump'ın
-owner-preserving restore'u ve restored DB pgTAP üç dosya/`117/117` sonucu için de geçerlidir. Bu
+Aynı sınır, run'a özgü SHA-256 ile kaydedilen yerel custom dump'ın owner-preserving restore'u ve
+restored DB pgTAP dört dosya/`166/166` sonucu için de geçerlidir. Bu
 gerçek local drill sonucu provider PITR, Storage object restore, ölçülmüş RPO/RTO veya candidate
 manifest `restoreDrillStatus=passed` kanıtı değildir.
 

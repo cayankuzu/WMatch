@@ -14,6 +14,7 @@ export interface PendingChatMessage {
   nextAttemptAt?: string | null;
   status?: 'pending' | 'dead-letter' | 'cancelled';
   statusUpdatedAt?: string | null;
+  relationshipEpoch?: number;
 }
 
 interface StoredPendingChatMessage extends PendingChatMessage {
@@ -21,6 +22,7 @@ interface StoredPendingChatMessage extends PendingChatMessage {
   nextAttemptAt: string | null;
   status: 'pending' | 'dead-letter' | 'cancelled';
   statusUpdatedAt: string | null;
+  relationshipEpoch: number;
 }
 
 const OUTBOX_VERSION = 1;
@@ -32,7 +34,44 @@ const OUTBOX_RETRY_BASE_MS = 1_000;
 const OUTBOX_RETRY_MAX_MS = 15 * 60 * 1000;
 const mutationFlights = new Map<string, Promise<unknown>>();
 const flushFlights = new Map<string, Promise<number>>();
+const activeDeliveryControllers = new Map<string, AbortController>();
 const SAFE_KEY_PART_PATTERN = /^[\w.-]{8,120}$/;
+
+function peerKey(userId: string, peerUserId: string) {
+  return `${userId}:${peerUserId}`;
+}
+
+function peerEpochKey(userId: string, peerUserId: string) {
+  return `wmatch.chat-outbox-peer-epoch.v${OUTBOX_VERSION}.${userId}.${peerUserId}`;
+}
+
+function peerEpochIndexKey(userId: string) {
+  return `wmatch.chat-outbox-peer-epoch-index.v${OUTBOX_VERSION}.${userId}`;
+}
+
+async function readPeerEpoch(userId: string, peerUserId: string) {
+  const rawValue = await SecureStore.getItemAsync(peerEpochKey(userId, peerUserId));
+  const parsedValue = rawValue == null ? 0 : Number(rawValue);
+  return Number.isSafeInteger(parsedValue) && parsedValue >= 0 ? parsedValue : 0;
+}
+
+async function readPeerEpochIndex(userId: string) {
+  const rawValue = await SecureStore.getItemAsync(peerEpochIndexKey(userId));
+  if (!rawValue) {
+    return [];
+  }
+
+  try {
+    const parsedValue = JSON.parse(rawValue) as unknown;
+    return Array.isArray(parsedValue)
+      ? [...new Set(parsedValue.filter((value): value is string => (
+          typeof value === 'string' && SAFE_KEY_PART_PATTERN.test(value)
+        )))]
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 function validatePendingMessage(message: PendingChatMessage): StoredPendingChatMessage {
   const normalizedText = message.text.trim();
@@ -67,6 +106,10 @@ function validatePendingMessage(message: PendingChatMessage): StoredPendingChatM
     && Number.isFinite(new Date(message.statusUpdatedAt).getTime())
     ? message.statusUpdatedAt
     : null;
+  const relationshipEpoch = Number.isSafeInteger(message.relationshipEpoch)
+    && Number(message.relationshipEpoch) >= 0
+    ? Number(message.relationshipEpoch)
+    : 0;
 
   return {
     ...message,
@@ -75,6 +118,7 @@ function validatePendingMessage(message: PendingChatMessage): StoredPendingChatM
     nextAttemptAt,
     status,
     statusUpdatedAt,
+    relationshipEpoch,
   };
 }
 
@@ -172,12 +216,14 @@ export function listPendingChatMessages(userId: string, peerUserId?: string) {
 
 export function enqueuePendingChatMessage(userId: string, message: PendingChatMessage) {
   return withMutationLock(userId, async () => {
+    const relationshipEpoch = await readPeerEpoch(userId, message.peerUserId);
     const validatedMessage = validatePendingMessage({
       ...message,
       retryCount: 0,
       nextAttemptAt: null,
       status: 'pending',
       statusUpdatedAt: new Date().toISOString(),
+      relationshipEpoch,
     });
     const entries = await readPendingMessagesUnlocked(userId);
     const nextEntries = [
@@ -282,15 +328,35 @@ export function flushPendingChatMessages(
         break;
       }
 
+      const relationshipEpoch = await readPeerEpoch(userId, pending.peerUserId);
+      if (relationshipEpoch !== pending.relationshipEpoch) {
+        await removePendingChatMessage(userId, pending.clientMessageId);
+        continue;
+      }
+
       try {
-        const message = await sendMessage(pending.peerUserId, pending.text, pending.clientMessageId);
+        const controller = new AbortController();
+        const deliveryKey = peerKey(userId, pending.peerUserId);
+        activeDeliveryControllers.set(deliveryKey, controller);
+        const message = await sendMessage(
+          pending.peerUserId,
+          pending.text,
+          pending.clientMessageId,
+          controller.signal,
+        );
         await removePendingChatMessage(userId, pending.clientMessageId);
         onSent?.(pending, message);
         sentCount += 1;
       } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          await removePendingChatMessage(userId, pending.clientMessageId);
+          continue;
+        }
         await markPendingChatMessageFailure(userId, pending.clientMessageId);
         telemetry.captureException(error, { scope: 'chat.outbox_delivery' });
         break;
+      } finally {
+        activeDeliveryControllers.delete(peerKey(userId, pending.peerUserId));
       }
     }
 
@@ -308,6 +374,42 @@ export function flushPendingChatMessages(
   return next;
 }
 
+export function purgeChatOutboxForPeer(userId: string, peerUserId: string) {
+  if (!SAFE_KEY_PART_PATTERN.test(userId) || !SAFE_KEY_PART_PATTERN.test(peerUserId)) {
+    return Promise.reject(new Error('Invalid chat outbox relationship identifier.'));
+  }
+
+  activeDeliveryControllers.get(peerKey(userId, peerUserId))?.abort();
+
+  return withMutationLock(userId, async () => {
+    const currentEpoch = await readPeerEpoch(userId, peerUserId);
+    const nextEpoch = currentEpoch >= Number.MAX_SAFE_INTEGER ? 1 : currentEpoch + 1;
+
+    // Persist the tombstone before deleting entries. A crash can leave stale rows,
+    // but their prior epoch can never be replayed after a block/end/delete action.
+    await SecureStore.setItemAsync(peerEpochKey(userId, peerUserId), String(nextEpoch));
+    const epochPeers = await readPeerEpochIndex(userId);
+    await SecureStore.setItemAsync(
+      peerEpochIndexKey(userId),
+      JSON.stringify([...new Set([...epochPeers, peerUserId])]),
+    );
+
+    const entries = await readPendingMessagesUnlocked(userId);
+    const removedIds = entries
+      .filter((entry) => entry.peerUserId === peerUserId)
+      .map((entry) => entry.clientMessageId);
+    const removedIdSet = new Set(removedIds);
+    const retainedIds = entries
+      .filter((entry) => !removedIdSet.has(entry.clientMessageId))
+      .map((entry) => entry.clientMessageId);
+
+    await SecureStore.setItemAsync(indexKey(userId), JSON.stringify(retainedIds));
+    await Promise.all(
+      removedIds.map((id) => SecureStore.deleteItemAsync(messageKey(userId, id))),
+    );
+  });
+}
+
 export function purgeChatOutbox(userId: string | null | undefined) {
   if (!userId) {
     return Promise.resolve();
@@ -315,7 +417,16 @@ export function purgeChatOutbox(userId: string | null | undefined) {
 
   return withMutationLock(userId, async () => {
     const ids = await readIndex(userId);
-    await Promise.all(ids.map((id) => SecureStore.deleteItemAsync(messageKey(userId, id))));
+    const epochPeers = await readPeerEpochIndex(userId);
+    epochPeers.forEach((peerUserId) => {
+      activeDeliveryControllers.get(peerKey(userId, peerUserId))?.abort();
+      activeDeliveryControllers.delete(peerKey(userId, peerUserId));
+    });
+    await Promise.all([
+      ...ids.map((id) => SecureStore.deleteItemAsync(messageKey(userId, id))),
+      ...epochPeers.map((peerUserId) => SecureStore.deleteItemAsync(peerEpochKey(userId, peerUserId))),
+    ]);
     await SecureStore.deleteItemAsync(indexKey(userId));
+    await SecureStore.deleteItemAsync(peerEpochIndexKey(userId));
   });
 }

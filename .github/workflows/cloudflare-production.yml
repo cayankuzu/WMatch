@@ -1,6 +1,7 @@
 name: Cloudflare Worker Production
 
 permissions:
+  actions: read
   contents: read
 
 on:
@@ -68,8 +69,68 @@ jobs:
       - name: Checkout immutable source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          fetch-depth: 0
           persist-credentials: false
           ref: ${{ inputs.operation == 'rollout' && inputs.target_commit_sha || github.sha }}
+
+      - name: Require successful same-SHA CI, Quality, and database gates
+        if: ${{ inputs.operation != 'rollback' }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXPECTED_SHA: ${{ inputs.operation == 'rollout' && inputs.target_commit_sha || github.sha }}
+          GH_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::The production candidate must be a lowercase full commit SHA"
+            exit 1
+          }
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA" || {
+            echo "::error::Checked-out source does not match the requested candidate SHA"
+            exit 1
+          }
+          test -z "$(git status --porcelain --untracked-files=all)" || {
+            echo "::error::Production verification requires a clean tree"
+            exit 1
+          }
+
+          require_successful_workflow() {
+            workflow_file="$1"
+            allowed_events="$2"
+            response="$(curl --fail --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_READ_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_file}/runs?head_sha=${EXPECTED_SHA}&per_page=100")"
+
+            jq -e \
+              --arg sha "$EXPECTED_SHA" \
+              --arg branch "$DEFAULT_BRANCH" \
+              --argjson allowed_events "$allowed_events" '
+                [
+                  .workflow_runs[]?
+                  | select(
+                      .head_sha == $sha
+                      and .head_branch == $branch
+                      and (.event as $event | $allowed_events | index($event) != null)
+                    )
+                ]
+                | sort_by([.run_number // 0, .run_attempt // 0, .created_at // "", .id // 0])
+                | last
+                | .status == "completed" and .conclusion == "success"
+              ' <<< "$response" >/dev/null || {
+                echo "::error::The newest ${workflow_file} default-branch run for ${EXPECTED_SHA} is not successful"
+                exit 1
+              }
+          }
+
+          # Push-only CI/Quality runs avoid accepting a PR synthetic merge checkout as release evidence.
+          require_successful_workflow ci.yml '["push"]'
+          require_successful_workflow quality.yml '["push"]'
+          # Path-filtered DB validation may be run manually on the exact protected candidate SHA.
+          require_successful_workflow database-validation.yml '["push", "workflow_dispatch"]'
+          # Docker validation is also path-filtered and supports an exact-SHA manual run.
+          require_successful_workflow docker-validation.yml '["push", "workflow_dispatch"]'
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -188,7 +249,7 @@ jobs:
               [[ "$INPUT_TARGET_VERSION_ID" =~ $uuid ]] || { echo "::error::A valid target_version_id is required"; exit 1; }
               [[ "$INPUT_BASELINE_VERSION_ID" =~ $uuid ]] || { echo "::error::A valid baseline_version_id is required"; exit 1; }
               [[ "$INPUT_TARGET_VERSION_ID" != "$INPUT_BASELINE_VERSION_ID" ]] || { echo "::error::Target and baseline must differ"; exit 1; }
-              [[ "$INPUT_TARGET_COMMIT_SHA" =~ $sha ]] || { echo "::error::A full target_commit_sha is required"; exit 1; }
+              [[ "$INPUT_TARGET_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::A lowercase full target_commit_sha is required"; exit 1; }
               [[ "$INPUT_PERCENTAGE" =~ ^(5|25|50|100)$ ]] || { echo "::error::Invalid rollout percentage"; exit 1; }
               [[ "$INPUT_OBSERVABILITY_URL" =~ ^https://[^[:space:]]{1,500}$ ]] || { echo "::error::An HTTPS observability_evidence_url is required"; exit 1; }
               [[ "$INPUT_BUDGET_URL" =~ ^https://[^[:space:]]{1,500}$ ]] || { echo "::error::An HTTPS budget_evidence_url is required"; exit 1; }
@@ -304,14 +365,64 @@ jobs:
         if: ${{ inputs.operation == 'rollout' }}
         run: |
           set -euo pipefail
-          if ! curl --fail --silent --show-error --max-time 10 --retry 2 --max-filesize 65536 \
-            --output "$RUNNER_TEMP/production-health.json" \
-            --dump-header "$RUNNER_TEMP/production-health-headers.txt" \
-            "$EDGE_BASE_URL/health" || \
-             ! grep -Eiq '^cache-control:.*no-store' "$RUNNER_TEMP/production-health-headers.txt"; then
+          worker_name="$(node -e '
+            const fs = require("node:fs");
+            const config = JSON.parse(fs.readFileSync("wrangler.jsonc", "utf8"));
+            process.stdout.write(config.env.production.name);
+          ')"
+          [[ "$worker_name" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || {
+            echo "::error::Unable to resolve the production Worker name"
+            exit 1
+          }
+          override_header="${worker_name}=\"${INPUT_TARGET_VERSION_ID}\""
+          smoke_passed=false
+
+          for attempt in 1 2 3 4 5; do
+            if curl --fail --silent --show-error --max-time 10 --max-filesize 65536 \
+              --header "Cloudflare-Workers-Version-Overrides: ${override_header}" \
+              --output "$RUNNER_TEMP/production-health.json" \
+              --dump-header "$RUNNER_TEMP/production-health-headers.txt" \
+              "$EDGE_BASE_URL/health"; then
+              served_commit="$(awk -F ': *' '
+                tolower($1) == "x-wmatch-edge-version" {
+                  sub(/\r$/, "", $2);
+                  print $2;
+                  exit;
+                }
+              ' "$RUNNER_TEMP/production-health-headers.txt")"
+
+              if [[ "$served_commit" == "$INPUT_TARGET_COMMIT_SHA" ]] \
+                && grep -Eiq '^cache-control:.*no-store' "$RUNNER_TEMP/production-health-headers.txt" \
+                && jq -e '
+                  type == "object"
+                  and .ok == true
+                  and .schemaReady == true
+                  and (.apiVersion | type == "string" and length > 0)
+                  and (.release | type == "string" and length > 0)
+                  and (.requiredSchema | type == "string" and length > 0)
+                  and (.requestId | type == "string" and length > 0)
+                ' "$RUNNER_TEMP/production-health.json" >/dev/null; then
+                smoke_passed=true
+                break
+              fi
+
+              echo "Target smoke attempt ${attempt} served commit '${served_commit:-missing}'"
+            fi
+            sleep 2
+          done
+
+          jq -n \
+            --arg workerName "$worker_name" \
+            --arg versionId "$INPUT_TARGET_VERSION_ID" \
+            --arg commitSha "$INPUT_TARGET_COMMIT_SHA" \
+            --argjson passed "$smoke_passed" \
+            '{workerName: $workerName, targetVersionId: $versionId, targetCommitSha: $commitSha, passed: $passed}' \
+            > "$RUNNER_TEMP/production-smoke-target.json"
+
+          if [[ "$smoke_passed" != "true" ]]; then
             npx wrangler versions deploy "${INPUT_BASELINE_VERSION_ID}@100%" \
               --env production \
-              --message "automatic rollback after failed ${INPUT_PERCENTAGE}% health smoke for ${INPUT_TARGET_COMMIT_SHA}" \
+              --message "automatic rollback after target-version smoke failed at ${INPUT_PERCENTAGE}% for ${INPUT_TARGET_COMMIT_SHA}" \
               --yes \
               2>&1 | tee "$RUNNER_TEMP/production-automatic-rollback.txt"
             npx wrangler deployments status --env production --json > "$RUNNER_TEMP/production-rollback-after.json"
@@ -351,6 +462,7 @@ jobs:
             echo "### Cloudflare production evidence"
             echo "- Operation: \`$OPERATION\`"
             echo "- Workflow commit: \`$GITHUB_SHA\`"
+            echo "- Target commit: \`${INPUT_TARGET_COMMIT_SHA:-not-applicable}\`"
             echo "- Previous primary: \`${{ steps.before.outputs.primary_id || 'unavailable' }}\`"
             echo "- Uploaded version: \`${{ steps.upload.outputs.version_id || 'not-applicable' }}\`"
             echo "- Requested target: \`${INPUT_TARGET_VERSION_ID:-not-applicable}\`"
@@ -364,7 +476,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: cloudflare-production-${{ inputs.operation }}-${{ github.sha }}-${{ github.run_attempt }}
+          name: cloudflare-production-${{ inputs.operation }}-${{ inputs.target_commit_sha || github.sha }}-workflow-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/production-*.json
             ${{ runner.temp }}/production-*.txt

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parsePgTapOutput } from '../scripts/database/pg-tap-output.mjs';
+import { normalizeSupabaseSchemaDiff } from '../infra/docker/scripts/lib.mjs';
 
 const workflow = readFileSync('.github/workflows/database-validation.yml', 'utf8');
 const localDbScript = readFileSync('scripts/database/local-db-validation.mjs', 'utf8');
@@ -30,6 +31,9 @@ describe('database validation workflow', () => {
     expect(localDbScript).toContain("'--type'");
     expect(localDbScript).toContain("'--level'");
     expect(localDbScript).toContain("'--fail-on'");
+    expect(localDbScript).toMatch(
+      /supabase\.js'[\s\S]*?'--workdir',[\s\S]*?validationWorkdir,[\s\S]*?'db',[\s\S]*?'advisors'/,
+    );
     expect(localDbScript).toContain('ALTER ROLE postgres SET pgrst.db_schemas');
     expect(localDbScript).toContain('ALTER ROLE postgres RESET pgrst.db_schemas');
     expect(workflow).toContain('npm run check:db:exposure');
@@ -79,5 +83,19 @@ describe('restored pgTAP output parsing', () => {
       .toThrow(/exactly one plan/);
     expect(() => parsePgTapOutput('1..2\nok 1 - first\nok 1 - duplicate\n', 'numbers.sql'))
       .toThrow(/numbering is invalid/);
+  });
+});
+
+describe('Supabase schema diff output parsing', () => {
+  it('accepts empty plain-text and JSON diff output', () => {
+    expect(normalizeSupabaseSchemaDiff('')).toBe('');
+    expect(normalizeSupabaseSchemaDiff('{"diff":"","file":null}')).toBe('');
+  });
+
+  it('preserves SQL drift from current and legacy CLI formats', () => {
+    expect(normalizeSupabaseSchemaDiff('{"diff":"alter table public.profiles add x text;"}'))
+      .toBe('alter table public.profiles add x text;');
+    expect(normalizeSupabaseSchemaDiff('alter table public.profiles add x text;'))
+      .toBe('alter table public.profiles add x text;');
   });
 });

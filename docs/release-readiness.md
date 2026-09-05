@@ -1,9 +1,19 @@
 # WMatch AAA-MVP release readiness
 
-Değerlendirme tarihi: 2026-08-30
+Değerlendirme tarihi: 2026-09-03
 Baseline SHA: `b8ff52ac41eda5f6ef1e43472784d794328f7050`
-Candidate SHA: **henüz immutable/clean commit olarak sabitlenmedi**
+Candidate SHA: bu raporu taşıyan `chore/aaa-mvp-hardening-docker-cloudflare-ota-push` commit'i.
+Aşağıdaki yerel komut sonuçları tam olarak bu içerik üzerinde alınmıştır; immutable same-SHA
+artifact'i yalnız aynı commit push edildikten sonra `CI`, `Quality`, `Database validation`,
+`Docker validation` ve `Release evidence` workflow'ları çalışınca oluşur.
 Karar: **NO-GO**
+
+> **2026-09-04 UI/UX ve pazarlama geçişi.** Bu tarihten sonra beş satır (1, 10, 14, 19, 32) yeni
+> kanıtla güncellendi. Değişen tek şey **statik** kanıt: ölçülen kontrast guard'ı, tip merdiveni
+> onarımı, ekran/durum matrisi ve pazarlama paketi. Hiçbir puan yükseltilmedi ve hiçbir satır
+> `NO-GO`'dan çıkmadı — cihaz, provider ve remote CI kanıtı hâlâ yok. Ayrıntı:
+> `docs/audit/ui-ux-contrast-audit.md`, `docs/audit/ui-typography-hierarchy-audit.md`,
+> `docs/audit/ui-screen-state-matrix.md`, `docs/marketing/README.md`.
 
 Bu rapor repository implementasyonunu dış/runtime kanıtından ayırır. Eski `1.0.50` Android
 `versionCode 51` ve iOS `buildNumber 53` artifact/TestFlight kanıtları tarihsel olarak geçerlidir,
@@ -24,26 +34,52 @@ ancak yeni OTA-capable Android `53`/iOS `55` candidate'ını veya yeni migration
   republish etmez. Aynı SHA'yı production environment ile yeniden bundle edip production'a yayınlar.
 - `20260830120000_security_privacy_closures.sql` email enumeration RPC'sini service-role'a kapatır,
   signup photo input'unu boş başlatır, message/report tablolarını service boundary yapar, moderation
-  idempotency/SLA/audit/ops RPC'si ve Realtime active-match/no-block koşullarını ekler.
+  idempotency/SLA/audit/ops RPC'si ve Realtime active-match/no-block koşullarını ekler. Current
+  forward-only target ayrıca `20260831153000_chat_privacy_push_invariants.sql` migration'ını içerir;
+  bu migration yerel izole stack'te iki kez temiz replay edildi, staging/production apply kanıtı
+  henüz yoktur.
+- `infra/docker/` altında ölçülü, mobil runtime içermeyen bir doğrulama katmanı vardır: Supabase CLI
+  local stack üzerinden migration replay/RLS/dump-restore, deterministic TMDB ve push mock'ları,
+  Mailpit SMTP contract'ı, Toxiproxy fault injection ve k6 provider smoke. `test`, `resilience` ve
+  `load` profillerinin üçü de bu tree'de exit 0 ile geçti; hostta orphan compose container/network
+  kalmadı. Docker production mimarisinin source of truth'u değildir; Worker Wrangler ile,
+  mobil binary EAS ile üretilir.
 - Hesap silme mevcut job'u saved stage'den devam ettiren ayrı modüle ve worker-secret-only resume
   route'una sahiptir. Mobil başarıdan sonra local auth/cache/outbox/private image memory temizlenir.
-- İzole PostgreSQL 17 stack'inde 44/44 migration'ın ilk apply'i, ardından
-  `supabase db reset --no-seed` ile ikinci full replay geçti. Final source DB'de üç pgTAP dosyasındaki
-  `117/117` test geçti; `public,storage,realtime` migration-to-local diff'i boştur.
+- Güncel dirty-tree kontrolde izole PostgreSQL 17 stack'inde 45/45 migration'ın ilk apply'i, ardından
+  `supabase db reset --local --no-seed` ile ikinci full replay geçti. Her iki turda da dört pgTAP
+  dosyasındaki `166/166` test geçti; `public,storage,realtime` migration-to-local diff'i boştur.
 - `public,storage` error-level DB lint geçti. `public,storage,realtime` full lint'teki tek bulgu,
   vendor stock `realtime.apply_rls` içindeki dynamic `EXECUTE` false-positive'idir. Dört redundant
   read-deny policy ve duplicate `currently_watching` index cleanup'ından sonra
   `db advisors --type all --level warn --fail-on warn` sıfır issue ile geçti.
 - Atomic nonce concurrency pgbench'i 32/32 transaction ve sıfır failure ile geçti: tam olarak bir
   `true`, 31 `false` ve tek nonce satırı oluştu.
-- Yerel custom-format dump (`SHA-256 f96ca69d2e264e045dc0ab53996589c4b9369ce8eeb1f45d5eec4be9002ea095`)
-  owner metadata korunarak temiz `template0` DB'ye restore edildi; schema `20260830120000`, 28 public
-  tablo, 88 public index, 27 RLS tablo ve restored DB pgTAP üç dosya/`117/117` doğrulandı.
-- Bu sonuçların tamamı local dirty-tree environment'a aittir; staging/production apply, immutable
-  same-SHA evidence, provider PITR, Storage object restore veya ölçülmüş RPO/RTO değildir.
+- Yerel custom-format dump run başına hesaplanan SHA-256 ile kaydedildi (`pg_dump` custom formatı
+  run metadata taşıdığı için digest run'a özgüdür) ve owner metadata korunarak temiz `template0`
+  DB'ye restore edildi; schema `20260831153000`, 28 public
+  tablo, 89 public index, 27 RLS tablo ve restored DB pgTAP dört dosya/`166/166` doğrulandı.
+- Bu sonuçların tamamı `20260831153000` migration'ını içeren local dirty-tree sonuçlarıdır; staging/
+  production apply'ı, immutable same-SHA evidence, provider PITR, Storage object restore veya
+  ölçülmüş RPO/RTO değildir.
 - Aynı SHA staging DB/RLS, imzalı artifact, Android/iOS cihaz, load, Sentry/alert, provider PITR/
   Storage restore,
   moderation operasyonu, OTA rollout/rollback ve store kanıtları henüz yoktur.
+- Cloudflare production workflow'u exact default-branch SHA için en yeni başarılı push `CI`, push
+  `Quality`, push/manual `Database validation` ve `Docker validation` run'larını zorunlu tutar.
+  Rollout smoke, Cloudflare version
+  override ile hedef Worker UUID'sini çağırır ve `x-wmatch-edge-version` değerini tam source SHA ile
+  eşleştirir; bu kontrolün gerçek production run kanıtı henüz yoktur.
+- Release-evidence workflow'u temiz source identity, upstream gate run'ları, komut logları, SBOM'lar,
+  preview-configured Expo export doğrulama checksum'ları ve dinamik migration identity'den doğrulanan
+  `manifest.json` üretir; bunları production bundle veya signed artifact kanıtı saymaz.
+  Provider/device/manual alanları otomatik olarak tamamlanmaz ve karar `NO-GO` kalır.
+- GitHub API denetiminde `development`, `preview`, `production`, `cloudflare-preview` ve
+  `cloudflare-production` environment'ları oluşturuldu. `production` ile `cloudflare-production`
+  `cayankuzu` required reviewer ve protected-branch deployment policy kullanır. Gerekli environment
+  secrets/vars hâlâ eksiktir. `main` için strict `CI verify` + `Quality verify` required checks,
+  admin enforcement, conversation resolution ve force-push/delete engeli aktiftir; bu kontroller
+  provider deploy veya approval run kanıtı değildir.
 
 ## 2. Başlangıç/final feature karşılaştırması
 
@@ -70,6 +106,11 @@ oluştuktan sonra aynı guard tekrar çalıştırılmadan bu sonuç release kan�
 
 - Config/native/dependency: `.env.example`, `app.json`, `eas.json`, `package.json`,
   `package-lock.json`, `deno.lock`, `.npmrc`, Android manifest/Gradle/string kaynakları.
+  Expo SDK 57 patch hizalaması (`expo`, `expo-asset`, `expo-dev-client`, `expo-font`,
+  `expo-image`, `expo-image-manipulator`, `expo-image-picker`, `expo-linking`,
+  `expo-location`, `expo-notifications`, `expo-secure-store`, `expo-updates`) ve
+  `@xmldom/xmldom` için `@expo/plist`/`plist` scope'lu override'lar bu SHA'da uygulandı;
+  ikisi de `NATIVE_BUILD_REQUIRED` sınıfındadır.
 - CI/CD: `.github/workflows/ci.yml`, `quality.yml`, `database-validation.yml`,
   `cloudflare-preview.yml`, `cloudflare-production.yml`, `eas-update-preview.yml`,
   `eas-update-production.yml` ve `release-evidence.yml`.
@@ -77,20 +118,35 @@ oluştuktan sonra aynı guard tekrar çalıştırılmadan bu sonuç release kan�
   `src/services/tmdb.ts`, `src/services/telemetry.ts`, `src/services/imageCache.ts`,
   `src/app/components/ui/AppImage.tsx` ve `src/context/AuthContext.tsx`.
 - Supabase Edge/DB: `supabase/functions/make-server-d962235e/` altındaki runtime, shared middleware,
-  route registry, domain modülleri, origin HMAC ve hesap silme kodları; generated type/test güncellemeleri;
-  `supabase/migrations/20260830120000_security_privacy_closures.sql`.
+  route registry, domain modülleri (`privacy`, `pushTokens`, `pushDeliveryPolicy`,
+  `notificationOutbox`, `profilePhotoQuarantine` dahil), origin HMAC ve hesap silme kodları;
+  generated type/test güncellemeleri;
+  `supabase/migrations/20260830120000_security_privacy_closures.sql` ve
+  `supabase/migrations/20260831153000_chat_privacy_push_invariants.sql`.
 - Cloudflare: `infra/cloudflare/wmatch-edge/` içindeki Worker kaynakları, testler, Wrangler config ve
   release-evidence araçları.
+- Docker doğrulama katmanı: `infra/docker/` (compose, `Dockerfile.tooling`, deterministic TMDB/push
+  mock'ları, Toxiproxy resilience ve k6 load profilleri, profile script'leri) ile
+  `.github/workflows/docker-validation.yml`; mobil runtime container'a taşınmaz.
 - Guard/test/evidence: `scripts/check-*.mjs`, `scripts/guards/`, `scripts/security/`, `.gitleaks.toml`,
   `quality/`, `release-evidence/`, `.maestro/` ve ilgili `tests/` dosyaları.
 - Operasyon/dokümantasyon: `docs/` altındaki feature freeze, veri/network, Cloudflare, OTA, offline,
-  gözlemlenebilirlik, güvenlik, moderation, restore, hesap silme, manuel adım ve release raporları.
+  gözlemlenebilirlik, güvenlik, moderation, restore, hesap silme, push sözleşmesi/operasyonları,
+  manuel adım ve release raporları.
 
 Bu liste dirty working tree'nin gruplandırılmış fotoğrafıdır; immutable candidate commit oluşmadan
 nihai release değişiklik listesi değildir.
 
 ## 5. Mevcut akış güçlendirmeleri ve gerekçeleri
 
+- **Ağ taşıma katmanı:** Release Android manifest'i artık cleartext trafiği açıkça reddeder (Android
+  projesi repo'da olduğu için flag'in sahibi manifest'tir; Expo config şemasında böyle bir alan
+  yoktur ve parity guard eklenmesini engeller), debug varyantları yerel Metro için explicit
+  `tools:replace` override'ını korur ve
+  parity guard'ı iOS ATS'in arbitrary load'a açılmasını fail-closed engeller. Sertifika pinning'i
+  `docs/cloudflare-threat-model.md` içinde gerekçeli biçimde kabul edilmiş risk olarak
+  belgelenmiştir; amaç provider sertifika rotasyonunda OTA ile düzeltilemeyen bir kesinti riski
+  yaratmadan MITM yüzeyini daraltmaktır.
 - **Auth/signup:** Email availability erişimi service boundary'ye kapatıldı ve signup fotoğrafı boş
   başlatıldı; amaç enumeration ve doğrulanmamış dış fotoğraf taşıma riskini azaltmaktır.
 - **Profil/fotoğraf:** Dış URL doğrulaması, owner-scoped cleanup ve private görseller için memory-only
@@ -115,8 +171,9 @@ sınırlandırılmıştır.
 
 ## 6. Supabase değişiklikleri ve deploy durumu
 
-- Forward-only `20260830120000_security_privacy_closures.sql` mevcut; staging/production apply ve RLS
-  attack kanıtı henüz yoktur.
+- Forward-only `20260830120000_security_privacy_closures.sql` ve current target
+  `20260831153000_chat_privacy_push_invariants.sql` mevcuttur; son migration için clean replay,
+  staging/production apply ve RLS/IDOR attack kanıtı henüz yoktur.
 - Email availability RPC anon/auth'tan revoke edilip service-role'a bırakıldı; gerçek public
   enumeration saldırı testi bekliyor.
 - Signup metadata'sından fotoğraf kabul edilmiyor; gerçek signup/upload/finalize testi bekliyor.
@@ -131,9 +188,10 @@ sınırlandırılmıştır.
   kanıtı yoktur.
 - Hesap silme saved-stage resume ve local purge uygular; fixture tabanlı provider-safe resume drill'i
   bekliyor.
-- İzole PostgreSQL 17 doğrulamasında 44/44 ilk apply ve ikinci full replay geçti; source pgTAP üç
-  dosya/`117/117`, boş `public,storage,realtime` diff ve warn-level advisor sıfır issue verdi. Bunlar
-  dirty-tree yerel sonuçlardır, staging/production deploy kanıtı değildir.
+- Güncel izole PostgreSQL 17 doğrulamasında 45/45 ilk apply ve ikinci full replay geçti; her iki turda
+  source pgTAP dört dosya/`166/166`, boş `public,storage,realtime` diff ve warn-level advisor sıfır
+  issue verdi. Bunlar `20260831153000` dahil dirty-tree yerel sonuçlarıdır; immutable candidate SHA
+  veya staging/production deploy kanıtı değildir.
 
 Production DB resetlenmez; migration geri alınmaz veya history rewrite edilmez. Uyumsuzlukta önce
 trafik/cutover geri alınır, sonra forward fix uygulanır. Veri restore ayrı onaylı DR olayıdır.
@@ -152,8 +210,10 @@ trafik/cutover geri alınır, sonra forward fix uygulanır. Veri restore ayrı o
 - D1, KV, R2, Queues veya Pages eklenmedi. Worker yeni bir veri deposu ya da ikinci business-logic
   kaynağı değildir.
 - Preview/prod workflow'ları immutable version ve onaylı `5% -> 25% -> 50% -> 100%` rollout ile
-  known-good sürüme rollback tanımlar. Stable `api.*`, WAF, secrets, deployment ve same-SHA canary
-  kanıtları henüz yoktur; bu nedenle Cloudflare runtime durumu **NO-GO**'dur.
+  known-good sürüme rollback tanımlar. Production deploy exact-SHA CI/Quality/DB run'larını arar;
+  canary hedef UUID'yi version override ile çağırıp response commit header'ını doğrular. Stable
+  `api.*`, WAF, secrets, deployment ve same-SHA canary run kanıtları henüz yoktur; bu nedenle
+  Cloudflare runtime durumu **NO-GO**'dur.
 
 ## 8. OTA/build sonucu ve sınıflandırması
 
@@ -172,34 +232,41 @@ trafik/cutover geri alınır, sonra forward fix uygulanır. Veri restore ayrı o
 
 ## 9. Çalıştırılan komutlar ve gerçek test sonuçları
 
-Aşağıdaki sonuçlar 2026-08-30 tarihli dirty working tree'ye aittir. Candidate SHA henüz sabit olmadığı
-için release-evidence manifest'inde `passed` sayılamaz; clean immutable SHA'da yeniden çalıştırılıp
-checksum'lı log olarak saklanmalıdır.
+Aşağıdaki sonuçlar `20260831153000` migration'ı, Docker doğrulama katmanı ve push hardening'i içeren
+güncel dirty working tree'de gerçekten çalıştırılmıştır. Candidate SHA henüz sabit olmadığı için
+current release-evidence manifest'inde `passed` sayılamaz; aynı zincir clean immutable SHA'da
+yeniden çalıştırılıp checksum'lı log olarak saklanmalıdır.
 
 - `git diff --check` ve `npm run format:check`: PASS.
 - `npm run lint`: PASS; source-quality bütçeleri içinde.
 - `npm run check:feature-surface`: PASS; 6 tab, 13 screen, 12 modal, 2 sheet, 41 Edge route, 28 tablo;
   reviewed internal allowlist tam olarak bir route ve iki tablo.
-- Focused feature/OTA: iki dosya, 15 test PASS.
-- Dependency-direction ve DB-workflow guard testleri: iki dosya, 13 test PASS. Architecture guard 181
-  dosyada 767 iç import kenarını doğruladı; yalnız mevcut iki tam eşleşmeli `shared -> service`
+- `npm run check:audit`: PASS. Yeni `@xmldom/xmldom` advisory'si (GHSA-6gmq-8vp8-gcm6) scope'lu
+  override ile kapatıldı; geriye yalnız daha önce doğrulanmış, runtime'a ulaşmayan Metro-only
+  `image-size` istisnası kaldı.
+- `npm run check:licenses`: PASS; 983 paket.
+- `npm run check:touch`: PASS; explicit interactive ölçüler 48 dp + hitSlop.
+- `npm run check:visual-regression`: PASS; 32 exact ve iki normalized surface baseline ile eşleşti.
+- `npx expo install --check` ve `npm run doctor`: PASS; Expo Doctor 20/20.
+- Dependency-direction ve DB-workflow guard testleri PASS. Architecture guard 193
+  dosyada 788 iç import kenarını doğruladı; yalnız mevcut iki tam eşleşmeli `shared -> service`
   legacy kenarı allowlist'tedir ve yeni ters bağımlılıklar fail closed olur.
 - `npm run check:native-parity`: PASS; runtime `1.0.51`, Android 53, iOS 55 ve EAS update URL eşleşti.
-- `npm run check:edge`: PASS; release `1.0.51`, schema `20260830120000`, 41 route.
-- `npm run check:migrations`: PASS; 44 migration, latest
-  `20260830120000_security_privacy_closures.sql`.
-- İzole PostgreSQL 17: 44/44 ilk apply PASS; `supabase db reset --no-seed` ile ikinci full replay PASS.
-- Final source DB: üç pgTAP dosyası, `117/117` PASS; `db diff --from migrations --to local` için
-  `public,storage,realtime` boş diff.
+- `npm run check:edge`: PASS; release `1.0.51`, schema `20260831153000`, 41 route.
+- `npm run check:migrations`: PASS; 45 migration, latest
+  `20260831153000_chat_privacy_push_invariants.sql`.
+- İzole PostgreSQL 17: 45/45 ilk apply PASS; `supabase db reset --local --no-seed` ile ikinci full
+  replay PASS.
+- Her iki replay turunda source DB: dört pgTAP dosyası, `166/166` PASS; `db diff --from migrations
+  --to local` için `public,storage,realtime` boş diff.
 - DB lint/advisor: `public,storage` error-level PASS; Realtime dahil full lint'teki tek bulgu vendor
   stock `realtime.apply_rls` dynamic `EXECUTE` false-positive'i; redundant policy/index cleanup'ından
   sonra `db advisors --type all --level warn --fail-on warn` sıfır issue PASS.
 - Atomic nonce: önceki pgbench kanıtına ek olarak yeni yerel CI guard'ı 32 eşzamanlı transaction'da
   sıfır failure, bir `true`, 31 `false` ve bir nonce satırı sonucu verdi.
-- Owner-preserving custom dump/restore: SHA-256
-  `f96ca69d2e264e045dc0ab53996589c4b9369ce8eeb1f45d5eec4be9002ea095`; clean `template0` DB,
-  `supabase_admin` ve OWNER metadata PASS. Restored schema `20260830120000`, 28 public tablo, 88 public
-  index, 27 RLS tablo ve üç dosya/pgTAP `117/117` PASS.
+- Owner-preserving custom dump/restore: dump SHA-256 her run'da hesaplanıp loglanır ve run'a özgüdür;
+  clean `template0` DB, `supabase_admin` ve OWNER metadata PASS. Restored schema `20260831153000`, 28 public tablo, 89 public
+  index, 27 RLS tablo ve dört dosya/pgTAP `166/166` PASS.
 - `database-validation.yml` aynı yerel zinciri iki full replay sonrası iki pgTAP turu, lint, warn-level
   advisor (config'teki Data API şemaları geçici `postgres` oturum bağlamına taşınıp sonra eski değer
   geri yüklenir), bağımsız Data API exposure guard'ı, nonce concurrency, boş diff ve geçici `template0` restore ile
@@ -210,11 +277,37 @@ checksum'lı log olarak saklanmalıdır.
 - Negatif restore: `postgres --no-owner` beklendiği gibi FAIL; managed Realtime/Vault owner/grant
   semantiği bozuldu ve pgTAP read models permission-denied verdi.
 - `npm run typecheck` ve `npm run check:edge:type`: PASS.
-- `npm run test:unit`: altı dosya, 63 test PASS. `npm run test:contract`: bir dosya, 80 test PASS.
+- `npm run verify:release`: uçtan uca PASS (exit 0). İçinde `npm run test:unit` yedi dosya/69 test,
+  `npm run test:component` dokuz dosya/29 test, `npm run test:contract` bir dosya/82 test ve dört Deno
+  edge suite'i (9 + 4 + 8 + 2 test) PASS verdi.
 - `npm run check:secrets`, `npm run check:signing`, `npm run check:i18n`: PASS; locale guard 537 key.
 - Markdown/manifest structure: PASS; 35 score row, 15 manual step, balanced fence ve valid JSON.
 - Pinned `eas-cli@22.0.0` help: `update:rollback`, `update:republish`, `update:list --branch` ve
   `update:roll-back-to-embedded` syntax PASS.
+- `npm run check:deno:lock` (bu SHA'da eklenen yeni gate): PASS. Gate, `package.json` ile
+  `deno.lock` arasındaki sürüm kaymasını Docker imajı derlenmeden, saniyeler içinde fail eder;
+  Expo patch hizalamasının açtığı gerçek lockfile drift'i bu gate ile kapatıldı.
+- `npm run docker:config`: PASS; `test`, `resilience` ve `load` profilleri birlikte doğrulandı.
+- `npm run docker:test`: PASS (exit 0, 15:18:26Z→15:25:43Z UTC). İzole Supabase PostgreSQL 17
+  stack'inde 45/45 ilk apply, ikinci full replay, her iki turda dört pgTAP dosyası/`166/166`,
+  `public,storage` error-level lint, `db advisors --level warn` sıfır issue, Data API exposure
+  guard, atomic nonce 32 transaction (bir `true`, 31 `false`, tek satır), owner-preserving
+  dump/restore (schema `20260831153000`, 28 tablo, 89 index, 27 RLS, pgTAP `166/166`) ve boş
+  `public,storage,realtime` diff. Container profilinde TMDB/push/Mailpit deterministic upstream
+  contract'ları, `test:unit` 7 dosya/69 test, `test:contract` 1 dosya/82 test, dört Deno edge
+  suite'i, `check:edge`/`check:edge:type` ve Worker gate'i (3 dosya/27 vitest + 7 `node:test`)
+  PASS verdi. Cleanup sonrası compose container/network orphan'ı kalmadı.
+- `npm run docker:resilience`: PASS (exit 0). Toxiproxy üzerinden TMDB/push/Supabase latency ve
+  connection-reset fault injection contract'ı ve container içi jest fault suite'i (2 dosya/11
+  test) geçti.
+- `npm run docker:load`: PASS (exit 0). k6 deterministic provider smoke 4 VU/10 s; 1960/1960
+  check başarılı, `http_req_failed rate=0.00%`, `http_req_duration p(95)=1.21 ms`. Bu yalnız
+  deterministic mock upstream ölçümüdür; staging kapasite kanıtı değildir.
+- `npx expo export --platform android` ve `--platform ios`: PASS; Expo patch hizalamasından
+  sonra 2054 modüllük Android bundle ve iOS bundle hatasız üretildi. Bu bundle doğrulamasıdır,
+  signed store artifact kanıtı değildir.
+- Docker profil kanıtları `tmp/docker-evidence/<sha>/` altında JSON olarak kaydedildi ve
+  `mobileRuntimeContainerized=false`, `productionDataUsed=false` alanlarını taşır.
 
 ## 10. 35 metrik skor tablosu
 
@@ -226,29 +319,29 @@ değildir.
 
 | Alan                    | Başlangıç | Yapılan güçlendirme                                                                                                         | Otomatik kanıt                                                                      | Runtime/cihaz kanıtı                                                       | Kalan risk                                                              |     Final | GO/NO-GO |
 | ----------------------- | --------: | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------------- | --------: | -------- |
-| 1. UI/UX                |       8.4 | Private fotoğraf cache'i memory-only oldu; görünür surface donduruldu                                                       | Feature guard ve component davranış testleri; görsel snapshot/regression kanıtı yok | Aynı-SHA screenshot ve cihaz matrisi yok                                   | Tüm loading/error/offline/font-scale halleri görsel doğrulanmadı        | Ölçülmedi | NO-GO    |
+| 1. UI/UX                |       8.4 | Token paleti ölçülen kontrast tabanına çekildi; tip merdiveni tek 12px bandından ayrıştırıldı; bayat veri bandı tek sahibe indi | `check:contrast` 32 semantik çift PASS; `check:visual-regression` 28 tam + 6 gerekçeli yüzey PASS; `docs/audit/ui-ux-contrast-audit.md`, `ui-typography-hierarchy-audit.md`, `ui-screen-state-matrix.md` | Aynı-SHA screenshot ve cihaz matrisi yok | Font ölçeği 1.3/1.5, VoiceOver/TalkBack ve cihaz sınıfı render'ı doğrulanmadı | Ölçülmedi | NO-GO    |
 | 2. Çoklu cihaz          |       6.2 | Mevcut responsive/safe-area sözleşmesi korundu                                                                              | Component ve touch-target komutları                                                 | Android/iOS küçük-büyük/düşük cihaz sonucu yok                             | Tablet, rotation ve düşük kaynak davranışı bilinmiyor                   | Ölçülmedi | NO-GO    |
 | 3. Performans           |       6.0 | Startup/update metadata telemetry ve bounded image/cache yolu güçlendi                                                      | Performance hook ve budget test asset'leri                                          | Cold/warm/FPS/memory/battery ölçümü yok                                    | Baseline/karşılaştırma yok                                              | Ölçülmedi | NO-GO    |
-| 4. Güvenlik/gizlilik    |       7.0 | External photo sınırı, email RPC, messages/reports RLS, Realtime, origin-HMAC replay savunması ve deletion cleanup güçlendi | Secret/migration/RLS/security guard ve SQL asset'leri                               | Staging attack matrix, provider log ve incident drill yok                  | Migration deploy'u, same-SHA scan artifact'i ve P0 runtime kanıtı eksik | Ölçülmedi | NO-GO    |
+| 4. Güvenlik/gizlilik    |       7.0 | External photo sınırı, email RPC, messages/reports RLS, Realtime, origin-HMAC replay savunması, deletion cleanup ve explicit cleartext/ATS reddi güçlendi | Aynı SHA'da gitleaks (495 dosya, sıfır bulgu), Semgrep sıfır bulgu, 4 pgTAP dosyası/166 RLS-IDOR assert ve fail-closed transport parity guard'ı | Staging attack matrix, provider log ve incident drill yok                  | Migration deploy'u, provider-side scan artifact'i ve P0 runtime kanıtı eksik | Ölçülmedi | NO-GO    |
 | 5. Mimari               |       7.0 | Supabase source of truth korunup seçili gateway, account-deletion ve katman yön sınırları eklendi                            | Edge/feature/native/dependency-direction guard'ları                                | Cutover/compatibility runtime kanıtı yok                                   | Büyük Edge runtime ve iki tam eşleşmeli legacy ters kenar devam ediyor  | Ölçülmedi | NO-GO    |
 | 6. DRY                  |       7.1 | Deletion saga ayrı modüle; ortak transport/gateway resolver kullanıldı                                                      | Source-quality bütçeleri                                                            | Runtime etkisi uygulanamaz                                                 | Büyük route modülündeki tekrarlar ölçülmedi                             | Ölçülmedi | NO-GO    |
-| 7. Hardcode/config      |       6.5 | Public env doğrulaması, stable HTTPS gateway ve EAS environment ayrımı eklendi                                              | Env/native parity ve production guard asset'leri                                    | Gerçek protected environment değerleri yok                                 | Stable host ve provider secrets manuel                                  | Ölçülmedi | NO-GO    |
+| 7. Hardcode/config      |       6.5 | Public env doğrulaması, stable HTTPS gateway ve EAS environment ayrımı eklendi                                              | Env/native parity, GitHub environment adları ve production reviewer/policy           | Environment secrets/vars ve provider değerleri yok                         | Stable host ve provider secrets manuel                                  | Ölçülmedi | NO-GO    |
 | 8. State                |       7.6 | Auth purge, owner-scoped caches, single-flight ve idempotent report/deletion akışları güçlendi                              | Network/cache/outbox test asset'leri                                                | İki cihaz/race/process-kill kanıtı yok                                     | Library/chat outbox retry/dead-letter metadata eksik                    | Ölçülmedi | NO-GO    |
 | 9. Network/API          |       8.0 | Seçici URL resolver, HTTPS validation, retry/abort/request ID ve report idempotency eklendi                                 | Network retry, edge/contract test komutları                                         | Fault proxy ve gerçek cihaz sonucu yok                                     | Tüm route/upstream correlation canlıda kanıtlanmadı                     | Ölçülmedi | NO-GO    |
-| 10. Accessibility       |       8.0 | Mevcut accessible primitives/surface korundu                                                                                | Touch/i18n/component guard'ları                                                     | VoiceOver/TalkBack/Dynamic Type kanıtı yok                                 | Screen-reader, contrast, keyboard ve reduce-motion matrisi eksik        | Ölçülmedi | NO-GO    |
-| 11. Ölçek               |       5.0 | Cache/rate sınırları belgelenip staging-only load kapısı yazıldı                                                            | k6/DB query asset'leri                                                              | İzole staging load/plan/pool/lock grafiği yok                              | Kapasite bilinmiyor                                                     | Ölçülmedi | NO-GO    |
-| 12. Dayanıklılık        |       6.2 | Resumable deletion, embedded OTA, rollback runbook'u ve owner-preserving local logical restore güçlendirildi                | Retry/outbox/classifier/migration ve local restore contract sonuçları               | Provider PITR/Storage restore, outage ve rollback drill yok                | RPO/RTO bilinmiyor; process-kill kanıtı yok                             | Ölçülmedi | NO-GO    |
-| 13. Testler             |       8.0 | OTA/feature/security kontrat testleri ve DB/quality workflows eklendi                                                       | `npm run verify:release`, RLS ve workflow tanımları                                 | E2E/device/load/provider testleri yok                                      | Çıktılar clean immutable SHA artifact'ine bağlı değil                   | Ölçülmedi | NO-GO    |
-| 14. Yerelleştirme       |       8.4 | Mevcut TR/EN copy/surface korunup yeni product copy eklenmedi                                                               | i18n parity guard                                                                   | Locale/font/device görüntüsü yok                                           | UTF-8 ve truncation runtime review eksik                                | Ölçülmedi | NO-GO    |
+| 10. Accessibility       |       8.0 | Üçüncül metin AA altındaydı, ölçülüp düzeltildi; iki fotoğraf açıcı adlandırıldı; slider track'i erişilebilirlik ağacından çıkarıldı | `check:contrast` SC 1.4.3/1.4.11 eşikleriyle 32 çift PASS (muafiyetler oranıyla birlikte basılıyor); `check:touch` PASS; 14 modal/sheet `AccessibleModal` ile odak kapsamada | VoiceOver/TalkBack/Dynamic Type kanıtı yok | Screen-reader okuma sırası, font ölçeği ve reduce-motion cihazda doğrulanmadı | Ölçülmedi | NO-GO    |
+| 11. Ölçek               |       5.0 | Cache/rate sınırları belgelenip staging-only load kapısı yazıldı; Docker `load` profili çalıştırılabilir hâle geldi          | Aynı SHA'da k6 provider smoke PASS (1960/1960 check, p95 1.21 ms, hata 0)            | İzole staging load/plan/pool/lock grafiği yok; k6 yalnız deterministic mock ölçtü | Gerçek kapasite bilinmiyor                                              | Ölçülmedi | NO-GO    |
+| 12. Dayanıklılık        |       6.2 | Resumable deletion, embedded OTA, rollback runbook'u, owner-preserving local restore ve Toxiproxy fault profili güçlendirildi | Aynı SHA'da `docker:resilience` PASS: TMDB/push/Supabase latency + reset injection ve 2 dosya/11 fault testi | Provider PITR/Storage restore, gerçek outage ve rollback drill yok         | RPO/RTO bilinmiyor; cihazda process-kill kanıtı yok                     | Ölçülmedi | NO-GO    |
+| 13. Testler             |       8.0 | OTA/feature/security kontrat testleri, push/privacy Deno suite'leri ve Docker doğrulama profilleri eklendi                  | Clean SHA'da `verify:release` PASS; container içinde 69+82+29 test, 23 Deno test, 4 pgTAP dosyası/166 assert | Gerçek cihaz E2E, provider ve staging load testi yok                       | Çıktılar yerel; remote same-SHA CI artifact'i henüz yok                 | Ölçülmedi | NO-GO    |
+| 14. Yerelleştirme       |       8.4 | Tek dil (TR) korundu; çıkışsız üç boş durum metni uygulamanın kendi yönlendirici desenine çekildi, yeni anahtar eklenmedi   | `check:i18n` PASS, 538 anahtar (öncesi ve sonrası aynı); boş durum denetimi `docs/marketing/activation-and-first-value.md` §4 | Locale/font/device görüntüsü yok | UTF-8 ve truncation runtime review eksik; `likes.empty.description` tek anahtarla iki farklı durumu karşılıyor (freeze sonrası ayrılacak) | Ölçülmedi | NO-GO    |
 | 15. Offline             |       7.2 | Cache/outbox/TTL/owner-purge contract'ı envanterlendi; embedded fallback etkin                                              | Network/outbox/cache test asset'leri                                                | 24 saat replay, airplane cold start, process-kill yok                      | Movie/chat outbox retry/dead-letter kanıtı eksik                        | Ölçülmedi | NO-GO    |
 | 16. Push/deep link      |       7.6 | Mevcut token/receipt/dedupe ve link contract'ı korunup binary bump yapıldı                                                  | Push contract/workflow ve native parity asset'leri                                  | Terminated tap, association ve iki platform receipt sonucu yeni SHA'da yok | Provider credential/store build manuel                                  | Ölçülmedi | NO-GO    |
 | 17. Gözlemlenebilirlik  |       7.0 | SHA/runtime/channel/update ID telemetry ve SLO/PII runbook'u eklendi                                                        | Telemetry/contract kodu                                                             | Sentry source-map, dashboard, alert, cf-ray korelasyonu yok                | Baseline ve on-call yok                                                 | Ölçülmedi | NO-GO    |
-| 18. CI/CD               |       7.4 | Quality, DB, EAS preview/prod ve evidence workflows ile fail-closed classifier eklendi                                      | Workflow dosyaları ve guard testleri                                                | Protected environments/approval gerçek koşusu yok                          | Token scopes, run artifact ve signing plan manuel                       | Ölçülmedi | NO-GO    |
-| 19. Dokümantasyon       |       6.0 | Feature/data/edge/OTA/offline/SRE/security/moderation/release runbook seti eklendi                                          | Markdown/link/guard kontrolleri                                                     | Operator dry-run ve provider kanıtı yok                                    | Owner atamaları ve eski docs doğruluk review'u gerekli                  | Ölçülmedi | NO-GO    |
+| 18. CI/CD               |       7.4 | Quality/DB/EAS/evidence workflow'larına Docker validation ve `check:deno:lock` fail-closed gate'leri eklendi                | Workflow dosyaları, guard testleri, strict `main` checks, prod reviewer/policy; lockfile drift gate'i gerçek bir drift'i yakaladı | Secrets/vars ve approval/deploy run kanıtı yok                           | Token scope, run artifact ve signing planı manuel                       | Ölçülmedi | NO-GO    |
+| 19. Dokümantasyon       |       6.0 | Runbook setine üç UI/UX denetimi ve on parçalı pazarlama paketi eklendi; her pazarlama cümlesi `claims-register.md` satırına bağlı | Markdown/link/guard kontrolleri; `docs/audit/*`, `docs/marketing/*`, `MANUAL_STEPS.md` §16 | Operator dry-run ve provider kanıtı yok | Owner atamaları hâlâ atanmadı; store görselleri candidate build'den alınmadı | Ölçülmedi | NO-GO    |
 | 20. Domain mantığı      |       8.0 | Report idempotency, Realtime match/block, atomic nonce claim ve deletion invariant'ları güçlendi                            | DB/contract/property asset'leri ve local 32-transaction nonce pgbench'i             | İki cihaz atomic concurrency sonucu yok                                    | End-to-end invariant matrisi eksik                                      | Ölçülmedi | NO-GO    |
-| 21. Bağımlılıklar       |       8.0 | Expo SDK 57 patch hizası ve `expo-updates` lockfile'a eklendi                                                               | Install/audit/license/SBOM komutları                                                | Artifact provenance/provider doğrulaması yok                               | Yeni native dependency yeni binary ister; exception expiry kanıtı yok   | Ölçülmedi | NO-GO    |
+| 21. Bağımlılıklar       |       8.0 | Expo SDK 57 patch hizası yenilendi, GHSA-6gmq-8vp8-gcm6 scope'lu override ile kapatıldı, `deno.lock` gate'e bağlandı        | Aynı SHA'da audit/license/doctor/`expo install --check`/`check:deno:lock` PASS; iki platform Expo export başarılı | Artifact provenance ve provider doğrulaması yok                            | Patch bump `NATIVE_BUILD_REQUIRED`; image-size istisnasının expiry kaydı yok | Ölçülmedi | NO-GO    |
 | 22. Batarya/kaynak      |       5.5 | Poll/cache/outbox sınırları korunup update cold-start modeli belgelendi                                                     | Statik bounded-work asset'leri                                                      | Battery/thermal/background ölçümü yok                                      | Gerçek düşük cihaz davranışı bilinmiyor                                 | Ölçülmedi | NO-GO    |
-| 23. Platform uyumu      |       6.0 | Android OTA native config, runtime/version parity ve channels eklendi                                                       | `check:native-parity`, Expo dependency/Doctor komutları                             | Android 53/iOS 55 build-install yok                                        | `ios/` ağacı yok; generic CNG check kanıt sayılmaz                      | Ölçülmedi | NO-GO    |
+| 23. Platform uyumu      |       6.0 | Android OTA native config, runtime/version parity, channels ve release cleartext/ATS invariant'ları eklendi                 | `check:native-parity` (negatif testle doğrulandı), Expo Doctor 20/20, `expo install --check`, iki platform export | Android 53/iOS 55 build-install yok                                        | `ios/` ağacı yok; generic CNG check kanıt sayılmaz                      | Ölçülmedi | NO-GO    |
 | 24. Store readiness     |       6.0 | Yeni native build kimlikleri ve store/manual checklist tanımlandı                                                           | Signing/native/release guards                                                       | Android 53 Internal Track ve iOS 55 TestFlight yok                         | Privacy/UGC/store review ve signed artifacts eksik                      | Ölçülmedi | NO-GO    |
 | 25. Operasyon olgunluğu |       5.5 | Risk, SLO, incident, restore, moderation ve rollback runbook'ları eklendi                                                   | Release manifest/runbook guard'ları ve local restore drill                          | On-call, alert, provider PITR/Storage drill, RPO/RTO ve approvals yok      | Owner'lar atanmamış                                                     | Ölçülmedi | NO-GO    |
 | 26. Okunabilirlik       |       6.5 | Deletion saga modülleştirildi; docs ve path sorumlulukları ayrıldı                                                          | Source-quality line budget                                                          | Operasyon dry-run yok                                                      | Edge entrypoint hâlâ büyük                                              | Ölçülmedi | NO-GO    |
@@ -257,9 +350,9 @@ değildir.
 | 29. Kod kalitesi        |       7.5 | Strict transport errors, env validation, fail-closed guard/testler güçlendi                                                 | Typecheck/lint/format/contract komutları                                            | Release-mode runtime warning/log kanıtı yok                                | Full SAST ve zero-warning aynı-SHA artifact'i yok                       | Ölçülmedi | NO-GO    |
 | 30. KISS                |       8.0 | Supabase tek truth kaldı; edge yalnız seçili route/public metadata ile sınırlandı                                           | Feature/route/cache policy asset'leri                                               | Edge deployment ölçümü yok                                                 | Gerekçe runtime ölçümüyle doğrulanmadı                                  | Ölçülmedi | NO-GO    |
 | 31. Kod hardcode        |       7.0 | Runtime/release/channel/env/gateway değerleri merkezi config ve guard'a bağlandı                                            | Native/env/classifier guard'ları                                                    | Provider dashboard parity yok                                              | TTL/limit'lerin bir kısmı modüllere dağınık                             | Ölçülmedi | NO-GO    |
-| 32. Yeniden kullanım    |       8.0 | Ortak AppImage/transport/session purge kullanıldı; yeni design system yok                                                   | Feature/UI source guard'ları                                                        | Görsel cihaz kanıtı yok                                                    | Ortak primitive tutarlılığı manuel review gerektirir                    | Ölçülmedi | NO-GO    |
+| 32. Yeniden kullanım    |       8.0 | Ortak AppImage/transport/session purge korundu; bayat veri bandının iki kopyası `SwipeModal.banner` altında tekleşti; marka yıkama merdiveni tek kırmızıdan türetiliyor | Feature/UI source guard'ları; `check:contrast`; `check:visual-regression` | Görsel cihaz kanıtı yok | Dondurulmamış dosyalardaki 21 ham `fontSize`/`borderRadius` token'a bağlandı ve `check:style-literals` ile kilitlendi; 27'si dondurulmuş dosyalarda gerekçeli allowlist'te bekliyor | Ölçülmedi | NO-GO    |
 | 33. Kod performansı     |       6.5 | Private image disk cache kapatıldı; bounded caches/single-flight korundu                                                    | Unit/component/performance hook asset'leri                                          | Profiler, render/query/upload ölçümü yok                                   | Regresyon bütçesi kanıtlanmadı                                          | Ölçülmedi | NO-GO    |
-| 34. Test edilebilirlik  |       7.0 | OTA classifier, feature guard, retry fault ve DB fixtures genişledi                                                         | Focused Vitest/contract/RLS komutları                                               | Provider/device fault injection yok                                        | Deterministik zaman ve 24 saat replay eksik                             | Ölçülmedi | NO-GO    |
+| 34. Test edilebilirlik  |       7.0 | OTA classifier, feature guard, retry fault, DB fixtures ve deterministic TMDB/push/SMTP mock adaptörleri genişledi          | Focused Vitest/contract/RLS komutları ve container upstream contract'ları PASS       | Gerçek provider/cihaz fault injection yok                                  | Deterministik zaman kaynağı ve 24 saat replay eksik                     | Ölçülmedi | NO-GO    |
 | 35. Genişletilebilirlik |       7.0 | Schema compatibility, runtime/channel ve direct-origin cutover sözleşmesi tanımlandı                                        | Health/schema/native/feature guard'ları                                             | Eski/yeni binary compatibility ölçülmedi                                   | Stable host/adoption ve migration deploy kanıtı eksik                   | Ölçülmedi | NO-GO    |
 
 `Ölçülmedi` sıfır veya başarısız puan değildir; puan vermek için gerekli same-SHA kanıt setinin

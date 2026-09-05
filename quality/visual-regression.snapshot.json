@@ -3,7 +3,11 @@
   "baselineCommit": "b8ff52ac41eda5f6ef1e43472784d794328f7050",
   "featureSurfaceSnapshot": "quality/feature-surface.snapshot.json",
   "contract": "User-visible screen, modal, sheet, navigation, theme, and branding sources must remain visually identical to the immutable feature-freeze baseline.",
-  "exactSurfaceGroups": ["screenEntrypoints", "modalEntrypoints", "sheetEntrypoints"],
+  "exactSurfaceGroups": [
+    "screenEntrypoints",
+    "modalEntrypoints",
+    "sheetEntrypoints"
+  ],
   "exactPaths": [
     "src/app/App.tsx",
     "src/app/components/BottomNav.tsx",
@@ -14,6 +18,89 @@
   ],
   "normalizedPaths": [
     {
+      "path": "src/shared/theme/index.ts",
+      "normalizer": "reviewedLines",
+      "reason": "Reviewed accessibility, brand-consistency and type-hierarchy changes to the token file. No layout, topology, screen, modal or CTA change. Each moved line is listed below with the measurement that justified it. Every other byte of the file stays byte-frozen against the baseline.",
+      "evidence": "npm run check:contrast; docs/audit/ui-ux-contrast-audit.md; docs/audit/ui-typography-hierarchy-audit.md",
+      "reviewedLines": [
+        {
+          "baseline": "textSoft: '#7f8698',",
+          "current": "textSoft: '#8990a0',",
+          "why": "#7f8698 measured 4.46:1 on surfaceMuted and 4.03:1 on surfaceStrong, under the WCAG 2.2 SC 1.4.3 floor of 4.5:1 for normal text. #8990a0 is the smallest lift that clears 4.5:1 on every surface (4.57:1 worst case) and keeps the hue."
+        },
+        {
+          "baseline": "textTertiary: '#7f8698',",
+          "current": "textTertiary: '#8990a0',",
+          "why": "Same token value under a second name; same measurement and same fix."
+        },
+        {
+          "baseline": "primary12: 'rgba(229, 72, 77, 0.12)',",
+          "current": "brand12: 'rgba(217, 4, 22, 0.12)',",
+          "why": "#e5484d existed nowhere else in the palette yet tinted every EmptyState in the app. Rebased on colors.primary #d90416 and folded into the brand ladder."
+        },
+        {
+          "baseline": "primary18: 'rgba(229, 72, 77, 0.18)',",
+          "current": null,
+          "why": "Duplicate of brand18 once both were rebased on #d90416. EmptyState now uses brand18."
+        },
+        {
+          "baseline": "brand18: 'rgba(225, 6, 19, 0.18)',",
+          "current": "brand18: 'rgba(217, 4, 22, 0.18)',",
+          "why": "Rebased from #e10613 onto colors.primary #d90416 so one red drives every brand wash. Imperceptible at 18% alpha."
+        },
+        {
+          "baseline": "brand22: 'rgba(225, 6, 19, 0.22)',",
+          "current": "brand22: 'rgba(217, 4, 22, 0.22)',",
+          "why": "Same rebase."
+        },
+        {
+          "baseline": "brand24: 'rgba(225, 6, 19, 0.24)',",
+          "current": "brand24: 'rgba(217, 4, 22, 0.24)',",
+          "why": "Same rebase."
+        },
+        {
+          "baseline": "brand26: 'rgba(225, 6, 19, 0.26)',",
+          "current": "brand26: 'rgba(217, 4, 22, 0.26)',",
+          "why": "Same rebase."
+        },
+        {
+          "baseline": "brand88: 'rgba(216, 20, 33, 0.88)',",
+          "current": null,
+          "why": "Dead token: a fourth red (#d81421) that no component referenced."
+        },
+        {
+          "baseline": "success84: 'rgba(34,197,94,0.84)',",
+          "current": null,
+          "why": "Dead token: no component referenced it."
+        },
+        {
+          "baseline": "display: 24,",
+          "current": null,
+          "why": "Dead legacy scalar; roles.display carries the display tier and no call site used this."
+        },
+        {
+          "baseline": "section: 15,",
+          "current": "section: 16,",
+          "why": "Section headings rendered at two sizes: AppModal's shared title uses roles.sectionTitle (16) while five hand-rolled headings use this scalar. Raising the scalar to 16 aligns all six on one size without editing any byte-frozen screen or modal file. The duplication between this scalar and roles.sectionTitle.fontSize stays until the feature freeze lifts and the call sites can migrate to the role."
+        },
+        {
+          "baseline": "tiny: 12,",
+          "current": null,
+          "why": "Dead legacy scalar duplicating caption at the same value; no call site used it."
+        },
+        {
+          "baseline": "cardTitle: { fontFamily: 'Inter_700Bold', fontSize: 13, lineHeight: 18 },",
+          "current": "cardTitle: { fontFamily: 'Inter_700Bold', fontSize: 14, lineHeight: 19 },",
+          "why": "A card title matched its own body copy at 13px, so cards carried no internal hierarchy. 14px separates the title without reaching the 16px section tier. No fixed-height text container exists in the app to clip it (verified by AST scan)."
+        },
+        {
+          "baseline": "control: { fontFamily: 'Inter_600SemiBold', fontSize: 12, lineHeight: 17 },",
+          "current": "control: { fontFamily: 'Inter_600SemiBold', fontSize: 13, lineHeight: 18 },",
+          "why": "Control labels sat in the 12px floor band alongside meta and micro copy, which put every primary CTA label at the smallest size in the system. 13px lifts the label the user must act on out of the caption tier. Consumers are AppButton, OptionChips, SegmentedControl and four screens, all with flexible height."
+        }
+      ]
+    },
+    {
       "path": "src/app/components/ui/AppImage.tsx",
       "normalizer": "nonVisualImageCachePolicy",
       "reason": "The cache storage policy was privacy-hardened without changing rendered layout, content, styling, accessibility, or failure-state topology."
@@ -22,6 +109,76 @@
       "path": "src/app/components/ChatModal.tsx",
       "normalizer": "nonVisualChatOutboxCancellation",
       "reason": "Only the failed-message cancellation persistence primitive changed from deletion to a durable cancellation tombstone; rendered content, action labels, accessibility, and topology are unchanged."
+    },
+    {
+      "path": "src/app/components/CompatibilityScreen.tsx",
+      "normalizer": "reviewedLines",
+      "reason": "Non-visual de-duplication. The stale-data banner now goes through SwipeModal's banner prop, the same path MatchScreen already used, instead of a second copy of SwipeModal's overlay declared locally. SwipeModal renders it at the identical position (absolute, top 12, left 12, right 12, zIndex 5), so the rendered result is unchanged, and it adds pointerEvents=\"box-none\" which the local copy lacked. No content, label, state topology or accessibility change.",
+      "evidence": "git diff shows one prop added and nine lines removed; SwipeModal.tsx styles.bannerOverlay carries the same five positioning values.",
+      "reviewedLines": [
+        {
+          "baseline": null,
+          "current": "banner={staleBanner}",
+          "why": "Routes the banner through SwipeModal, which owns the overlay for both sibling swipe screens."
+        },
+        {
+          "baseline": [
+            "",
+            "{staleBanner ? <View style={styles.bannerOverlay}>{staleBanner}</View> : null}"
+          ],
+          "current": null,
+          "why": "The local overlay this replaced. SwipeModal renders the same node at the same coordinates."
+        },
+        {
+          "baseline": [
+            "bannerOverlay: {",
+            "position: 'absolute',",
+            "top: 12,",
+            "left: 12,",
+            "right: 12,",
+            "zIndex: 5,",
+            "},"
+          ],
+          "current": null,
+          "why": "The duplicated positioning block. Identical to SwipeModal.tsx styles.bannerOverlay, which is now the single owner."
+        }
+      ]
+    },
+    {
+      "path": "src/app/components/MovieDetailModal.tsx",
+      "normalizer": "reviewedLines",
+      "reason": "Accessibility-only change, committed in eddbc55. The hero Pressable opens the full-screen photo preview and announced neither a role nor a name, so a screen reader user could not discover that the photo opens at all. It now carries accessibilityRole and a Turkish label. Screen reader metadata does not render, so layout, content, styling and state topology are unchanged.",
+      "evidence": "npm run check:i18n (538 keys, a11y.openPhoto present); npm run check:touch",
+      "reviewedLines": [
+        {
+          "baseline": "<Pressable onPress={() => setShowImagePreview(true)} style={styles.heroCard}>",
+          "current": [
+            "<Pressable",
+            "accessibilityLabel={t('a11y.openPhoto')}",
+            "accessibilityRole=\"button\"",
+            "onPress={() => setShowImagePreview(true)}",
+            "style={styles.heroCard}",
+            ">"
+          ],
+          "why": "Adds a role and a name to the control that opens the photo preview. No rendered change."
+        }
+      ]
+    },
+    {
+      "path": "src/app/components/DiscoveryFiltersModal.tsx",
+      "normalizer": "reviewedLines",
+      "reason": "Accessibility-only change, committed in eddbc55. The range slider's track Pressable is a pointer convenience that sat between the two properly labelled adjustable thumbs, where it became a nameless focus stop in the accessibility tree. It is now hidden from that tree; the thumbs already carry the role, value and increment actions. Screen reader metadata does not render, so the visible slider is unchanged.",
+      "evidence": "npm run check:touch; the two thumbs retain accessibilityRole=\"adjustable\" with their value and actions",
+      "reviewedLines": [
+        {
+          "baseline": null,
+          "current": [
+            "accessible={false}",
+            "importantForAccessibility=\"no-hide-descendants\""
+          ],
+          "why": "Removes a nameless focus stop between the two labelled thumbs. No rendered change."
+        }
+      ]
     }
   ],
   "runtimePixelEvidence": "Manual same-SHA device screenshots remain a release gate; this repository guard is the deterministic pre/post source golden."

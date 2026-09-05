@@ -1,0 +1,249 @@
+name: ${COMPOSE_PROJECT_NAME:-wmatch-validation}
+
+x-hardened: &hardened
+  restart: "no"
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  init: true
+  networks:
+    - validation
+
+x-node-mock: &node-mock
+  <<: *hardened
+  image: node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+  user: "1000:1000"
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=32m,uid=1000,gid=1000
+  pids_limit: 64
+  mem_limit: 128m
+  cpus: 0.50
+
+x-tooling: &tooling
+  <<: *hardened
+  image: ${WMATCH_TOOLING_IMAGE:-wmatch-tooling:local}
+  build:
+    context: ../..
+    dockerfile: infra/docker/Dockerfile.tooling
+    args:
+      VCS_REF: ${WMATCH_GIT_SHA:-local}
+  environment:
+    CI: "true"
+    TMDB_MOCK_URL: http://tmdb-mock:8788
+    PUSH_MOCK_URL: http://push-mock:8789
+    MAILPIT_API_URL: http://mailpit:8025
+    TOXIPROXY_API_URL: http://toxiproxy:8474
+    SUPABASE_LOCAL_API_PORT: ${WMATCH_SUPABASE_API_PORT:-54321}
+    SUPABASE_LOCAL_DB_PORT: ${WMATCH_SUPABASE_DB_PORT:-54322}
+    SUPABASE_LOCAL_MODE: ${WMATCH_SUPABASE_MODE:-database}
+    VITE_CACHE_DIR: /tmp/vite-cache
+  tmpfs:
+    - /tmp:rw,nosuid,size=512m,uid=1000,gid=1000
+    - /home/node/.expo:rw,noexec,nosuid,size=16m,uid=1000,gid=1000
+    - /home/node/.config/.wrangler:rw,nosuid,size=32m,uid=1000,gid=1000
+    - /workspace/node_modules/.vite-temp:rw,noexec,nosuid,size=32m,uid=1000,gid=1000
+    - /workspace/infra/cloudflare/wmatch-edge/node_modules/.vite-temp:rw,noexec,nosuid,size=32m,uid=1000,gid=1000
+    - /workspace/infra/cloudflare/wmatch-edge/.wrangler:rw,nosuid,size=128m,uid=1000,gid=1000
+  pids_limit: 384
+  mem_limit: 3g
+  cpus: 2.00
+
+services:
+  tmdb-mock:
+    <<: *node-mock
+    profiles:
+      - test
+      - resilience
+      - load
+    working_dir: /mock
+    command:
+      - node
+      - /mock/server.mjs
+    environment:
+      PORT: "8788"
+    volumes:
+      - type: bind
+        source: ./mocks/tmdb/server.mjs
+        target: /mock/server.mjs
+        read_only: true
+    expose:
+      - "8788"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8788/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+  push-mock:
+    <<: *node-mock
+    profiles:
+      - test
+      - resilience
+      - load
+    working_dir: /mock
+    command:
+      - node
+      - /mock/server.mjs
+    environment:
+      PORT: "8789"
+    volumes:
+      - type: bind
+        source: ./mocks/push/server.mjs
+        target: /mock/server.mjs
+        read_only: true
+    expose:
+      - "8789"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8789/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+
+  mailpit:
+    <<: *hardened
+    image: axllent/mailpit:v1.27.8@sha256:6abc8e633df15eaf785cfcf38bae48e66f64beecdc03121e249d0f9ec15f0707
+    profiles:
+      - test
+      - mail
+      - resilience
+    user: "10001:10001"
+    command:
+      - --database
+      - /tmp/mailpit.db
+      - --max
+      - "100"
+      - --disable-version-check
+      - --block-remote-css-and-fonts
+      - --smtp-auth-accept-any
+      - --smtp-auth-allow-insecure
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=10001,gid=10001
+    expose:
+      - "1025"
+      - "8025"
+    healthcheck:
+      test:
+        - CMD
+        - /mailpit
+        - readyz
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.50
+
+  toxiproxy:
+    <<: *hardened
+    image: ghcr.io/shopify/toxiproxy:2.12.0@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e
+    profiles:
+      - resilience
+    user: "10001:10001"
+    command:
+      - -host=0.0.0.0
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001
+    expose:
+      - "8474"
+      - "8666"
+      - "8667"
+      - "8668"
+      - "8669"
+      - "8670"
+    healthcheck:
+      test:
+        - CMD
+        - /toxiproxy-cli
+        - -h
+        - http://127.0.0.1:8474
+        - list
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.50
+
+  tooling-test:
+    <<: *tooling
+    profiles:
+      - test
+    depends_on:
+      tmdb-mock:
+        condition: service_healthy
+      push-mock:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    command:
+      - node
+      - infra/docker/scripts/container-test.mjs
+
+  tooling-resilience:
+    <<: *tooling
+    profiles:
+      - resilience
+    depends_on:
+      tmdb-mock:
+        condition: service_healthy
+      push-mock:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_healthy
+    command:
+      - node
+      - infra/docker/scripts/container-resilience.mjs
+
+  k6-provider-smoke:
+    <<: *hardened
+    image: grafana/k6:1.3.0@sha256:3ddc8b1a33a2c3d8edc6e99b6a762ae36cba08788463458f5e6a7703e14eb77d
+    profiles:
+      - load
+    user: "12345:12345"
+    depends_on:
+      tmdb-mock:
+        condition: service_healthy
+      push-mock:
+        condition: service_healthy
+    environment:
+      TMDB_MOCK_URL: http://tmdb-mock:8788
+      PUSH_MOCK_URL: http://push-mock:8789
+    volumes:
+      - type: bind
+        source: ./load/provider-smoke.js
+        target: /scripts/provider-smoke.js
+        read_only: true
+    command:
+      - run
+      - --no-color
+      - /scripts/provider-smoke.js
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m,uid=12345,gid=12345
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1.00
+
+networks:
+  validation:
+    internal: true
+    driver: bridge
+    labels:
+      com.wmatch.purpose: deterministic-test-only

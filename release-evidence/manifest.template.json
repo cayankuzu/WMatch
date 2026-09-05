@@ -35,6 +35,49 @@
     "sbomSha256": null,
     "commands": []
   },
+  "dockerEvidence": {
+    "status": "pending",
+    "sourceCommitSha": null,
+    "workflow": ".github/workflows/docker-validation.yml",
+    "artifactName": null,
+    "composeConfigStatus": "pending",
+    "profiles": {
+      "test": "pending",
+      "resilience": "pending",
+      "loadSmoke": "pending"
+    },
+    "toolingImage": {
+      "reference": null,
+      "imageId": null,
+      "runtimeUser": "node:node",
+      "reproducibleBuildStatus": "pending",
+      "hardenedSmokeStatus": "pending"
+    },
+    "imageSecurity": {
+      "scanner": "trivy 0.74.0",
+      "severityGate": ["HIGH", "CRITICAL"],
+      "allComposeImagesScanned": false,
+      "status": "pending",
+      "reportPath": null,
+      "reportSha256": null
+    },
+    "containerSbom": {
+      "generator": "syft 1.51.1",
+      "format": "CycloneDX JSON",
+      "status": "pending",
+      "path": null,
+      "sha256": null
+    },
+    "buildProvenance": {
+      "builder": "docker buildx 0.32.2 / BuildKit 0.32.2",
+      "status": "pending",
+      "path": null,
+      "sha256": null
+    },
+    "cleanupStatus": "pending",
+    "evidenceManifestPath": null,
+    "evidenceManifestSha256": null
+  },
   "databaseEvidence": {
     "requiredMigration": "20260830120000",
     "migrationCount": 44,

@@ -26,14 +26,12 @@ import {
   fetchMatchBetweenUsers,
   getChatState,
   getChatVisibleSince,
-  getErrorMessage,
   getMatchChatDeletedAt,
   getPairKey,
   getPathParam,
   getRequestRateLimitIdentity,
   getSupabase,
   hashIdempotencyPayload,
-  isMissingColumnError,
   isMissingFunctionError,
   isTimestampBefore,
   loadChatDirectoryPageFallback,
@@ -50,9 +48,7 @@ import {
   serializeChatSettings,
   validateMessageText,
 } from "../runtime.ts";
-import type {
-  TablesInsert,
-} from "../runtime.ts";
+import { redactPeerReadReceipts } from "./privacy.ts";
 
 export const CHAT_ROUTES = [
   { method: "POST", path: "/make-server-d962235e/chats/:userId/hide", domain: "chat" },
@@ -302,6 +298,12 @@ export const registerChatRoutes = () => {
       const chatState = getChatState(match, currentUserId, otherUserId, blockRows);
       const user = userMap.get(otherUserId) ?? buildFallbackUserPayload(otherUserId);
       const likeTimeline = likeTimelineMap.get(getPairKey(currentUserId, otherUserId)) ?? null;
+      const peerSettings = peerSettingsMap.get(currentUserId) ?? { ...DEFAULT_CHAT_SETTINGS };
+      const responseMessages = redactPeerReadReceipts(
+        visibleMessages,
+        currentUserId,
+        peerSettings.readReceipts,
+      );
       const lastMessageTime =
         visibleMessages.at(-1)?.created_at ?? visibleSince ?? match?.created_at ?? match?.updated_at ?? new Date().toISOString();
       const matchCreatedAtMs = new Date(match?.created_at ?? "").getTime();
@@ -313,7 +315,7 @@ export const registerChatRoutes = () => {
       );
 
       return c.json({
-        messages: visibleMessages,
+        messages: responseMessages,
         pageInfo: {
           hasMore: hasMoreMessages,
           nextCursor: encodeMessageCursor(visibleMessages[0] ?? {}),
@@ -334,7 +336,7 @@ export const registerChatRoutes = () => {
           ),
           matchContext: buildMatchContextSnapshot(match, likeTimeline, currentUserId),
           settings: ownSettingsMap.get(otherUserId) ?? { ...DEFAULT_CHAT_SETTINGS },
-          peerSettings: peerSettingsMap.get(currentUserId) ?? { ...DEFAULT_CHAT_SETTINGS },
+          peerSettings,
           ...chatState,
         },
       });
@@ -375,90 +377,74 @@ export const registerChatRoutes = () => {
         return c.json({ error: "Çok hızlı mesaj gönderiyorsun. Lütfen biraz bekleyip tekrar dene." }, 429);
       }
 
-      const [match, blockRows] = await Promise.all([
-        fetchMatchBetweenUsers(supabase, currentUserId, receiverId),
-        fetchBlockRows(supabase, currentUserId, receiverId),
-      ]);
-      const chatState = getChatState(match, currentUserId, receiverId, blockRows);
-      const receiverDeletedChatAt = getMatchChatDeletedAt(match, receiverId);
+      const { data: messageRows, error: messageError } = await supabase.rpc(
+        "send_chat_message_atomic",
+        {
+          p_sender_user_id: currentUserId,
+          p_receiver_user_id: receiverId,
+          p_text: normalizedText,
+          p_client_message_id: normalizedClientMessageId,
+          p_client_payload_hash: clientPayloadHash,
+        },
+      );
 
-      if (!chatState.canSend) {
-        return c.json({ error: chatState.lockedReason ?? "Mesaj gönderemezsin." }, 403);
+      if (messageError) {
+        console.error("Atomic send message error:", messageError);
+        return c.json({ error: "Mesaj gönderilemedi." }, 500);
       }
 
-      const insertMessage = (includeClientMessageId: boolean) => {
-        const payload: TablesInsert<"messages"> = {
-          sender_id: currentUserId,
-          receiver_id: receiverId,
-          text: normalizedText,
-        };
+      const messageResult = Array.isArray(messageRows)
+        ? messageRows[0]
+        : messageRows;
 
-        if (includeClientMessageId && normalizedClientMessageId) {
-          payload.client_message_id = normalizedClientMessageId;
-          payload.client_payload_hash = clientPayloadHash;
-        }
+      if (!messageResult) {
+        return c.json({ error: "Mesaj gönderilemedi." }, 500);
+      }
 
-        return supabase
-          .from("messages")
-          .insert(payload)
-          .select(MESSAGE_SELECT)
-          .single();
-      };
-
-      let { data: message, error } = await insertMessage(Boolean(normalizedClientMessageId));
-      let idempotencyReplayed = false;
+      if (messageResult.outcome === "idempotency_conflict") {
+        return c.json({
+          error: "Client message ID was already used for different content.",
+        }, 409);
+      }
 
       if (
-        error &&
-        normalizedClientMessageId &&
-        (((error as { code?: string }).code === "23505") ||
-          getErrorMessage(error, "").toLowerCase().includes("duplicate"))
+        messageResult.outcome === "missing_match" ||
+        messageResult.outcome === "relationship_locked"
       ) {
-        const existingMessageResult = await supabase
-          .from("messages")
-          .select(`${MESSAGE_SELECT},client_payload_hash`)
-          .eq("sender_id", currentUserId)
-          .eq("client_message_id", normalizedClientMessageId)
-          .maybeSingle();
-
-        if (!existingMessageResult.error && existingMessageResult.data) {
-          const existingPayloadHash = existingMessageResult.data.client_payload_hash;
-          const payloadMatches = existingMessageResult.data.receiver_id === receiverId && (
-            existingPayloadHash
-              ? existingPayloadHash === clientPayloadHash
-              : existingMessageResult.data.text === normalizedText
-          );
-
-          if (!payloadMatches) {
-            return c.json({ error: "Client message ID was already used for different content." }, 409);
-          }
-
-          const { client_payload_hash: _clientPayloadHash, ...safeExistingMessage } = existingMessageResult.data;
-          message = safeExistingMessage;
-          error = null;
-          idempotencyReplayed = true;
-        }
+        return c.json({ error: "Bu kullanıcıya mesaj gönderemezsin." }, 403);
       }
 
-      if (error && normalizedClientMessageId && isMissingColumnError(error, "client_message_id")) {
-        ({ data: message, error } = await insertMessage(false));
+      if (messageResult.outcome !== "sent" && messageResult.outcome !== "replayed") {
+        return c.json({ error: "Mesaj isteği geçersiz." }, 400);
       }
 
-      if (error) {
-        console.error("Send message error:", error);
-        return c.json({ error: "Mesaj gönderilemedi." }, 400);
+      if (
+        !messageResult.message_id ||
+        !messageResult.sender_id ||
+        !messageResult.receiver_id ||
+        !messageResult.message_text ||
+        !messageResult.message_created_at
+      ) {
+        console.error("Atomic send message returned an incomplete row:", messageResult.outcome);
+        return c.json({ error: "Mesaj gönderilemedi." }, 500);
       }
+
+      const message = {
+        id: messageResult.message_id,
+        sender_id: messageResult.sender_id,
+        receiver_id: messageResult.receiver_id,
+        text: messageResult.message_text,
+        read: Boolean(messageResult.message_read),
+        created_at: messageResult.message_created_at,
+        client_request_id: messageResult.client_request_id,
+        client_message_id: messageResult.client_message_id,
+      };
+      const receiverDeletedChatAt = messageResult.receiver_chat_deleted_at;
+      const idempotencyReplayed = messageResult.idempotency_replayed;
 
       if (idempotencyReplayed) {
         return c.json({ message, idempotencyReplayed: true });
       }
-
-      await supabase
-        .from("hidden_chats")
-        .delete()
-        .or(
-          `and(user_id.eq.${currentUserId},other_user_id.eq.${receiverId}),and(user_id.eq.${receiverId},other_user_id.eq.${currentUserId})`,
-        );
 
       const messageNotificationTask = (async () => {
         if (receiverDeletedChatAt) {

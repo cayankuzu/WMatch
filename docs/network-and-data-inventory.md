@@ -3,6 +3,9 @@
 Baseline commit: `b8ff52ac41eda5f6ef1e43472784d794328f7050`
 Minimum baseline binary: `1.0.50`
 Baseline OTA runtime: **unset**
+Current target binary/runtime: `1.0.51` / `1.0.51`
+Current native builds: Android `53`, iOS `55`
+Current required schema target: `20260831153000`
 
 This inventory describes the repository contract, not a claim that a Cloudflare cutover or runtime
 deployment exists. The frozen method/path set is also stored in
@@ -24,19 +27,36 @@ GET/HEAD/OPTIONS or a mutation carrying `Idempotency-Key`.
 
 All API wrapper requests add `x-request-id`; response JSON is parsed once. Authenticated responses
 contain user or relationship data and are never eligible for shared edge cache. The baseline client
-uses direct Supabase; “edge candidate” below is a future selective security/routing decision, not a
-deployed route.
+uses direct Supabase. The current resolver can send only the exact selective allowlist below to
+`EXPO_PUBLIC_API_BASE_URL`; every other route remains on the Supabase Function base URL. Repository
+resolution logic is not proof that DNS, Worker, WAF, secrets, or production cutover exists.
 
 Test codes: `H`=`tests/edge-http-security.test.ts`, `C`=`tests/production-guards.test.ts`,
 `N`=`tests/network-retry.test.ts`, `D`=`supabase/tests/database/*`,
 `T`=`tests/components/tmdb-cache.test.tsx`, `O`=chat cache/outbox tests, `P`=push outbox tests/docs.
 
+## Current selective gateway resolution
+
+| Mobile path | Current repository resolution | Cache rule | Runtime evidence |
+|---|---|---|---|
+| `/health` | Cloudflare only when the configured gateway URL exists | `private, no-store` | PENDING |
+| `/auth/check-availability` | Cloudflare only when configured | `private, no-store` | PENDING |
+| `/auth/password-reset` | Cloudflare only when configured | `private, no-store` | PENDING |
+| `/reports` | Cloudflare only when configured | `private, no-store` | PENDING |
+| `/tmdb` and `/tmdb/*` | Cloudflare only when configured | Shared cache only for eligible anonymous public GET | PENDING |
+| Every other API path | Direct Supabase Edge Function | User/private data is never shared-cacheable | Provider deployment dependent |
+
+The production Worker workflow requires same-SHA default-branch CI, Quality, and Database validation
+runs. Canary requests use Cloudflare version override and require `x-wmatch-edge-version` to equal the
+full candidate SHA. No successful provider run has yet been attached to the current candidate.
+
 ## Hono Edge Function routes
 
 Auth codes: `P` publishable/anon boundary, `A` verified user bearer plus server-side owner/block/RLS
 checks, `S` scheduler secret plus anon gateway key, `W` dedicated worker shared secret. `PII high`
-includes email, exact location, message, profile media or device token. Every row has minimum
-`1.0.50 / runtime unset`.
+includes email, exact location, message, profile media or device token. Unless marked as an internal
+addition, each frozen product route has baseline minimum `1.0.50 / runtime unset`; the current target
+is `1.0.51 / runtime 1.0.51`.
 
 | Method/path | Caller | Auth; schema | PII/RLS | Net | Cache/offline | Cloudflare decision | Tests |
 |---|---|---|---|---|---|---|---|
@@ -107,9 +127,11 @@ session, and PostgreSQL RLS/Realtime authorization remains authoritative.
 - Only TMDB/public metadata is eligible for shared cache, after query allowlisting, normalized keys,
   provider error exclusions and leakage tests.
 
-## Known baseline gaps
+## Known baseline and current deployment gaps
 
 - The baseline has no runtime version, stable `api.*` host, Cloudflare route matrix or Worker.
+- The current repository has runtime and Worker contracts, but stable DNS/WAF/secrets, rollout,
+  rollback, origin cutover, budget, and observability evidence is still absent.
 - Several mutations rely on atomic DB constraints rather than a client idempotency header and are
   intentionally not automatically retried; each must retain a server invariant test.
 - The Edge `auth/signup` route has no current mobile caller. It must remain compatibility-only until
@@ -118,3 +140,6 @@ session, and PostgreSQL RLS/Realtime authorization remains authoritative.
 - Arbitrary external profile-photo strings are accepted by the baseline sanitizer. Closing that P0
   boundary must preserve the existing profile/edit-profile UI and Storage bucket.
 - Same-SHA k6, device, provider-outage and cursor-gap evidence is not present.
+- Push token/provider/outbox/device requirements are defined in `docs/push-current-contract.md`,
+  `docs/push-provider-and-token-lifecycle.md`, `docs/push-outbox-retry-receipt-dlq.md`, and
+  `docs/push-real-device-matrix.md`; every current real-device/provider row remains pending.

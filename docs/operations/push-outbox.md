@@ -1,5 +1,9 @@
 # Push outbox operations
 
+Status: repository operation contract only; current provider, scheduler, alert, and device evidence
+is pending. See `docs/push-current-contract.md`, `docs/push-outbox-retry-receipt-dlq.md`, and
+`docs/push-incident-and-credential-rotation-runbook.md` for the release-blocking contract.
+
 The production push worker is invoked by `.github/workflows/push-outbox-drain.yml`
 every five minutes and can also be run manually. The workflow drains durable event
 jobs and delayed Expo receipt jobs, then fails if the service-only health read
@@ -41,9 +45,10 @@ Credential triage:
 - `DeviceNotRegistered`: no manual deletion is required; the receipt worker removes
   the token and the app registers again on its next authenticated foreground.
 
-After repairing credentials, do not blindly resend stale social notifications.
-Archive old incident rows first (the current production backlog is already more
-than two weeks old):
+After repairing credentials, do not blindly resend stale social notifications. If an incident has
+an explicitly approved stale-event discard decision, archive only the reviewed interval and retain
+the incident ID, operator, aggregate counts, and UTC timestamps. The following historical operation
+is an example and must not be run without those bounds and approvals:
 
 ```sql
 UPDATE public.notification_events
@@ -56,10 +61,10 @@ WHERE push_status IN ('dead', 'retry')
   AND created_at < NOW() - INTERVAL '24 hours';
 ```
 
-Only requeue a recent event when product explicitly decides that a delayed
-notification is still useful. Run the worker after this decision and verify both
-event and receipt health. Do not activate or requeue before fixing credentials; it
-only recreates the same failures.
+Only requeue a recent event when product explicitly decides that a delayed notification is still
+useful. Run the worker after this decision and verify both event and receipt health. Do not activate
+or requeue before fixing credentials; it only recreates the same failures. Never use a historical
+incident query as proof that the current candidate's backlog was inspected.
 
 After deployment, run the workflow manually once and retain the run URL as release
 evidence. A repository workflow file by itself is configuration, not proof that the

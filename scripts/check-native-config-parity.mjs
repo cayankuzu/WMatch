@@ -14,6 +14,10 @@ const eas = JSON.parse(readFileSync('eas.json', 'utf8'));
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 const gradle = readFileSync('android/app/build.gradle', 'utf8');
 const manifest = readFileSync('android/app/src/main/AndroidManifest.xml', 'utf8');
+const debugManifests = ['debug', 'debugOptimized'].map((variant) => ({
+  variant,
+  source: readFileSync(`android/app/src/${variant}/AndroidManifest.xml`, 'utf8'),
+}));
 const strings = readFileSync('android/app/src/main/res/values/strings.xml', 'utf8');
 
 const projectId = app?.extra?.eas?.projectId;
@@ -75,6 +79,26 @@ expect(
 
 expect(androidScheme && manifest.includes(`<data android:scheme="${androidScheme}"/>`), 'Android custom scheme differs from app.json');
 expect(manifest.includes('android:allowBackup="false"'), 'Android backups must remain disabled');
+expect(
+  !('usesCleartextTraffic' in (app.android ?? {})),
+  'usesCleartextTraffic is not an Expo config field; the checked-in Android manifest owns it',
+);
+expect(
+  manifest.includes('android:usesCleartextTraffic="false"'),
+  'the release Android manifest must deny cleartext traffic explicitly',
+);
+for (const { variant, source } of debugManifests) {
+  expect(
+    /android:usesCleartextTraffic="true"/.test(source) &&
+      /tools:replace="[^"]*android:usesCleartextTraffic/.test(source),
+    `the ${variant} manifest must keep its explicit local-Metro cleartext override`,
+  );
+}
+expect(
+  app.ios?.infoPlist?.NSAppTransportSecurity?.NSAllowsArbitraryLoads !== true &&
+    app.ios?.infoPlist?.NSAppTransportSecurity?.NSAllowsArbitraryLoadsInWebContent !== true,
+  'iOS App Transport Security must not allow arbitrary loads',
+);
 expect(manifest.includes('android:fullBackupContent="false"'), 'Android full backups must remain disabled');
 expect(
   manifest.includes(`android:enableOnBackInvokedCallback="${String(app.android?.predictiveBackGestureEnabled === true)}"`),
@@ -125,5 +149,6 @@ if (existsSync('ios')) {
 }
 
 console.log(
-  `Native config parity check passed. runtime=${runtimeVersion} android=${app.android.versionCode} ios=${app.ios.buildNumber} updateUrl=${expectedUpdateUrl}`,
+  `Native config parity check passed. runtime=${runtimeVersion} android=${app.android.versionCode} `
+    + `ios=${app.ios.buildNumber} updateUrl=${expectedUpdateUrl} cleartext=denied`,
 );

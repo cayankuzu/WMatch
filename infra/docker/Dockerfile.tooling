@@ -1,0 +1,96 @@
+# syntax=docker/dockerfile:1.19.0@sha256:b6afd42430b15f2d2a4c5a02b919e98a525b785b1aaff16747d2f623364e39b6
+
+ARG NODE_IMAGE=node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+
+FROM ${NODE_IMAGE} AS npm-runtime
+
+ENV CI=true \
+    NPM_CONFIG_AUDIT=false \
+    NPM_CONFIG_FUND=false \
+    NPM_CONFIG_UPDATE_NOTIFIER=false
+
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm install --global npm@11.19.0 --ignore-scripts --no-audit --no-fund \
+    && test "$(npm --version)" = "11.19.0"
+
+FROM npm-runtime AS dependencies
+
+WORKDIR /workspace
+
+COPY package.json package-lock.json .npmrc ./
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci
+
+COPY infra/cloudflare/wmatch-edge/package.json \
+    infra/cloudflare/wmatch-edge/package-lock.json \
+    infra/cloudflare/wmatch-edge/.npmrc \
+    ./infra/cloudflare/wmatch-edge/
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci --prefix infra/cloudflare/wmatch-edge
+
+FROM npm-runtime AS tooling
+
+ARG VCS_REF=unknown
+
+LABEL org.opencontainers.image.title="WMatch deterministic test tooling" \
+      org.opencontainers.image.description="Repository-only validation image; never a mobile or production runtime" \
+      org.opencontainers.image.source="https://github.com/cayankuzu/WMatch" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.licenses="UNLICENSED"
+
+WORKDIR /workspace
+
+COPY --from=dependencies --chown=node:node /workspace/node_modules ./node_modules
+COPY --from=dependencies --chown=node:node \
+    /workspace/infra/cloudflare/wmatch-edge/node_modules \
+    ./infra/cloudflare/wmatch-edge/node_modules
+COPY --chown=node:node . .
+
+ENV DENO_DIR=/opt/wmatch-deno-cache \
+    DENO_NO_UPDATE_CHECK=1
+
+# Drop SQLite's write-ahead and shared-memory files. They hold transient page
+# state, are never identical between two runs, and carry nothing the cache
+# needs once deno has exited: the edge suites pass with the network disabled
+# after this removal.
+#
+# This does not make the image reproducible and nothing here can. Deno stores
+# the full HTTP response headers next to each cached module, so every entry
+# carries the cf-ray of the request that fetched it and the CDN age at that
+# moment. Eighteen module files differ between two builds for that reason
+# alone. See docs/audit/docker-reproducibility-blocker.md.
+RUN ./node_modules/.bin/deno cache --frozen --node-modules-dir=manual \
+      supabase/functions/make-server-d962235e/originHmac_test.ts \
+      supabase/functions/make-server-d962235e/domains/storage_test.ts \
+      supabase/functions/make-server-d962235e/domains/privacy_test.ts \
+      supabase/functions/make-server-d962235e/domains/pushTokens_test.ts \
+      supabase/functions/make-server-d962235e/domains/pushDeliveryPolicy_test.ts \
+      supabase/functions/make-server-d962235e/domains/notificationOutbox_test.ts \
+      supabase/functions/make-server-d962235e/accountDeletion_test.ts \
+      supabase/functions/make-server-d962235e/index.ts \
+    && find "$DENO_DIR" -type f \
+         '(' -name '*-wal' -o -name '*-shm' ')' -delete \
+    && mkdir -p \
+      /home/node/.config/.wrangler \
+      /home/node/.expo \
+      /workspace/node_modules/.vite-temp \
+      /workspace/infra/cloudflare/wmatch-edge/node_modules/.vite-temp \
+      /workspace/infra/cloudflare/wmatch-edge/.wrangler \
+      /workspace/release-evidence/docker \
+    && chown -R node:node \
+      /home/node/.config/.wrangler \
+      /home/node/.expo \
+      /opt/wmatch-deno-cache \
+      /workspace/node_modules/.vite-temp \
+      /workspace/infra/cloudflare/wmatch-edge/node_modules/.vite-temp \
+      /workspace/infra/cloudflare/wmatch-edge/.wrangler \
+      /workspace/release-evidence/docker
+
+ENV XDG_CACHE_HOME=/tmp/cache \
+    NPM_CONFIG_CACHE=/tmp/npm \
+    EXPO_HOME=/tmp/expo \
+    WRANGLER_LOG_PATH=/tmp/wrangler.log
+
+USER node:node
+
+CMD ["node", "infra/docker/scripts/container-test.mjs"]

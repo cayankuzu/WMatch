@@ -1,53 +1,58 @@
-# WMatch production readiness
+# WMatch production readiness status
 
-Date: 2026-08-19
+Updated: 2026-09-03
 
-Candidate: `1.0.50` — Android `versionCode 51`, iOS `buildNumber 53`
+Current target: app/runtime `1.0.51`, Android `versionCode 53`, iOS `buildNumber 55`
 
 Verdict: **NO-GO**
 
-The 1.0.50 database schema and Edge Function are deployed, the signed Android App Bundle is built, and the iOS build is valid in TestFlight. Production readiness remains NO-GO until the remaining device, load, observability and store-review evidence is complete.
+This file is the short current-status entry point. The detailed assessment and evidence rules are in
+`docs/release-readiness.md` and `release-evidence/README.md`.
 
-## Deployed production state
+## Repository state
 
-- Supabase project: `eaggwbuvpfzrejamwqry`.
-- Migration history matches local through `20260819190000_push_delivery_receipts.sql`.
-- Newly applied migrations include `20260819090000_discovery_correctness_read_models.sql`, `20260819100000_push_delivery_health.sql` and `20260819190000_push_delivery_receipts.sql`.
-- Edge Function `make-server-d962235e` version 95 is deployed.
-- Live health: `release=1.0.50`, `requiredSchema=20260819190000`, `schemaReady=true`; request ID `f64483e5-8212-4ed5-8805-09c915a230f6`.
+- Selective Cloudflare Worker, OTA channels/runtime, fail-closed change classifier, database guards,
+  and forward migrations are present in the repository.
+- Cloudflare production operations now require successful default-branch same-SHA CI, Quality, and
+  Database validation runs. A gradual rollout smoke targets the exact Worker UUID and requires the
+  response version header to equal the candidate commit SHA.
+- Release evidence automation generates a real `manifest.json` from clean source identity, upstream
+  run records, command logs, SBOMs, Expo export checksums, and current migration identity.
+- `infra/docker/` adds a measured, mobile-runtime-free validation layer. Its `test`, `resilience`, and
+  `load` profiles were executed on the current content and all exited 0: two full migration replays
+  with four pgTAP files and 166 assertions per round, zero warn-level database advisors, an
+  owner-preserving dump/restore, Toxiproxy fault injection, and a deterministic k6 provider smoke.
+- `npm run verify:release` passes end to end on the clean candidate tree, including the new
+  `check:deno:lock` gate, a refreshed Expo SDK 57 patch alignment, and the scoped `@xmldom/xmldom`
+  overrides that close GHSA-6gmq-8vp8-gcm6.
+- Provider, device, signed artifact, store, alert, restore, and manual evidence is never inferred by
+  those repository checks.
 
-## Push incident resolution
+## Current release blockers
 
-- Production inspection on 2026-08-19 found 8 dead push jobs and 5 retry jobs
-  stalled since 2026-08-02. Recorded Android errors are `expo_http_400` and
-  `expo_ticket_InvalidCredentials`.
-- Stale incident rows were archived without replaying old user notifications.
-- The backend isolates submissions per device, distinguishes permanent provider
-  errors, persists Expo receipts, and cleans invalid device tokens.
-- Android FCM V1 and iOS APNs production credentials are assigned and live
-  provider receipt tests passed on both platforms.
-- The worker secret and GitHub production environment are active. Workflow run
-  `32298597744` passed with a healthy queue and zero dead, stalled,
-  receipt-failed, or receipt-stalled jobs.
-- Mobile permission and token-sync fixes are included in Android 1.0.50 (51)
-  and iOS 1.0.50 (53); the iOS build is `VALID` in TestFlight.
+1. The candidate commit now carries every current change and passes the local gate chain, but no
+   pushed same-SHA `CI`, `Quality`, `Database validation`, `Docker validation`, or `Release evidence`
+   run exists yet, so there is still no immutable provider-side evidence set.
+2. `20260831153000_chat_privacy_push_invariants.sql` replays cleanly twice on an isolated local
+   PostgreSQL 17 stack with the full pgTAP RLS/IDOR matrix, an empty `public,storage,realtime` diff,
+   and a verified dump/restore. It still has no staging apply and no approved production apply.
+3. GitHub environment shells exist, and `production`/`cloudflare-production` require reviewer
+   `cayankuzu` plus protected branches. `main` now strictly requires `CI verify` and `Quality verify`,
+   enforces the rule for admins and blocks force-push/delete. Environment secrets/vars,
+   Cloudflare/EAS provider configuration, and a real approval run remain unverified or missing.
+4. No current Cloudflare preview/production rollout and rollback evidence exists.
+5. No current OTA preview/production group, staged rollout, rollback, or code-signing evidence exists.
+6. Current signed Android 53 and iOS 55 artifacts are not tied to one immutable SHA with signature,
+   store, and physical-device evidence.
+7. The push real-device/provider/scheduler matrix remains pending on both platforms.
+8. Load, accessibility, observability/alert, provider PITR/Storage restore, moderation, account
+   deletion, privacy/store forms, and review evidence remains pending.
 
-## Verified locally without Docker
+## Historical evidence boundary
 
-- `npm run verify:release` passes: format, source quality, signing, secret, license, dependency audit, i18n, touch targets, TypeScript, 32 unit tests, 19 component tests, 80 production-contract tests, static RLS/migration checks, Edge contracts and Deno typecheck, Expo dependency alignment and Doctor 20/20.
-- `gradlew clean` followed by `gradlew :app:bundleRelease` passes with the expected upload key.
-- Release metadata is `com.wmatch.app`, version `1.0.50`/`51`, with four Android ABIs.
-- The signed AAB is copied to `C:\Users\Cayan\Desktop\WMatch-1.0.50-vc51-release.aab`.
-- AAB SHA-256: `752371006BEB451E65F8E4C8F53C18219CCD39717A9057AC4E8A8CE90CD9DED0`.
-- Upload certificate SHA-1: `E4:E0:3B:26:E1:7E:D9:1E:5C:26:EC:4A:71:22:0B:CF:E9:15:0C:34`.
-- EAS iOS build and submission finished; App Store Connect reports 1.0.50 (53) as `VALID`.
+`docs/release/1.0.50/evidence.md` records historical Android 51/iOS 53 and provider work. It must not
+be used as proof for app/runtime 1.0.51, Android 53, iOS 55, the new migration, or the current Worker
+and OTA contracts.
 
-## Required before GO
-
-1. Run the database pgTAP/RLS suite against a clean database. Docker was intentionally not used in this pass.
-2. Replace the invalid Sentry upload credential and prove source-map upload, dashboard visibility and test-alert delivery for 1.0.50.
-3. Install the final artifact and run the checked-in Maestro journey matrix on Android, then repeat the release matrix on iOS/TestFlight.
-4. Execute k6 smoke, 1,000-VU ramp and endurance tests against isolated staging fixtures and retain infrastructure graphs.
-5. Complete accessibility, deep-link, notification, lifecycle/memory and Play Console/App Store Connect review evidence.
-
-Detailed evidence: `docs/release/1.0.50/evidence.md`.
+No production database reset, history rewrite, invented provider result, synthetic device proof, or
+cross-SHA evidence merge is allowed. GO requires the complete evidence set under one candidate SHA.

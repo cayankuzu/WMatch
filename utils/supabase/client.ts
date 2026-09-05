@@ -21,6 +21,7 @@ const SECURE_STORE_OPTIONS = {
   keychainService: 'wmatch.auth',
 } satisfies SecureStore.SecureStoreOptions;
 let installationIdPromise: Promise<string> | null = null;
+let authRefreshFlight: Promise<void> | null = null;
 
 export class RequestTimeoutError extends Error {
   constructor(timeoutMs: number) {
@@ -287,6 +288,23 @@ export const supabase = createClient(SUPABASE_URL, publicAnonKey, {
     flowType: 'pkce',
   },
 });
+
+export function refreshAuthSessionSingleFlight() {
+  if (authRefreshFlight) {
+    return authRefreshFlight;
+  }
+
+  authRefreshFlight = (async () => {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (error || !data.session?.access_token) {
+      throw error ?? new Error('Authentication session could not be refreshed.');
+    }
+  })().finally(() => {
+    authRefreshFlight = null;
+  });
+
+  return authRefreshFlight;
+}
 
 export const API_BASE = `${SUPABASE_URL}/functions/v1/make-server-d962235e`;
 

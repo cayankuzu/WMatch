@@ -170,7 +170,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   profileText: { flex: 1, minWidth: 0, gap: 2 },
-  name: { color: theme.colors.text, fontSize: 12, fontFamily: theme.fonts.bold },
+  name: { color: theme.colors.text, fontSize: theme.typography.caption, fontFamily: theme.fonts.bold },
   username: {
     color: theme.colors.textMuted,
     fontSize: theme.typography.roles.meta.fontSize,
@@ -190,7 +190,7 @@ const styles = StyleSheet.create({
     right: 12,
     zIndex: 20,
     minWidth: 220,
-    borderRadius: 16,
+    borderRadius: theme.radius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface,

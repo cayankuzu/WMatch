@@ -111,7 +111,7 @@ export function MessageThreadSkeleton() {
 const styles = StyleSheet.create({
   block: {
     overflow: 'hidden',
-    borderRadius: 8,
+    borderRadius: theme.radius.sm,
     backgroundColor: theme.colors.skeletonSurface,
     borderWidth: 1,
     borderColor: theme.colors.skeletonBorder,

@@ -12,6 +12,10 @@ import {
   getSupabase,
   isMissingRelationError,
 } from "../runtime.ts";
+import {
+  normalizeExpoPushToken,
+  normalizePushPlatform,
+} from "./pushTokens.ts";
 
 export const NOTIFICATION_ROUTES = [
   { method: "POST", path: "/make-server-d962235e/notifications/push-outbox/drain", domain: "notification" },
@@ -60,10 +64,10 @@ export const registerNotificationRoutes = () => {
       const currentUserId = c.get("userId");
       const supabase = getSupabase();
       const body = await c.req.json().catch(() => ({}));
-      const token = typeof body?.token === "string" ? body.token.trim() : "";
-      const platform = typeof body?.platform === "string" ? body.platform.trim().toLowerCase() : "unknown";
+      const token = normalizeExpoPushToken(body?.token);
+      const platform = normalizePushPlatform(body?.platform);
 
-      if (!token || (!token.startsWith("ExpoPushToken[") && !token.startsWith("ExponentPushToken["))) {
+      if (!token) {
         return c.json({ error: "Geçersiz bildirim anahtarı." }, 400);
       }
 
@@ -78,25 +82,28 @@ export const registerNotificationRoutes = () => {
         return c.json({ error: "Çok hızlı işlem yaptın. Lütfen biraz bekleyip tekrar dene." }, 429);
       }
 
-      const normalizedPlatform =
-        platform === "ios" || platform === "android" ? platform : "unknown";
+      const { data: registered, error } = await supabase.rpc(
+        "register_device_push_token_atomic",
+        {
+          p_user_id: currentUserId,
+          p_token: token,
+          p_platform: platform,
+        },
+      );
 
-      const { error } = await supabase.from("device_push_tokens").upsert({
-        token,
-        user_id: currentUserId,
-        platform: normalizedPlatform,
-        last_seen_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-
-      if (error) {
-        console.error("Register push token error:", error);
+      if (error || !registered) {
+        if (error) {
+          console.error("Register push token error code:", error.code ?? "unknown");
+        }
         return c.json({ error: "Bildirim anahtarı kaydedilemedi." }, 400);
       }
 
       return c.json({ success: true });
     } catch (error) {
-      console.error("Register push token error:", error);
+      console.error(
+        "Register push token request failed:",
+        error instanceof Error ? error.name : "unknown",
+      );
       return c.json({ error: "Bildirim anahtarı kaydedilemedi." }, 500);
     }
   });
@@ -106,11 +113,16 @@ export const registerNotificationRoutes = () => {
       const currentUserId = c.get("userId");
       const supabase = getSupabase();
       const body = await c.req.json().catch(() => ({}));
-      const token = typeof body?.token === "string" ? body.token.trim() : "";
+      const rawToken = typeof body?.token === "string" ? body.token.trim() : "";
+      const token = rawToken ? normalizeExpoPushToken(rawToken) : null;
+
+      if (rawToken && !token) {
+        return c.json({ error: "Geçersiz bildirim anahtarı." }, 400);
+      }
 
       const rateLimit = await enforceRateLimit(supabase, {
         action: "delete_push_token",
-        key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c), token]),
+        key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c)]),
         limit: MAX_PUSH_TOKEN_REGISTRATIONS_PER_MINUTE,
         windowSeconds: 60,
       });
@@ -128,13 +140,16 @@ export const registerNotificationRoutes = () => {
       const { error } = await query;
 
       if (error) {
-        console.error("Delete push token error:", error);
+        console.error("Delete push token error code:", error.code ?? "unknown");
         return c.json({ error: "Bildirim anahtarı kaldırılamadı." }, 400);
       }
 
       return c.json({ success: true });
     } catch (error) {
-      console.error("Delete push token error:", error);
+      console.error(
+        "Delete push token request failed:",
+        error instanceof Error ? error.name : "unknown",
+      );
       return c.json({ error: "Bildirim anahtarı kaldırılamadı." }, 500);
     }
   });

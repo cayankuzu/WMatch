@@ -60,6 +60,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0,
   },
   taglineSplash: {
-    fontSize: 13,
+    fontSize: theme.typography.body,
   },
 });

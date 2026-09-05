@@ -32,7 +32,6 @@ const REPORT_REASON_CODES = new Set<string>([
   "hate_speech",
   "other",
 ]);
-const REPORT_TARGET_TYPES = new Set<string>(["profile", "chat_message", "match", "other"]);
 const MODERATION_REPORT_TO_EMAIL =
   normalizeEmail(Deno.env.get("MODERATION_REPORT_TO_EMAIL") ?? "");
 const MODERATION_REPORT_FROM_EMAIL =
@@ -57,14 +56,13 @@ const sanitizeReportReasonCode = (value: unknown) => {
 };
 
 const sanitizeReportTargetType = (value: unknown) => {
-  if (typeof value !== "string") {
+  if (value == null) {
     return "profile";
   }
 
-  const normalized = value.trim().toLowerCase();
-  return REPORT_TARGET_TYPES.has(normalized)
-    ? normalized
-    : "profile";
+  return typeof value === "string" && value.trim().toLowerCase() === "profile"
+    ? "profile"
+    : null;
 };
 
 const sanitizeReportDetails = (value: unknown) =>
@@ -140,15 +138,17 @@ const sanitizeReportClientContext = (value: unknown): JsonObject => {
   };
 };
 
-const buildReportUserSnapshot = (user: DatabaseRow | null | undefined) => {
+const buildReportUserSnapshot = (
+  user: DatabaseRow | null | undefined,
+): JsonObject | null => {
   if (!user) {
     return null;
   }
 
   return {
-    id: user.id ?? null,
-    name: user.name ?? null,
-    username: user.username ?? null,
+    id: typeof user.id === "string" ? user.id : null,
+    name: typeof user.name === "string" ? user.name : null,
+    username: typeof user.username === "string" ? user.username : null,
     emailConfirmed: user.email_confirmed === true,
   };
 };
@@ -229,10 +229,7 @@ export const registerModerationRoutes = () => {
       const body = await c.req.json().catch(() => ({}));
       const targetType = sanitizeReportTargetType(body?.targetType);
       const targetUserId = typeof body?.targetUserId === "string" ? body.targetUserId.trim() : "";
-      const targetRecordId =
-        typeof body?.targetRecordId === "string" && body.targetRecordId.trim().length > 0
-          ? body.targetRecordId.trim().slice(0, 160)
-          : null;
+      const targetRecordId = null;
       const reasonCode = sanitizeReportReasonCode(body?.reasonCode);
       const details = sanitizeReportDetails(body?.details);
       const matchContext = sanitizeReportMatchContext(body?.matchContext);
@@ -240,7 +237,11 @@ export const registerModerationRoutes = () => {
       const rawIdempotencyKey = c.req.header("Idempotency-Key");
       const idempotencyKey = normalizeIdempotencyKey(rawIdempotencyKey);
 
-      if (targetType === "profile" && (!targetUserId || targetUserId === currentUserId)) {
+      if (!targetType) {
+        return c.json({ error: "Desteklenmeyen ÅŸikÃ¢yet hedef tÃ¼rÃ¼." }, 400);
+      }
+
+      if (!targetUserId || targetUserId === currentUserId) {
         return c.json({ error: "Geçersiz şikâyet hedefi." }, 400);
       }
 
@@ -254,7 +255,7 @@ export const registerModerationRoutes = () => {
 
       const rateLimit = await enforceRateLimit(supabase, {
         action: "report_user",
-        key: buildAbuseKey([currentUserId, targetUserId, getRequestRateLimitIdentity(c)]),
+        key: buildAbuseKey([currentUserId, getRequestRateLimitIdentity(c)]),
         limit: MAX_REPORTS_PER_HOUR,
         windowSeconds: 60 * 60,
       });
@@ -270,7 +271,7 @@ export const registerModerationRoutes = () => {
       const reporterSnapshot = buildReportUserSnapshot(userMap.get(currentUserId));
       const targetSnapshot = buildReportUserSnapshot(userMap.get(targetUserId));
 
-      if (targetType === "profile" && !targetSnapshot) {
+      if (!targetSnapshot) {
         return c.json({ error: "Şikâyet edilen profil bulunamadı." }, 404);
       }
 
