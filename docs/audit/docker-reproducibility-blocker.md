@@ -16,7 +16,17 @@ test "$IMAGE_A_ID" = "$IMAGE_B_ID"
 
 Bu koşul, mevcut Dockerfile ile **hiçbir zaman sağlanamaz**. Sebep imaj kurulumunda ya da workflow'da değil, Deno'nun modül cache formatında.
 
-Bu engel bugüne kadar görünmüyordu çünkü workflow daha önceki bir adımda — var olmayan bir Buildx sürümünü indirmeye çalışırken — kırılıyordu ve tekrarlanabilirlik adımı hiç çalışmıyordu. Buildx pin'i `da6cc16` ile düzeltilince bu engel ortaya çıktı.
+### Sıralı üç engel
+
+Docker validation'ın önünde arka arkaya üç ayrı engel vardı. İlk ikisi düzeltildi; üçüncüsü bu belgenin konusu.
+
+| # | Engel | Durum |
+|---|---|---|
+| 1 | Workflow, var olmayan `Buildx v0.32.2`'yi indirmeye çalışıyordu | ✅ `da6cc16` — `v0.36.1` |
+| 2 | Runner'ın `overlay2` image store'u, attestation'lı build'in ürettiği OCI index'i yükleyemiyordu (`docker exporter does not currently support exporting manifest lists`) | ✅ containerd image store açıldı |
+| 3 | **Deno cache'i tekrarlanabilir değil** | ❌ Bu belge |
+
+Her engel bir öncekini kaldırınca ortaya çıktı. Bu belgedeki 3. madde **yerel Docker'da (containerd store) ölçüldü**; CI'da 2. madde kalkana kadar bu adıma hiç gelinmiyordu.
 
 ---
 
@@ -98,6 +108,7 @@ Bu bir ürün/altyapı kararı; tek taraflı seçilmemeli.
 | Gate | Durum |
 |---|---|
 | Buildx/BuildKit kurulumu | ✅ `da6cc16` ile düzeldi (`v0.36.1`, BuildKit `v0.32.2` digest doğrulandı) |
+| containerd image store | ✅ Açıldı; `docker info` driver'ı `overlayfs` olarak kanıta yazılıyor ve doğrulanıyor |
 | Builder driver/attestation kanıtı | ✅ Eklendi, bootstrap ediliyor ve doğrulanıyor |
 | `provenance` / `sbom` | ✅ Açık, kapatılmadı |
 | Manifest gate assertion | ✅ Eklendi; `skipped`/`failure` artık PASS sayılmıyor |
